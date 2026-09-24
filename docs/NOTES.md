@@ -49,3 +49,15 @@ PreLogin options carry HydraPublicId=offline.<steamid64>.
 Known: offline mission start logs "Kicking remote clients with EDisconnectError::HostStartedSoloGame" (harmless now,
 travel redirect wins); client that follows too early fails the DTLS handshake -> agent retries 3s later.
 Transport: PacketRelayNetDriver (IpNetDriver subclass) on UDP 7777 with DTLSHandlerComponent encryption.
+
+## Unattended sign-in / mission start (native/src/testing.c)
+- `ui.AutoSignIn` etc. are real cvars (Engine.ini `[ConsoleVariables]` works). `ui.AutoSignInOffline 1`,
+  `Offline.Enable 1`, `SignIn.SkipStartupOptions 1` exist only as strings in a profiling exec list (0x141C53930);
+  no cvar is registered under those names, so they do nothing.
+- Sign-in screen (`SignInScreen`, state byte +0x568 = ESignInScreenState, set by 0x141D37600): `StartSignIn()` =
+  pressing Sign in. `SignInTask_OnlineOfflinePopup` (+0x30 task state, 1 = Running) binds its `OnPopupClosed` to
+  the popup; `PopupUserWidget::Close("Offline")` → OnlineModeSubsystem SetOnlineMode(Offline) (0x141B43CA0).
+- War table start → `Matchmaking::JoinRun` 0x141AE9240 (Map, RunId, OwnerId, Difficulty, Pool, …): offline it logs
+  `set local campaign run id`, builds `?Difficulty=?PoolConfig=?game=…?RunOwner=1` and calls SetClientTravel.
+  `Matchmaking.Dev_JoinPool` (BlueprintCallable, Coop, not private/quickplay) calls it with run id 0 = new run.
+  A bare `servertravel` of that URL loads the mission, but no campaign run is created (no NewRun init).

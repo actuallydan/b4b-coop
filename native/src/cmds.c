@@ -141,14 +141,28 @@ static void cmd_players(Out *o) {
 //   host=1            -> whenever we're offline & standalone in Fort Hope, reopen it as a listen server
 //   join=1.2.3.4[:p]  -> whenever we're offline & standalone in Fort Hope, join that host (retry every 20s)
 static int auto_host;
-// Only the first instance on a machine auto-hosts (a second local copy shares the same ini when testing).
-int cmds_auto_host(void) { extern int g_agent_port; return auto_host && g_agent_port == 47112; }
+static int own_config;   // config came from B4B_COOP_CONFIG (per-instance), not the shared game-dir ini
+// Only the first instance on a machine auto-hosts from the shared ini (a second local copy shares it when testing).
+int cmds_auto_host(void) { extern int g_agent_port; return auto_host && (own_config || g_agent_port == 47112); }
 static char auto_join[256];
 static double auto_clock, auto_next;
+int g_auto_offline;      // offline=1: answer the Online/Offline sign-in prompt with Offline (testing.c)
+
+// b4bcoop.ini next to the DLL, or B4B_COOP_CONFIG=<windows path> (per-instance config for several local copies
+// sharing one game dir, see launch/multi.sh). Every config reader goes through this.
+const char *cmds_config_path(void) {
+    static char path[600];
+    if (!path[0]) {
+        extern char g_module_dir[];
+        const char *env = getenv("B4B_COOP_CONFIG");
+        if (env && *env) { snprintf(path, sizeof path, "%s", env); own_config = 1; }
+        else snprintf(path, sizeof path, "%sb4bcoop.ini", g_module_dir);
+    }
+    return path;
+}
 
 static void load_config(void) {
-    extern char g_module_dir[];
-    char path[600]; snprintf(path, sizeof path, "%sb4bcoop.ini", g_module_dir);
+    const char *path = cmds_config_path();
     FILE *f = fopen(path, "r");
     if (!f) { LOG("config: no %s (manual mode)", path); return; }
     char line[300];
@@ -159,9 +173,10 @@ static void load_config(void) {
         while (*v == ' ') v++;
         if (!strcmp(line, "host")) auto_host = atoi(v);
         else if (!strcmp(line, "join") && *v) snprintf(auto_join, sizeof auto_join, "%s", v);
+        else if (!strcmp(line, "offline")) g_auto_offline = atoi(v);
     }
     fclose(f);
-    LOG("config: host=%d join=%s", auto_host, auto_join[0] ? auto_join : "-");
+    LOG("config: %s host=%d join=%s offline=%d", path, auto_host, auto_join[0] ? auto_join : "-", g_auto_offline);
 }
 
 static void auto_tick(float dt) {
@@ -204,6 +219,7 @@ void cmds_tick(float dt) {
     travel_tick(dt);
     auto_tick(dt);
     flashlight_tick(dt);
+    testing_tick(dt);
 }
 
 void cmds_run(char *line, Out *o) {
@@ -230,5 +246,5 @@ void cmds_run(char *line, Out *o) {
     } else if (!strcmp(verb, "call") && rest) {
         char *c = strtok(rest, " "), *f = strtok(NULL, " "), *cdo = strtok(NULL, " ");
         if (c && f) cmd_call(c, f, cdo && !strcmp(cdo, "cdo"), o); else out_printf(o, "usage: call <Class> <Func> [cdo]\n");
-    } else out_printf(o, "unknown command: %s\n", verb);
+    } else if (!testing_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
 }

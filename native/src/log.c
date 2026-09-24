@@ -12,7 +12,11 @@ void log_init(void *module) {
     GetModuleFileNameW((HMODULE)module, path, MAX_PATH);
     wchar_t *slash = wcsrchr(path, L'\\');
     if (slash) { size_t n = 0; for (wchar_t *c = path; c <= slash && n < sizeof g_module_dir - 1; c++) g_module_dir[n++] = (char)*c; g_module_dir[n] = 0; }
-    if (slash) wsprintfW(slash + 1, L"b4bcoop-%lu.log", GetCurrentProcessId());
+    // B4B_COOP_TAG (multi-instance testing): separate prefixes have separate wineservers, so Windows PIDs collide
+    wchar_t tag[32];
+    DWORD tn = GetEnvironmentVariableW(L"B4B_COOP_TAG", tag, 32);
+    if (slash && tn > 0 && tn < 32) wsprintfW(slash + 1, L"b4bcoop-%s-%lu.log", tag, GetCurrentProcessId());
+    else if (slash) wsprintfW(slash + 1, L"b4bcoop-%lu.log", GetCurrentProcessId());
     InitializeCriticalSection(&cs);
     fp = _wfopen(path, L"w");
 }

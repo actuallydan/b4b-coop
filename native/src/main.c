@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
@@ -52,13 +53,17 @@ static DWORD WINAPI server_thread(LPVOID _) {
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         struct sockaddr_in a = {0};
     a.sin_family = AF_INET; a.sin_port = htons(PORT); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    // one agent per game instance: take the first free port in PORT..PORT+3
-    int port = PORT;
-    for (; port < PORT + 4; port++) {
+    // one agent per game instance: take the first free port in PORT..PORT+7, or exactly B4B_COOP_PORT if set
+    char env[16];
+    int lo = PORT, hi = PORT + 8;
+    DWORD en = GetEnvironmentVariableA("B4B_COOP_PORT", env, sizeof env);
+    if (en > 0 && en < sizeof env && atoi(env) > 0) { lo = atoi(env); hi = lo + 1; }
+    int port = lo;
+    for (; port < hi; port++) {
         a.sin_port = htons(port);
         if (!bind(s, (struct sockaddr *)&a, sizeof a)) break;
     }
-    if (port == PORT + 4 || listen(s, 4)) { LOG("server: bind/listen failed %d", WSAGetLastError()); return 1; }
+    if (port == hi || listen(s, 4)) { LOG("server: bind/listen failed %d", WSAGetLastError()); return 1; }
     g_agent_port = port;
     LOG("server: listening on 127.0.0.1:%d", port);
     static Out reply;

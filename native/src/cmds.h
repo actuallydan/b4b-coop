@@ -17,6 +17,9 @@ void travel_tick(float dt);
 void travel_on_handshake_failed(void);
 int cards_init(void);
 int cmds_auto_host(void);
+const char *cmds_config_path(void);    // b4bcoop.ini, or B4B_COOP_CONFIG
 int flashlight_init(void);
 void flashlight_tick(float dt);
 void cmd_flashlight(const char *arg, Out *o);
+void testing_tick(float dt);                        // testing.c: unattended sign-in / mission start
+int testing_cmd(const char *verb, char *rest, Out *o); // 1 if handled

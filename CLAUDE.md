@@ -10,15 +10,19 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 ## Layout
 - `native/` — agent DLL (C, `dwmapi.dll` proxy, zig cc + MinHook). `native/build.sh` → `native/out/dwmapi.dll`.
   - `ue.c/h` reflection layer for B4B's modified UE 4.25 (XOR'd GUObjectArray, shuffled FField, UObject +8).
-  - `main.c` Tick hook + game-thread command queue + TCP command server (127.0.0.1:47112, +1 per extra instance).
+  - `main.c` Tick hook + game-thread command queue + TCP command server (127.0.0.1:47112, first free of +0..7;
+    `B4B_COOP_PORT` pins it).
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
-  - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log`.
+  - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log` (`b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
   - `cards.c` host card-ownership override for remote players (interim).
   - `flashlight.c` manual flashlight toggle (`flashlight` command, ini hotkey); docs/investigations/flashlight.md.
-  - `cmds.c` commands: `status players host join exec find call peek`.
+  - `testing.c` unattended testing: auto sign-in Offline (`offline=1`), `signin`, `mission [raw] [map] [difficulty]`.
+  - `cmds.c` commands: `status players host join exec find call peek`; config = `b4bcoop.ini` next to the DLL or
+    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
-  no EAC), `two.sh` (host+client copies on one machine, labels windows), `winpy.sh`, `probed.sh`, `uninstall.sh`.
-- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=1` = second instance), `pe.py` static analysis, `memprobe.py` +
+  no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test
+  instances, below), `two.sh` (old: two copies on the real prefix), `winpy.sh`, `probed.sh`, `uninstall.sh`.
+- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
 - `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
@@ -28,10 +32,29 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 Steam launch options: `WINEDLLOVERRIDES="dwmapi=n,b" %command%`. Game build pinned: Steam buildid 14216215;
 the agent verifies byte signatures and refuses to hook on mismatch.
 
+## How to run N local instances (unattended)
+`launch/multi.sh N` (N = 1-5; install the DLL first). Instance 1 hosts, the others join `127.0.0.1:7787`; no clicks:
+the agent presses Sign in and answers the Online/Offline popup with Offline. Returns when the host sees N players
+(3 instances ≈ 90 s). Then e.g. `B4B_AGENT=0 .venv/bin/python tools/b4b.py mission Normal` starts a new Evansburgh
+campaign run on the host (same path as the war table); clients follow automatically. `launch/multi-stop.sh` kills
+only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/environ).
+- Instance n: prefix `~/.local/share/b4b-coop/prefixes/test<n>` (clone of the real one, ~600 MB; muted, 960x540,
+  low settings, ui cvars in its Engine.ini), config `<prefix>/b4bcoop.ini`, agent port 47112+n-1 (`B4B_AGENT=n-1`),
+  log `b4bcoop-test<n>-<winpid>.log`, window "B4B #n" (`launch/shot.sh n out.png`).
+- Env: `B4B_GAME_PORT` (7787 — deliberately not 7777, so tests can't reach a real session), `B4B_STAGGER`,
+  `B4B_TIMEOUT`, `B4B_FRESH=1` (re-clone), `B4B_BLANK="2 3"` (fresh offline profile for those instances).
+- The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
+  `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
+  name, same `offline.<steamid64>` id on the host.
+- `-Port=` on the command line sets the listen port (UE `FURL` default port); in use → it binds the next one.
+- Known: 5 instances → the host crashes in Fort Hope when the 5th hero spawns (4 slots); 4 is the working maximum.
+
 ## Gotchas
 - UE4SS does not work on this game (obfuscated engine) — don't go back to it.
 - Wine reparents the game to systemd: `/proc/<pid>/mem` is unreadable (yama=1). Use the Windows-side tools.
 - `pkill -f <pattern>` kills your own shell when the pattern appears in the command; kill by PID from `pgrep`.
+- SIGTERM on a Wine game whose wineserver is gone leaves a zombie with ~200 threads parked in ntsync that still holds
+  its UDP port; use SIGKILL. Proton resets `STEAM_COMPAT_DATA_PATH` inside the game (use `WINEPREFIX`/own vars).
 - Shipping build writes no engine log; the agent enables the UE_LOG gate (0x1469BD96D) and captures it.
 - Native Windows: the exe is ASLR'd (Wine keeps the preferred base), so all static addresses go through `VA()` in
   `ue.h`. System d3d/dxgi DLLs load our dwmapi too and import ordinal-only exports, so `proxy.c`/`dwmapi.def` are
