@@ -85,6 +85,17 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   (`slotguard.c`; before that it crashed the host). Results: `docs/investigations/five-players.md` §5,
   `docs/investigations/slot-guard.md`.
 
+## Regression suite
+**Before merging/releasing: run `tools/e2e.py --quick`** (install the DLL under test first; the suite takes
+`launch/gamelock.sh` itself, or pass `--no-lock` if you already hold it). It launches `multi.sh 2` and checks, each
+with a timeout and PASS/FAIL: join, mission follow, client flashlight replicated to the host, a host and a client burn
+card charged once to their own profiles, chat `/players` typed on the client, ready + `endmission 1` with the client's
+SP forwarded, a seamless chapter transition, both profiles diffed after the deferred save (client SP +forwarded
+amount exactly, host only its own), and no public peer on any game socket (`ss` sampler). `--full` adds a vanilla
+`multi.sh 5` (5th refused "Server full.", host survives) and a `teamsize=5` round (5 follow, SP forwarded to all 4
+clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
+screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
+
 ## Gotchas
 - UE4SS does not work on this game (obfuscated engine) — don't go back to it.
 - Wine reparents the game to systemd: `/proc/<pid>/mem` is unreadable (yama=1). Use the Windows-side tools.
