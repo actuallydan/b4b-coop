@@ -102,6 +102,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     uelog_init();
     cards_init();
     flashlight_init();
+    rewards_init();
     cmds_init();
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
     return 0;

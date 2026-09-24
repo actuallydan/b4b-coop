@@ -1,8 +1,10 @@
 // Unattended local testing (launch/multi.sh): get from boot to offline Fort Hope with no clicks.
 //   offline=1 in the agent config: press "Sign in" on the title screen, then answer the Online/Offline popup
 //   with Offline, exactly like a click (PopupUserWidget::Close("Offline") -> SignInTask_OnlineOfflinePopup).
-// Commands: `signin` (one step by hand), `mission [raw] [map] [Easy|Normal|Hard|VeryHard]`.
+// Commands: `signin` (one step by hand), `mission [raw] [map] [Easy|Normal|Hard|VeryHard]`, `ready [vote]`,
+// `endmission [1|0]`, `burncard list|<card row> [table]`, `callp <Class> <Func> [args]`.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "ue.h"
 #include "log.h"
@@ -158,9 +160,143 @@ static void cmd_mission(char *rest, Out *o) {
     out_printf(o, "mission: Dev_JoinPool(%s, %s, Coop) -> JoinRun (new campaign run)\n", map, DIFFS[diff]);
 }
 
+// ---- mission end without playing it ----
+//   endmission [1|0]   host: MissionGameMode::OnMissionEnd(bSuccess, Context) — the BlueprintCallable the game uses
+//                      when the party finishes (success) or wipes (failure); runs the normal reward code
+static void cmd_endmission(char *rest, Out *o) {
+    int ok = !(rest && rest[0] == '0');
+    UObject *w = ue_world();
+    UObject *gm = w ? ue_get_ptr(w, "AuthorityGameMode") : NULL;
+    UClass *mc = ue_find_class("MissionGameMode");
+    if (!gm || !mc || !ue_is_a(gm, mc)) { out_printf(o, "no MissionGameMode (not the host, or not in a mission)\n"); return; }
+    UFunction *f = ue_find_function(U_CLASS(gm), "OnMissionEnd");
+    int32_t ob = f ? param_off(f, "bSuccess") : -1, oc = f ? param_off(f, "Context") : -1;
+    if (ob < 0 || oc < 0) { out_printf(o, "no OnMissionEnd(bSuccess, Context)\n"); return; }
+    static uint8_t p[64];
+    static wchar_t ctx[32];
+    memset(p, 0, sizeof p);
+    p[ob] = (uint8_t)ok;
+    fstring_set((FString *)(p + oc), "b4bcoop", ctx, 32);
+    LOG("testing: OnMissionEnd(%d)", ok);
+    ue_process_event(gm, f, p);
+    out_printf(o, "endmission: OnMissionEnd(%s)\n", ok ? "success" : "failure");
+}
+
+// ready [vote]: host readies every player so nobody has to click: the loadout screen's Ready
+// (GobiPlayerState::ServerRequestPlayerReady(true)) or, with "vote", the post-round screen's
+// (ServerSetReadyForPostRoundVote). Server RPCs called on the server run locally, so this works for remote players too.
+static void cmd_ready(char *rest, Out *o) {
+    int vote = rest && !strncmp(rest, "vote", 4);
+    const char *fname = vote ? "ServerSetReadyForPostRoundVote" : "ServerRequestPlayerReady";
+    UObject *w = ue_world();
+    UObject *gs = w ? ue_get_ptr(w, "GameState") : NULL;
+    UClass *psc = ue_find_class("GobiPlayerState");
+    int32_t off = gs ? ue_prop_offset(gs, "PlayerArray") : -1;
+    if (!psc || off < 0) { out_printf(o, "no gamestate\n"); return; }
+    TArray *pa = (TArray *)((char *)gs + off);
+    int n = 0;
+    for (int i = 0; i < pa->num; i++) {
+        UObject *ps = ((UObject **)pa->data)[i];
+        UFunction *f = ps && ue_is_a(ps, psc) ? ue_find_function(U_CLASS(ps), fname) : NULL;
+        if (!f) continue;
+        uint8_t p[16] = {0};
+        int32_t ob = vote ? -1 : param_off(f, "bReady");
+        if (ob >= 0) p[ob] = 1;
+        ue_process_event(ps, f, p);
+        n++;
+    }
+    LOG("testing: %s on %d player(s)", fname, n);
+    out_printf(o, "%s: %d player(s)\n", fname, n);
+}
+
+// burncard list | burncard <card row> [<card table>]: this instance's player plays a burn card, like the start
+// saferoom's card UI (GobiPlayerController::ServerPlayBurnCard). The handle is the gameplay CARD row (the server looks
+// its name up in GameplayCardManager.CardNameToProductHandles and charges that product when the party leaves the
+// saferoom). `list` prints that map: card row -> product row.
+static UObject *find_named(const char *name) {
+    char nm[160];
+    for (int32_t i = 0, n = ue_num_objects(); i < n; i++) {
+        UObject *x = ue_object_at(i);
+        if (x && U_CLASS(x) && !(U_FLAGS(x) & 0x30) && !strcmp(ue_obj_name(x, nm, sizeof nm), name)) return x;
+    }
+    return NULL;
+}
+
+static void cmd_burncard(char *rest, Out *o) {
+    char *row = rest ? strtok(rest, " ") : NULL, *table = row ? strtok(NULL, " ") : NULL;
+    if (!row) { out_printf(o, "usage: burncard list | burncard <card row> [card table]\n"); return; }
+    UObject *gcm = ue_find_first_of("GameplayCardManager");
+    int32_t moff = gcm ? ue_prop_offset(gcm, "CardNameToProductHandles") : -1;
+    if (moff < 0) { out_printf(o, "no GameplayCardManager\n"); return; }
+    // TMap<FName, FDataTableRowHandle>: sparse array of {FName key, handle {UDataTable*, FName, FString}, hash} (0x30)
+    TArray *elems = (TArray *)((char *)gcm + moff);
+    char a[160], b[160], c[160];
+    if (!strcmp(row, "list")) {
+        for (int i = 0; i < elems->num && i < 200; i++) {
+            char *e = (char *)elems->data + i * 0x30;
+            UObject *dt = *(UObject **)(e + 8);
+            out_printf(o, "  %s -> %s %s\n", ue_name(*(FName *)e, a, sizeof a), dt ? ue_obj_name(dt, b, sizeof b) : "null",
+                       ue_name(*(FName *)(e + 0x10), c, sizeof c));
+        }
+        out_printf(o, "%d entries\n", elems->num);
+        return;
+    }
+    UObject *pc = ue_local_pc(), *dt = find_named(table ? table : "PlayerCards_MASTER_DT");
+    UFunction *f = pc ? ue_find_function(U_CLASS(pc), "ServerPlayBurnCard") : NULL;
+    int32_t off = f ? param_off(f, "ProductRowHandle") : -1;
+    if (!dt || off < 0) { out_printf(o, "no card table (%p) or ServerPlayBurnCard\n", (void *)dt); return; }
+    static uint8_t p[64];
+    static wchar_t wrow[128];
+    memset(p, 0, sizeof p);
+    int k = 0;
+    for (; row[k] && k < 127; k++) wrow[k] = (wchar_t)row[k];
+    wrow[k] = 0;
+    *(UObject **)(p + off) = dt;
+    *(FName *)(p + off + 8) = make_name(wrow);
+    LOG("testing: ServerPlayBurnCard %s (%s)", row, ue_obj_name(dt, a, sizeof a));
+    ue_process_event(pc, f, p);
+    out_printf(o, "burncard: ServerPlayBurnCard(%s %s)\n", a, row);
+}
+
+// callp <Class> <Func> [args...]: call a function on the first live instance, parameters in declaration order
+// (bool/int/byte/enum/float/string; the return value is skipped). Bytes of the parms block are printed back.
+static void cmd_callp(char *rest, Out *o) {
+    char *cls = rest ? strtok(rest, " ") : NULL, *fn = cls ? strtok(NULL, " ") : NULL;
+    if (!fn) { out_printf(o, "usage: callp <Class> <Func> [args...]\n"); return; }
+    UObject *t = ue_find_first_of(cls);
+    UFunction *f = t ? ue_find_function(U_CLASS(t), fn) : NULL;
+    if (!f) { out_printf(o, "no %s\n", t ? "function" : "instance"); return; }
+    static uint8_t p[1024];
+    static wchar_t sbuf[4][256];
+    int ns = 0;
+    memset(p, 0, sizeof p);
+    if (UFN_PARMSSIZE(f) > sizeof p) { out_printf(o, "parms too big\n"); return; }
+    char tn[64];
+    for (FField *prop = US_CHILDPROPS(f); prop; prop = FF_NEXT(prop)) {
+        if (!(FP_FLAGS(prop) & 0x80) || (FP_FLAGS(prop) & 0x400)) continue;   // CPF_Parm, not CPF_ReturnParm
+        char *a = strtok(NULL, " ");
+        if (!a) break;
+        ue_name(*(FName *)FF_CLASS(prop), tn, sizeof tn);
+        uint8_t *d = p + FP_OFFSET(prop);
+        if (!strcmp(tn, "FloatProperty")) *(float *)d = (float)atof(a);
+        else if (!strcmp(tn, "StrProperty") && ns < 4) fstring_set((FString *)d, a, sbuf[ns++], 256);
+        else if (FP_ELSIZE(prop) == 4) *(int32_t *)d = atoi(a);
+        else if (FP_ELSIZE(prop) == 1) *d = (uint8_t)atoi(a);
+        else { out_printf(o, "unsupported param type %s\n", tn); return; }
+    }
+    ue_process_event(t, f, p);
+    out_printf(o, "called %s.%s; parms:", cls, fn);
+    for (int i = 0; i < UFN_PARMSSIZE(f) && i < 32; i++) out_printf(o, " %02x", p[i]);
+    out_printf(o, "\n");
+}
+
 int testing_cmd(const char *verb, char *rest, Out *o) {
     (void)rest;
     if (!strcmp(verb, "signin")) { signin_step(o); return 1; }
     if (!strcmp(verb, "mission")) { cmd_mission(rest, o); return 1; }
+    if (!strcmp(verb, "ready")) { cmd_ready(rest, o); return 1; }
+    if (!strcmp(verb, "burncard")) { cmd_burncard(rest, o); return 1; }
+    if (!strcmp(verb, "callp")) { cmd_callp(rest, o); return 1; }
+    if (!strcmp(verb, "endmission")) { cmd_endmission(rest, o); return 1; }
     return 0;
 }
