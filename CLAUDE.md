@@ -42,14 +42,20 @@ Done (2026-09-23):
 - Automatic client follow into missions verified: early follow fails DTLS handshake → agent rejoins 3s later →
   client claims a slot (~13s end to end).
 
+- **Real two-machine session (2026-09-23)**: friend on a separate PC + Steam account joined via `b4bcoop.ini`
+  (auto-host/auto-join), followed into a mission (~9s), and stayed connected across a chapter transition — the
+  game's own seamless travel (`bSeamless: 1`) handles chapter-to-chapter; our redirect only covers camp → mission.
+
 Known issues:
 - Card draft: host had no profile for remote players, so every deck card failed ownership → client got a 15-card
   draft and actually played with no deck cards. Fix `native/src/cards.c` (host hook on 0x14176DDA0, remote humans
-  own their deck) built+installed, **not yet verified** (needs a fresh client join). Details:
-  `docs/investigations/card-draft.md`. Real fix is part of per-player profile sync.
+  own their deck) installed. In the two-machine session there was no draft, but the override never fired: the
+  host logged `Equipped custom preset 0 to slot 1` for the remote player, i.e. deck presets are resolved by index
+  against the **host's** profile. So a remote player likely gets the host's deck #N, not their own. Unverified
+  from the client's screen. Details: `docs/investigations/card-draft.md`. Real fix: per-player profile sync.
 
 Next:
-1. Internet play with a second machine (Tailscale or UDP 7777 forward); package mod for the friend.
-2. Per-player progression: send each client's offline profile (decks/unlocks/cosmetics) to the host.
-3. Block remaining outbound traffic in offline mode (EOS SDK config polls, Cloudflare/AWS HTTPS).
-4. In-game UX for host/join (no CLI), Steam P2P instead of raw IP, seamless travel between mission chapters.
+0. Confirm what deck a remote player actually has (their deck vs host preset by index).
+1. Per-player progression: send each client's offline profile (decks/unlocks/cosmetics) to the host.
+2. Block remaining outbound traffic in offline mode (EOS SDK config polls, Cloudflare/AWS HTTPS).
+3. In-game UX for host/join (no CLI), Steam P2P instead of raw IP, seamless travel between mission chapters.
