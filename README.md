@@ -25,7 +25,7 @@ Uninstall: delete `dwmapi.dll` and `b4bcoop.ini`.
 ## Status
 Working: hosting, joining Fort Hope, following into missions, taking over bot slots, keeping your own deck.
 Not yet: syncing each player's own progression to the host, in-game join UI, Steam P2P (no port forwarding).
-Supports the current Steam build only; the DLL checks the build and does nothing on a mismatch.
+Tested on Windows and on Linux (Proton). Supports the current Steam build only; the DLL checks the build and does nothing on a mismatch.
 
 ## Development
 See `CLAUDE.md` (layout, setup, progress) and `docs/NOTES.md` (engine findings).
