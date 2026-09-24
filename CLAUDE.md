@@ -83,33 +83,26 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   bootstrapper; `B4B_DIR` for non-default libraries). Build on Windows: Windows zig in `vendor/zig`, Git Bash.
 
 ## Progress
-Done (2026-09-23):
-- Recon, own tooling, SDK dump; agent DLL injected and driving the game.
-- Offline Fort Hope hosted as listen server (PacketRelayNetDriver/UDP 7777, DTLS); second instance joins.
-- Host mission start redirected to server travel; client joins mission, takes over a bot via retail
-  PlayerSlotManager/TakeOverBot path. Verified with two instances on one machine.
-- Automatic client follow into missions verified: early follow fails DTLS handshake → agent rejoins 3s later →
-  client claims a slot (~13s end to end).
-- **Real two-machine session (2026-09-23)**: friend on a separate PC + Steam account joined via `b4bcoop.ini`
-  (auto-host/auto-join) — client on **Windows**, EAC did not block the DLL — followed into a mission (~9s), and stayed connected across a chapter transition — the
-  game's own seamless travel (`bSeamless: 1`) handles chapter-to-chapter; our redirect only covers camp → mission.
+Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md` and closed GitHub issues):
+- Offline Fort Hope as listen server (PacketRelayNetDriver, UDP 7777, DTLS); auto-host/auto-join via `b4bcoop.ini`;
+  camp → mission via server-travel redirect; chapter → chapter via the game's own seamless travel; clients take over
+  bots through the retail PlayerSlotManager path. Real two-machine session with a Windows client on its own account.
+- Remote players keep their own deck (`cards.c` safety net), their rewards (`rewards.c`: supply points etc. forwarded
+  to their own profile, #4) and can play burn cards, charged to their own profile (`burncards.c`, #6).
+- No third-party traffic offline (`netguard.c`, #5): 0 public connections in a 16-min session on Proton.
+- Manual flashlight toggle with replication and sticky mode (`flashlight.c`, #2).
+- 5-player co-op, opt-in `teamsize=5` (`teamsize.c`, #1); joins beyond the slot count are rejected with
+  "Server full." instead of crashing the host (`slotguard.c`, #7).
+- Unattended N-instance local testing (`launch/multi.sh`, `testing.c`, #3).
 
-Known issues:
-- Card draft: host had no profile for remote players, so every deck card failed ownership → client got a 15-card
-  draft and actually played with no deck cards. Fix `native/src/cards.c` (host hook on 0x14176DDA0, remote humans
-  own their deck) installed. Two-machine session: no draft, and the remote player confirmed they had **their own**
-  selected deck, yet the override never fired (host logged `Equipped custom preset 0 to slot 1`). Why ownership
-  passed natively there (vs the same-account local test) is not understood yet; client log pending.
-  Details: `docs/investigations/card-draft.md`.
-
-- Burn cards (#6): a remote player could not play them (the host checks the quantity in a profile it doesn't have),
-  and the saferoom-exit charge was keyed by a hydra id that is empty or shared in our setups. `native/src/burncards.c`
-  fixes both; verified live with two instances (each card charged once, to its own player's profile; kill switch
-  baseline rejects the client's card). Results: `docs/investigations/burn-cards.md` §5a.
+Known issues / open:
+- #8 post-round lineup shows 4 of 5 heroes with teamsize=5 (cosmetic).
+- Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines.
+- All local test copies share one Steam id; two-account behavior is only covered by the one real session.
+- A client that disconnects before the saferoom-exit charge keeps its burn card; skull totem points and duffel-bag
+  rewards use the verified forwarding path but weren't awarded in tests.
 
 Next:
-0. Read the friend's client log: explain why card ownership passed natively for a different account.
-1. Per-player progression: send each client's offline profile (decks/unlocks/cosmetics) to the host.
-2. Outbound traffic: `netguard.c` verified on Proton (no third-party connections in 16 min, full flow works);
-   still needs a native Windows run. docs/investigations/outbound-traffic.md.
-3. In-game UX for host/join (no ini/CLI), Steam P2P instead of raw IP + port forwarding.
+1. Real multi-machine session on the new build (Windows client): netguard, rewards, burn cards, 5 players.
+2. In-game UX for host/join (no ini/CLI); Steam P2P instead of raw IP + port forwarding.
+3. #8 lineup.

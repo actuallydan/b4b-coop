@@ -21,6 +21,11 @@ cat > "$out/b4bcoop.ini" <<'INI'
 ;join=HOST.IP.GOES.HERE
 ; Flashlight toggle key (default L; 0 disables).
 ;flashlight_key=L
+; Host only: allow 5 survivors (default 4).
+;teamsize=5
+; Blocks all third-party network traffic (Epic/WB/Turtle Rock services) while you play. If something won't
+; start or connect, try netguard=off and tell us.
+;netguard=block
 INI
 cat > "$out/README.txt" <<'TXT'
 b4bcoop - private Back 4 Blood co-op (offline mode + listen server). No WB/Turtle Rock servers.

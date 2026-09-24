@@ -25,9 +25,13 @@ host into missions.
 Uninstall: delete the files you copied (`dwmapi.dll`, `b4bcoop.ini`, `Play B4B co-op.cmd`).
 
 ## Status
-Working: hosting, joining Fort Hope, following into missions, taking over bot slots, keeping your own deck.
-Not yet: syncing each player's own progression to the host, in-game join UI, Steam P2P (no port forwarding).
-Tested on Windows and on Linux (Proton). Supports the current Steam build only; the DLL checks the build and does nothing on a mismatch.
+Working: hosting, joining Fort Hope, following into missions and across chapters, taking over bot slots, your own deck,
+**your own rewards** (supply points etc. land in your profile), **burn cards** for everyone, **no third-party network
+traffic** in offline co-op, a **manual flashlight toggle** (L), optional **5-player** sessions (`teamsize=5` on the
+host), and a clean "Server full." instead of a host crash when too many join.
+Not yet: in-game join UI, Steam P2P (no port forwarding).
+Tested on Windows and on Linux (Proton); the newest features were verified on Linux. Supports the current Steam build
+only; the DLL checks the build and does nothing on a mismatch.
 
 ## Development
 See `CLAUDE.md` (layout, setup, progress) and `docs/NOTES.md` (engine findings).
