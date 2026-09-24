@@ -222,6 +222,7 @@ void cmds_tick(float dt) {
     auto_tick(dt);
     flashlight_tick(dt);
     testing_tick(dt);
+    teamsize_tick(dt);
 }
 
 void cmds_run(char *line, Out *o) {
@@ -249,5 +250,5 @@ void cmds_run(char *line, Out *o) {
     } else if (!strcmp(verb, "call") && rest) {
         char *c = strtok(rest, " "), *f = strtok(NULL, " "), *cdo = strtok(NULL, " ");
         if (c && f) cmd_call(c, f, cdo && !strcmp(cdo, "cdo"), o); else out_printf(o, "usage: call <Class> <Func> [cdo]\n");
-    } else if (!testing_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
+    } else if (!testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
 }

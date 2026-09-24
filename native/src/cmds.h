@@ -25,3 +25,6 @@ void flashlight_tick(float dt);
 void cmd_flashlight(const char *arg, Out *o);
 void testing_tick(float dt);                        // testing.c: unattended sign-in / mission start
 int testing_cmd(const char *verb, char *rest, Out *o); // 1 if handled
+int teamsize_init(void);
+int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
+void teamsize_tick(float dt);
