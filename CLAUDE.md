@@ -14,6 +14,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
   - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log`.
   - `cards.c` host card-ownership override for remote players (interim).
+  - `flashlight.c` manual flashlight toggle (`flashlight` command, ini hotkey); docs/investigations/flashlight.md.
   - `cmds.c` commands: `status players host join exec find call peek`.
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
   no EAC), `two.sh` (host+client copies on one machine, labels windows), `winpy.sh`, `probed.sh`, `uninstall.sh`.

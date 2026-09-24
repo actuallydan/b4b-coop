@@ -203,6 +203,7 @@ void cmds_tick(float dt) {
     if (!tuned) { tuned = 1; tune_net_defaults(); }
     travel_tick(dt);
     auto_tick(dt);
+    flashlight_tick(dt);
 }
 
 void cmds_run(char *line, Out *o) {
@@ -213,6 +214,7 @@ void cmds_run(char *line, Out *o) {
     else if (!strcmp(verb, "status")) cmd_status(o);
     else if (!strcmp(verb, "players")) cmd_players(o);
     else if (!strcmp(verb, "host")) cmd_host(o);
+    else if (!strcmp(verb, "flashlight")) cmd_flashlight(rest, o);
     else if (!strcmp(verb, "peek") && rest) {
         char *a = strtok(rest, " "), *l = strtok(NULL, " ");
         unsigned char *p = (unsigned char *)(uintptr_t)strtoull(a, NULL, 16);
