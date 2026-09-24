@@ -175,3 +175,14 @@ on both, and whether A logged `P2P session request`:
 - no `presence: registered Steam callback 1202`: callback registration (accept from the game thread instead);
 - accepted but no `NotifyAcceptedConnection`: A didn't identify its game socket (`steamnet`: `game listen port=0`?),
   or the delivered address family doesn't match the socket.
+
+## Two-account result (2026-09-24, one machine, native Steam + Flatpak Steam)
+Host: account A (Hergmgurk) test copy on port 7777. Client: account B (dreamsofants) launched from Flatpak Steam with
+the no-launch-option install (`X3DAudio1_7.dll` + `b4bcoop.ini` with `join=steam:<A>`, `offline=1`).
+- B's agent loaded via a normal Steam launch as `X3DAudio1_7.dll` (Linux zero-script install verified on a real account).
+- Auto-join over Steam P2P: host `steamnet` showed 1 session request, peer B `active=1 relay=0 policy=allowed`
+  (friends-only allowed a real friend), ~2.6k packets each way in camp; B in the host's Fort Hope.
+- Mission follow over Steam: `mission Easy` → B in Evansburgh_B ~20 s later, P2P session kept.
+- Rewards with distinct identities: host `rewards: forwarding AdjustSupplyPoints (73) to remote player
+  offline.76561198994546085`; B's own (fresh) profile `supplyPoints.acquired` 0 → 73.
+- Not covered: relay path across networks (same machine → direct), Steam "Join Game" click and overlay invites (#10).

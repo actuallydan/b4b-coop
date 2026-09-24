@@ -154,6 +154,9 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
   beyond the slot count are rejected with "Server full." instead of crashing the host (`slotguard.c`, #7).
 - Unattended N-instance local testing (`launch/multi.sh`, `testing.c`, #3).
 
+- Two real Steam accounts on one machine (2026-09-24): Steam P2P join, mission follow and per-player rewards verified
+  (docs/investigations/steam-p2p.md, "Two-account result"); second account runs in Flatpak Steam.
+
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
 - Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines,
