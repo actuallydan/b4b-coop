@@ -2,6 +2,6 @@ vendor/
 .venv/
 __pycache__/
 native/out/
-sdk/sdk.json
+sdk/
 *.log
 dist/

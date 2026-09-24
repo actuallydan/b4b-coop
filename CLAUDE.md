@@ -19,7 +19,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   no EAC), `two.sh` (host+client copies on one machine, labels windows), `winpy.sh`, `probed.sh`, `uninstall.sh`.
 - `tools/` — `b4b.py` agent CLI (`B4B_AGENT=1` = second instance), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
-- `sdk/` — reflection dump of all `/Script` classes (text). `sdk.json` is regenerated, not committed.
+- `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
+  Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
 
 ## Setup
 `tools/fetch-deps.sh` (zig, MinHook, Windows Python, .venv) → `launch/install.sh`.

@@ -30,7 +30,7 @@ retail, so client-hosted listen servers are a shipped code path. Steam, IP, and 
 - Native UFunction pointers are in `sdk/*.txt` (`native=`).
 
 ## SDK
-`sdk/` — reflection dump of all /Script classes (4158 classes, 2969 structs, 1442 enums). Regenerate:
+`sdk/` (local, gitignored) — reflection dump of all /Script classes (4158 classes, 2969 structs, 1442 enums). Regenerate:
 `tools/probe.py 'import sys; sys.path.insert(0, memprobe.__file__.rsplit(chr(92),1)[0]); import sdkdump; sdkdump.run(g, only_script=True)'`
 
 Relevant Gobi classes: GobiGameInstance, MainMenuGameMode, HeroGameMode, MissionGameMode (+Legendary/Challenge),
