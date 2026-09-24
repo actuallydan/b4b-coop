@@ -37,9 +37,12 @@ Done (2026-09-23):
 - Offline Fort Hope hosted as listen server (PacketRelayNetDriver/UDP 7777, DTLS); second instance joins.
 - Host mission start redirected to server travel; client joins mission, takes over a bot via retail
   PlayerSlotManager/TakeOverBot path. Verified with two instances on one machine.
+- Automatic client follow into missions verified: early follow fails DTLS handshake → agent rejoins 3s later →
+  client claims a slot (~13s end to end).
 
-In progress:
-- Automatic client follow into missions (handshake-failure → 3s rejoin). Built, installed, **not yet verified**.
+Known issues:
+- Joining client is asked to "pick remaining cards" one by one for its 15-card deck (pre-launch-era draft flow);
+  host unaffected. Likely the host has no copy of the client's decks. Investigation: `docs/investigations/card-draft.md`.
 
 Next:
 1. Internet play with a second machine (Tailscale or UDP 7777 forward); package mod for the friend.
