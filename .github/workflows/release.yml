@@ -1,5 +1,6 @@
 # Release: on a v* tag, build the player package from this commit with the pinned toolchain (zig 0.15.2, MinHook
-# 8af6b4a; tools/fetch-deps.sh checks both), then publish dist/b4bcoop.zip + SHA256SUMS as a GitHub release with a
+# 8af6b4a; tools/fetch-deps.sh checks both), then publish dist/b4bcoop.zip (+ b4bcoop-legacy.zip, the old dwmapi.dll
+# layout until the no-script Windows launch is verified) + SHA256SUMS as a GitHub release with a
 # signed build provenance attestation. Verify a download: gh attestation verify b4bcoop.zip -R actuallydan/b4b-coop
 name: release
 
@@ -33,12 +34,20 @@ jobs:
       - name: Build the player package (native/build.sh --release)
         run: launch/package.sh
 
-      - name: Check the player build has no dev code
+      - name: Check the player zip layout and that its DLLs have no dev code
         run: |
-          dll=dist/b4bcoop/dwmapi.dll
-          for s in "server: listening" "exec failed" "rewardtest" "steamjoin" "Dev_JoinPool"; do
-            if grep -qaF -- "$s" "$dll"; then echo "::error::player build contains dev string '$s'"; exit 1; fi
+          # the zip mirrors the game folder (docs/investigations/launch.md)
+          want="Gobi/Binaries/Win64/X3DAudio1_7.dll Gobi/Binaries/Win64/b4bcoop.ini b4bcoop-LICENSE.txt b4bcoop-README.txt xinput1_3.dll"
+          got=$(unzip -Z1 dist/b4bcoop.zip | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+          [ "$got" = "$want" ] || { echo "::error::unexpected zip contents: $got"; exit 1; }
+          dlls="dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll dist/b4bcoop/xinput1_3.dll dist/b4bcoop-legacy/dwmapi.dll"
+          for dll in $dlls; do
+            for s in "server: listening" "exec failed" "rewardtest" "steamjoin" "Dev_JoinPool"; do
+              if grep -qaF -- "$s" "$dll"; then echo "::error::player build $dll contains dev string '$s'"; exit 1; fi
+            done
           done
+          grep -qaF "b4bcoop loaded (player build)" dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll
+          grep -qaF "CreateProcessW" dist/b4bcoop/xinput1_3.dll   # the launch redirect, not a plain proxy
           cat dist/SHA256SUMS
 
       - name: Attest build provenance
@@ -46,7 +55,10 @@ jobs:
         with:
           subject-path: |
             dist/b4bcoop.zip
-            dist/b4bcoop/dwmapi.dll
+            dist/b4bcoop-legacy.zip
+            dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll
+            dist/b4bcoop/xinput1_3.dll
+            dist/b4bcoop-legacy/dwmapi.dll
 
       - name: Create the GitHub release
         env:
@@ -65,5 +77,5 @@ jobs:
           $(cat dist/SHA256SUMS)
           \`\`\`
           EOF
-          gh release create "$TAG" dist/b4bcoop.zip dist/SHA256SUMS --repo "$REPO" --verify-tag \
+          gh release create "$TAG" dist/b4bcoop.zip dist/b4bcoop-legacy.zip dist/SHA256SUMS --repo "$REPO" --verify-tag \
             --title "b4b-coop $TAG" --notes-file notes.md

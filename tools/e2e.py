@@ -502,8 +502,9 @@ def main():
     if not a.no_lock:
         log("waiting for the game lock (launch/gamelock.sh acquire e2e)")
         subprocess.run([lock, "acquire", "e2e"], check=True)
-    dll = os.path.join(BIN, "dwmapi.dll")
-    log(f"output {OUT}; installed DLL {time.ctime(os.path.getmtime(dll)) if os.path.exists(dll) else 'MISSING'}")
+    dlls = [os.path.join(BIN, n) for n in ("X3DAudio1_7.dll", "dwmapi.dll") if os.path.exists(os.path.join(BIN, n))]
+    log(f"output {OUT}; installed DLL " +
+        (", ".join(f"{os.path.basename(d)} {time.ctime(os.path.getmtime(d))}" for d in dlls) or "MISSING"))
     try:
         duo(a)
         if a.full:

@@ -8,11 +8,15 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 `native/` or `tools/`.
 
 ## Layout
-- `native/` — agent DLL (C, `dwmapi.dll` proxy, zig cc + MinHook). `native/build.sh` → `native/out/dwmapi.dll` (dev
-  build); `native/build.sh --release` → `native/out/release/dwmapi.dll` (player build, defines `B4B_RELEASE`: no TCP
-  command server, no dev/test commands, no `offline=1` automation; what `launch/package.sh` ships). Dev-only code is
-  under `#ifndef B4B_RELEASE` (whole `testing.c`, the command server, every CLI-only `*_cmd` handler). Player builds
-  are verified from their log (`b4bcoop loaded (player build)`), not with `tools/b4b.py`.
+- `native/` — agent DLL (C, zig cc + MinHook), built as a proxy of `X3DAudio1_7.dll` (loads from the game dir on Proton
+  and Windows with no launch options) and of `dwmapi.dll` (legacy). Proxies are generated into `native/proxy/` by
+  `tools/gen-proxy.py`. `native/launcher/redirect.c` → `xinput1_3.dll` for the game root: on Windows the Steam
+  launcher stub loads it and it starts the game instead of the EAC bootstrapper. docs/investigations/launch.md.
+  `native/build.sh` → `native/out/` (dev build); `native/build.sh --release` → `native/out/release/` (player build,
+  defines `B4B_RELEASE`: no TCP command server, no dev/test commands, no `offline=1` automation; what
+  `launch/package.sh` ships); both produce all three DLLs. Dev-only code is under `#ifndef B4B_RELEASE` (whole
+  `testing.c`, the command server, every CLI-only `*_cmd` handler). Player builds are verified from their log
+  (`b4bcoop loaded (player build) as X3DAudio1_7.dll`), not with `tools/b4b.py`.
   - `ue.c/h` reflection layer for B4B's modified UE 4.25 (XOR'd GUObjectArray, shuffled FField, UObject +8).
   - `main.c` Tick hook; dev builds: game-thread command queue + TCP command server (127.0.0.1:47112, first free of
     +0..7; `B4B_COOP_PORT` pins it).
@@ -69,11 +73,12 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     flashlight_*`, dev `offline allow_self`).
     `coop_join(target)` = join entry point (`ip[:port]`, `steam:<id64>`; any thread); `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`);
     `coop_host`, `coop_leave`.
-- `launch/` — `install.sh [--release]` (build+copy DLL, dev by default; rm before cp — never overwrite a mapped DLL
-  in place), `package.sh` (player zip + `dist/SHA256SUMS`, reproducible), `run.sh` (Proton,
+- `launch/` — `install.sh [--release] [--legacy]` (build+copy DLLs, dev by default, `--legacy` = dwmapi.dll; rm before
+  cp — never overwrite a mapped DLL in place), `package.sh` (player zip mirroring the game folder + legacy zip +
+  `dist/SHA256SUMS`, reproducible), `run.sh` (Proton,
   no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test
   instances, below), `two.sh` (old: two copies on the real prefix), `winpy.sh`, `probed.sh`, `uninstall.sh`.
-- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
+- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
 - `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
@@ -82,7 +87,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 `tools/fetch-deps.sh` (zig 0.15.2 sha256-checked, MinHook pinned to commit 8af6b4a, Windows Python, .venv; `--build`
 = only zig + MinHook) → `launch/install.sh`. CI: `.github/workflows/ci.yml` builds dev + player on every push/PR;
 `release.yml` builds the zip on a `v*` tag and publishes it with `SHA256SUMS` and a build provenance attestation.
-Steam launch options: `WINEDLLOVERRIDES="dwmapi=n,b" %command%`. Game build pinned: Steam buildid 14216215;
+No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the legacy `dwmapi.dll` needs
+`WINEDLLOVERRIDES="dwmapi=n,b" %command%`). Steam's only public launch entry runs the root `Back4Blood.exe` stub →
+`start_protected_game.exe` (EAC) → `Gobi/Binaries/Win64/Back4Blood.exe Gobi -SaveToUserDir`. Game build pinned: Steam buildid 14216215;
 the agent verifies byte signatures and refuses to hook on mismatch.
 
 ## How to run N local instances (unattended)
@@ -128,8 +135,10 @@ screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
   its UDP port; use SIGKILL. Proton resets `STEAM_COMPAT_DATA_PATH` inside the game (use `WINEPREFIX`/own vars).
 - Shipping build writes no engine log; the agent enables the UE_LOG gate (0x1469BD96D) and captures it.
 - Native Windows: the exe is ASLR'd (Wine keeps the preferred base), so all static addresses go through `VA()` in
-  `ue.h`. System d3d/dxgi DLLs load our dwmapi too and import ordinal-only exports, so `proxy.c`/`dwmapi.def` are
-  generated by `tools/gen-proxy.py` to re-export every real export. Launch with `launch/run.cmd` (no EAC
+  `ue.h`. System d3d/dxgi DLLs load our dwmapi too and import ordinal-only exports, so every proxy
+  (`native/proxy/*.c/.def`) is generated by `tools/gen-proxy.py` to re-export every real export. Both agent names
+  may be present: one agent per process (named mutex; a dwmapi.dll from the same dir wins). A plain Steam Play is
+  meant to work via the root `xinput1_3.dll` (unverified on Windows); `launch/run.cmd` is the fallback (no EAC
   bootstrapper; `B4B_DIR` for non-default libraries). Build on Windows: Windows zig in `vendor/zig`, Git Bash.
 
 ## Progress
@@ -147,7 +156,9 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
-- Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines.
+- Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines,
+  and the no-script launch (root `xinput1_3.dll` redirect + `X3DAudio1_7.dll`; test script in
+  docs/investigations/launch.md §6). On Proton the `X3DAudio1_7.dll` agent is verified with a plain Steam launch.
 - All local test copies share one Steam id; two-account behavior is only covered by the one real session.
 - Steam Join Game/invites (`presence.c`): rich presence, launch-command-line join and simulated join requests verified
   on one account; the real callback, the Join Game menu and Steam-initiated launch need the two-account plan in

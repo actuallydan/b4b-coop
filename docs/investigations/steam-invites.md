@@ -97,7 +97,9 @@ Not testable on one account: a real `GameRichPresenceJoinRequested_t` delivery (
 
 ## Two-account test plan
 Host A and joiner B, two Steam accounts that are friends, both owning B4B, both with this build installed. Linux:
-launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`. Windows: `Play B4B co-op.cmd` (see step 6). Host ini: `host=1`, plus
+launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%` (no longer needed with the `X3DAudio1_7.dll` agent,
+docs/investigations/launch.md). Windows: `Play B4B co-op.cmd` (see step 6; the root `xinput1_3.dll` redirect should
+make a Steam-initiated launch load the agent too, unverified). Host ini: `host=1`, plus
 `presence_addr=<A's reachable IP>` unless both are on one LAN/VPN (until P2P lands). Joiner ini: anything (a Steam
 join overrides it). Evidence: `b4bcoop-<pid>.log` lines prefixed `presence:` / `auto:` / `testing:`, and
 `tools/b4b.py presence`.

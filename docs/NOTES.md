@@ -10,7 +10,9 @@ retail, so client-hosted listen servers are a shipped code path. Steam, IP, and 
 
 ## Launching
 - `launch/run.sh` runs `Gobi/Binaries/Win64/Back4Blood.exe` directly under Proton (no EAC bootstrapper).
-  Or Steam launch options: `WINEDLLOVERRIDES="dwmapi=n,b" %command%`.
+  Or a plain Steam launch: the agent is `X3DAudio1_7.dll` (Wine's builtin is prefer-native, so the copy in the game
+  dir loads without overrides). Legacy `dwmapi.dll`: launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`.
+  Launch chain, EAC and the Windows redirect: docs/investigations/launch.md.
 - A game started by Wine is reparented to systemd, so `/proc/<pid>/mem` is unreadable under yama ptrace_scope=1.
   Use `launch/probed.sh` (Windows Python in the same prefix, ReadProcessMemory) + `tools/probe.py '<code>'`.
 
@@ -38,7 +40,7 @@ Matchmaking, MatchmakingSetHostTaskData, GobiSession*, DedicatedServerManager, C
 PlayerProfileData (OfflineData), EOnlineMode {Offline, Online}, *SeamlessTravelData.
 
 ## Agent DLL (native/) — status 2026-09-23
-dwmapi.dll proxy built with zig cc + MinHook. Dev builds (`native/build.sh`) take commands over 127.0.0.1:47112(+n per
+Built with zig cc + MinHook as an X3DAudio1_7.dll proxy (and a legacy dwmapi.dll proxy). Dev builds (`native/build.sh`) take commands over 127.0.0.1:47112(+n per
 instance) via `tools/b4b.py`; player builds (`native/build.sh --release`, `B4B_RELEASE`) have no command server:
 `status | players | host | join <ip> | exec <console cmd> | find <substr> | call <Class> <Func> [cdo] | peek <hex> [n]`.
 Hooks: UGameEngine::Tick (game-thread command queue), UEngine::SetClientTravel 0x144130880, FMsg::Logf_Internal
