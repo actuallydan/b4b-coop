@@ -16,6 +16,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log` (`b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
   - `cards.c` host card-ownership override for remote players (interim).
   - `flashlight.c` manual flashlight toggle (`flashlight` command, ini hotkey); docs/investigations/flashlight.md.
+  - `rewards.c` host forwards remote players' dropped rewards (SP, STP, unlocks, consumables) to their clients via the
+    game's unused ClientExecute*Command RPCs. Details: `docs/investigations/client-rewards.md`.
   - `testing.c` unattended testing: auto sign-in Offline (`offline=1`), `signin`, `mission [raw] [map] [difficulty]`.
   - `cmds.c` commands: `status players host join exec find call peek`; config = `b4bcoop.ini` next to the DLL or
     `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
