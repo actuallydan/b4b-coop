@@ -28,6 +28,8 @@ static void logf_detour(const char *file, int line, const FName *cat, uint8_t ve
     ue_name(*cat, cname, sizeof cname);
     LOG("UE %s %s: %s", cname, VERB[(verb & 0xF) < 8 ? verb & 0xF : 0], buf);
     if ((verb & 0xF) == 2 /*Error*/ && !strcmp(cname, "LogDTLSHandler")) travel_on_handshake_failed();
+    if (!strcmp(cname, "LogNet") && strstr(buf, "NetworkFailure: PendingConnectionFailure") && strstr(buf, "Server full."))
+        cmds_auto_join_backoff(120);
     orig_logf(file, line, cat, verb, L"%s", wbuf);
 }
 

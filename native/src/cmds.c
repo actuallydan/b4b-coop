@@ -181,6 +181,14 @@ static void load_config(void) {
     LOG("config: %s host=%d join=%s offline=%d", path, auto_host, auto_join[0] ? auto_join : "-", g_auto_offline);
 }
 
+// Client: the host said "Server full." (no free survivor slot, slotguard.c): retry less often, since each attempt
+// reloads the camp and shows the game's "session is full" popup.
+void cmds_auto_join_backoff(double seconds) {
+    if (!auto_join[0] || auto_next >= auto_clock + seconds - 1) return;
+    auto_next = auto_clock + seconds;
+    LOG("auto: host is full, next join attempt in %.0fs", seconds);
+}
+
 static void auto_tick(float dt) {
     auto_clock += dt;
     if ((!cmds_auto_host() && !auto_join[0]) || auto_clock < auto_next) return;
@@ -223,6 +231,7 @@ void cmds_tick(float dt) {
     flashlight_tick(dt);
     testing_tick(dt);
     teamsize_tick(dt);
+    slotguard_tick(dt);
 }
 
 void cmds_run(char *line, Out *o) {
@@ -250,5 +259,5 @@ void cmds_run(char *line, Out *o) {
     } else if (!strcmp(verb, "call") && rest) {
         char *c = strtok(rest, " "), *f = strtok(NULL, " "), *cdo = strtok(NULL, " ");
         if (c && f) cmd_call(c, f, cdo && !strcmp(cdo, "cdo"), o); else out_printf(o, "usage: call <Class> <Func> [cdo]\n");
-    } else if (!testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
+    } else if (!testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o) && !slotguard_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
 }
