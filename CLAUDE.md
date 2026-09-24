@@ -41,7 +41,6 @@ Done (2026-09-23):
   PlayerSlotManager/TakeOverBot path. Verified with two instances on one machine.
 - Automatic client follow into missions verified: early follow fails DTLS handshake → agent rejoins 3s later →
   client claims a slot (~13s end to end).
-
 - **Real two-machine session (2026-09-23)**: friend on a separate PC + Steam account joined via `b4bcoop.ini`
   (auto-host/auto-join), followed into a mission (~9s), and stayed connected across a chapter transition — the
   game's own seamless travel (`bSeamless: 1`) handles chapter-to-chapter; our redirect only covers camp → mission.
@@ -58,4 +57,4 @@ Next:
 0. Confirm what deck a remote player actually has (their deck vs host preset by index).
 1. Per-player progression: send each client's offline profile (decks/unlocks/cosmetics) to the host.
 2. Block remaining outbound traffic in offline mode (EOS SDK config polls, Cloudflare/AWS HTTPS).
-3. In-game UX for host/join (no CLI), Steam P2P instead of raw IP, seamless travel between mission chapters.
+3. In-game UX for host/join (no ini/CLI), Steam P2P instead of raw IP + port forwarding.
