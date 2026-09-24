@@ -259,7 +259,10 @@ static int decide_addr(SOCKET s, const struct sockaddr *sa, int len, void *ra) {
         if (!why || strcmp(why, "loopback")) note("udp", ip, via, why ? why : "udp-unfiltered", V_ALLOW);
         return 1;
     }
-    snprintf(host, sizeof host, k.fam == AF_INET6 ? "[%s]:%u" : "%s:%u", ip, port);
+    // Local/private destinations are one row per IP: libcurl (EOS SDK, UE HTTP) builds its wakeup socketpair from
+    // a loopback TCP connect to a fresh ephemeral port, so per-port rows would fill the table and the log.
+    if (why) snprintf(host, sizeof host, "%s", ip);
+    else snprintf(host, sizeof host, k.fam == AF_INET6 ? "[%s]:%u" : "%s:%u", ip, port);
     if (!why) {
         EnterCriticalSection(&cs);
         for (int i = 0; i < nips && !why; i++) if (!memcmp(&ok_ips[i], &k, sizeof k)) why = "resolved-allowed";

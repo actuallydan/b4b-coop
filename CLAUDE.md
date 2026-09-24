@@ -47,7 +47,8 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   low settings, ui cvars in its Engine.ini), config `<prefix>/b4bcoop.ini`, agent port 47112+n-1 (`B4B_AGENT=n-1`),
   log `b4bcoop-test<n>-<winpid>.log`, window "B4B #n" (`launch/shot.sh n out.png`).
 - Env: `B4B_GAME_PORT` (7787 — deliberately not 7777, so tests can't reach a real session), `B4B_STAGGER`,
-  `B4B_TIMEOUT`, `B4B_FRESH=1` (re-clone), `B4B_BLANK="2 3"` (fresh offline profile for those instances).
+  `B4B_TIMEOUT`, `B4B_FRESH=1` (re-clone), `B4B_BLANK="2 3"` (fresh offline profile for those instances),
+  `B4B_INI_EXTRA="netguard=off;netguard_eos=0"` (extra `b4bcoop.ini` lines for every instance).
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.
@@ -95,5 +96,6 @@ Known issues:
 Next:
 0. Read the friend's client log: explain why card ownership passed natively for a different account.
 1. Per-player progression: send each client's offline profile (decks/unlocks/cosmetics) to the host.
-2. Block remaining outbound traffic in offline mode (EOS SDK config polls, Cloudflare/AWS HTTPS).
+2. Outbound traffic: `netguard.c` verified on Proton (no third-party connections in 16 min, full flow works);
+   still needs a native Windows run. docs/investigations/outbound-traffic.md.
 3. In-game UX for host/join (no ini/CLI), Steam P2P instead of raw IP + port forwarding.

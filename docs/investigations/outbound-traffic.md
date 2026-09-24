@@ -3,8 +3,10 @@
 Goal: an offline co-op session contacts no third-party services. Allowed: game UDP between peers (7777, any IP),
 the local Steam client (steam_api IPC, auth tickets), loopback (agent port 127.0.0.1:47112+).
 
-Status 2026-09-23: static research + `native/src/netguard.c` implemented and tested in an isolated Wine prefix
-with a harness (not in the game). Live verification pending (plan at the end).
+Status 2026-09-24: **verified live on Linux/Proton** (two local copies, results in "Live verification" below).
+With the default ini (`netguard=block`) an offline co-op session opened no connection to any public address in
+16 minutes, the full flow (sign-in, host/join, mission follow, mission end, post-round) still worked, and EOS never
+polled its config. Not yet run on native Windows.
 
 ## Inventory
 
@@ -97,10 +99,8 @@ calling module, first-seen time and reason. `b4b.py netguard allow <host>` allow
 
 ## Risks
 - **Startup with EOS disabled and DNS failing** is equivalent to a machine without internet. The offline flow
-  should not care (offline sign-in skips EOS and Hydra tasks), but this is not yet verified in-game. Things to
-  watch: the online/offline prompt, sign-in time, Fort Hope, host/join, mission follow, `Obtained steam
-  authticket`. If something hangs, use `netguard=log` to see what would be blocked, and `netguard_eos=0` to
-  isolate EOS.
+  doesn't care (offline sign-in skips EOS and Hydra tasks): verified in-game on Proton, see below. If something
+  hangs, use `netguard=log` to see what would be blocked, and `netguard_eos=0` to isolate EOS.
 - **Joining by hostname** works through `join` / `join=` in the ini (`cmd_join` allows the name). Other names
   need `netguard_allow`.
 - **Native Windows**: WinHTTP (and NGX, if present) may resolve names internally without going through the hooked
@@ -108,11 +108,14 @@ calling module, first-seen time and reason. `b4b.py netguard allow <host>` allow
   WinHTTP may have its TCP connect refused, since its IPs were never seen; allowlist the IP in that case. Steam
   in-process modules are trusted by file name (`steam*`, `lsteamclient`, `gameoverlayrenderer*`, `tier0_s*`,
   `vstdlib_s*`).
-- **Hooks installed under loader lock** (MinHook freezes threads). This was tested via `LoadLibrary` in the
-  harness, not yet on the real startup path.
+- **Hooks installed under loader lock** (MinHook freezes threads). Works on the real startup path under Proton
+  (every run below); not yet tried on native Windows.
 - **UDP isn't filtered.** EOS P2P, Vivox media and beacon pings all need addresses from APIs that are now
   blocked, so they can't start. A hardcoded public IP over UDP would still get through (none found).
 - **Other processes** are out of scope: no CrashReportClient ships, and the EAC bootstrapper isn't used.
+- **Native Linux code in the process** (Proton): `lsteamclient` loads Steam's Linux `steamclient.so` into the game,
+  and its sockets never pass through ws2_32, so netguard can't see them. That is the Steam client (allowed), but
+  it means the `ss` check is the only evidence for that part.
 
 ## Live verification plan
 1. `launch/install.sh`, default ini (block). Start the host and check `grep netguard: b4bcoop-<pid>.log`. Expect
@@ -129,3 +132,84 @@ calling module, first-seen time and reason. `b4b.py netguard allow <host>` allow
 5. Run `b4b.py netguard` on the host and the client and paste the tables into this doc.
 6. Windows client: `netstat -ano | findstr <pid>` plus the `netguard` output. Confirm Steam auth still works and
    the join succeeds.
+
+## Live verification (2026-09-24, Linux/Proton Experimental)
+
+Setup: `launch/multi.sh 2` (host test1 + client test2 on cloned test prefixes, game port 7787, one Steam account).
+The ini variant was set per run with the new `B4B_INI_EXTRA` (multi.sh rewrites each instance's `b4bcoop.ini`).
+No sudo, so no tcpdump: a sampler ran `ss -tunapH` every 3 s and kept every socket owned by a PID whose environment
+has `B4B_PREFIX=…/prefixes/test*` (the game processes and their wineservers).
+
+| Run | Ini | Length | Remote endpoints seen (besides loopback and the local UDP game sockets) | EOS config polls |
+|---|---|---|---|---|
+| Baseline | `netguard=off` | 6.5 min | TCP **104.18.124.108:443**, **104.18.125.108:443** (EOS: config, Stomp), **18.238.4.121:443** (CloudFront, the gobi-config fetch; this time it resolved to a different edge than 3.167.69.x), all ESTAB for the whole session | 2 per instance (at 15 s and ~6 min) |
+| Log only | `netguard=log`, `netguard_eos=0` | 3 min | 104.18.124.108, 104.18.125.108, 3.167.69.86, 3.167.69.93 (all :443) | 1 per instance |
+| **Block (default)** | none (defaults) | **16 min** (00:14–00:30, 310 samples) | **none** | **0** (no `Updating Product SDK Config`, no Stomp) |
+| Block, EOS left on | `netguard_eos=0` | 3 min | none | 0 (`SDK Config Platform Update Request Failed, EOS_NoConnection`, retries every 5–15 s) |
+| Block, after the fix below | none | 4 min | none | 0 |
+
+The baseline and log-only rows show that the measurement catches the offenders. In the log-only run netguard
+named all of them (`WOULD-BLOCK dns api.epicgames.dev via EOSSDK-Win64-Shipping.dll`, `tcp 104.18.124.108:443`,
+`dns gobi-config.atuin.4vngame.net via Back4Blood.exe`, `tcp 3.167.69.86:443`). The Stomp websocket needs no
+lookup of its own; it reuses the api.epicgames.dev addresses.
+
+Everything that was seen in the 16-minute block run:
+- TCP `127.0.0.1:47112`/`47113` listeners (agent) and the short connections from `tools/b4b.py`.
+- TCP `127.0.0.1:<eph> → 127.0.0.1:57343` from each game: the in-process Linux `steamclient.so` talking to the
+  Steam client (no wineserver fd, so this is native code).
+- UDP `0.0.0.0:7787` (host listen) and one unconnected client UDP socket (the game connection to 127.0.0.1:7787).
+- Once: 26 unconnected UDP sockets (`0.0.0.0:<random>`) on the host, created together 17 s after start and kept
+  open. They have no wineserver fd, so they come from native code, which on Proton means `steamclient.so` (most
+  likely the Steam Datagram Relay ping sockets). They didn't appear in the other four runs (including the
+  second default-block run) or on the client. `ss` can't show where unconnected UDP sends, so the destination is
+  not verified. This is Steam traffic, which is allowed by design and out of netguard's reach.
+
+Startup and the full flow in block mode (both instances, every block run):
+- Log: `netguard: armed, mode=block, 10 hooks, eos=disable` (GetAddrInfoExA is a stub in Wine, as expected),
+  `EOS_Platform_Create hooked`, `EOS platform … created; SetNetworkStatus(Disabled) = 0` within 1 s of start,
+  `BLOCK dns gobi-config.atuin.4vngame.net via Back4Blood.exe`. The game falls back to the bundled
+  `BuildEnvConfig.json` (`Finished fetching build environment configuration - success: 1`), 5 s later, the same
+  delay as in the baseline.
+- Unattended offline sign-in reached Fort Hope, `STEAM: Obtained steam authticket` on both, and the client joined.
+- `mission Easy`: the client followed into Evansburgh and claimed a slot; `ready`, `endmission 1`: host
+  `rewards: forwarding AdjustSupplyPoints (73)`, client `[CLIENT RPC] adjusting SP by 73`, post-round screen on
+  both (client screenshot: COMPLETED). The same again (53 SP) with the final build.
+- Nothing else was ever looked up: no beacon, Hydra, Vivox, analytics or Muxy names. Offline sign-in skips those
+  tasks, so gobi-config (and api.epicgames.dev with `netguard_eos=0`) are the only lookups netguard has to refuse.
+
+`b4b.py netguard` after the 16-minute run (host, then client):
+```
+netguard: mode=block hooks=11 eos=network disabled (0) blocked_calls=1
+allowlist: -
+runtime: -
+blocked (1):
+  dns  gobi-config.atuin.4vngame.net                    x1     via Back4Blood.exe               00:14:25  not-allowlisted
+allowed (0):
+
+netguard: mode=block hooks=11 eos=network disabled (0) blocked_calls=1
+allowlist: -
+runtime: -
+blocked (1):
+  dns  gobi-config.atuin.4vngame.net                    x1     via Back4Blood.exe               00:15:01  not-allowlisted
+allowed (1):
+  dns  127.0.0.1                                        x3     via Back4Blood.exe               00:16:42  ip-literal
+```
+(hooks=11: the 10 ws2_32/winhttp hooks + `EOS_Platform_Create`. The client's `127.0.0.1` is the `join` target.)
+
+Host with `netguard_eos=0` (DNS is the only barrier), 3 min, final build:
+```
+netguard: mode=block hooks=10 eos=loaded (netguard_eos=0) (-1) blocked_calls=25
+blocked (2):
+  dns  gobi-config.atuin.4vngame.net                    x1     via Back4Blood.exe               00:41:39  not-allowlisted
+  dns  api.epicgames.dev                                x24    via EOSSDK-Win64-Shipping.dll    00:41:45  not-allowlisted
+allowed (1):
+  tcp  127.0.0.1                                        x24    via EOSSDK-Win64-Shipping.dll    00:41:45  loopback
+```
+
+Fix made during the test: with `netguard_eos=0`, EOS's libcurl makes a loopback TCP connect (its socketpair) on
+every retry, to a new ephemeral port each time. Each one became its own table row and log line (20 in 3 minutes),
+so a long session would fill the 512-row table. Loopback/private TCP destinations are now recorded per IP,
+without the port (the `x24` row above). The default mode never produced these, because EOS stays idle there.
+
+Still open: native Windows (the `WinHttpConnect` gate, NGX, `steamclient64` trust by module name), and a
+two-machine session over a real LAN/WAN address.
