@@ -34,12 +34,8 @@ existing UDP join for `ip[:port]` and logs `steam: transport not available (stea
 the P2P version starts a travel for `steam:` (any `open …` goes through `SetClientTravel`, which `travel.c` counts),
 the target list order makes it the first choice, and the address becomes the fallback on the next attempt. No other
 change is needed after the merge.
-
-After the P2P merge (`steamnet.c`, docs/investigations/steam-p2p.md): a host listens on Steam P2P **or** IP
-(`transport=steam|ip`), never both, so `connect` now carries only what the host listens on:
-`+b4bcoop_join steam:<id64>` (plus `:<port>` when the listen port is not 7777) for a Steam host,
-`+b4bcoop_join addr:<ip:port>` for an IP host. `steam:<id64>:<port>` is accepted by the parser. A `steam:` target
-without Steam P2P on the joiner starts no travel, so a list still falls through to the next alternative at once.
+Landed in `steamnet.c` (docs/investigations/steam-p2p.md): `steam:` targets now start a travel over Steam P2P, and
+`connect` carries `steam:` only while Steam P2P is on (`steam_p2p=0` drops it); the host takes both at once.
 
 ## Decisions
 

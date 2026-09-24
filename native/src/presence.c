@@ -1,7 +1,6 @@
 // presence: join friends through Steam's own UI (docs/investigations/steam-invites.md).
 //   advertise   while we host (listen server: offline Fort Hope or a mission), Steam rich presence `connect` =
-//               "+b4bcoop_join steam:<our id64>" (Steam P2P host, steamnet.c) or "+b4bcoop_join addr:<ip:port>"
-//               (IP host) -> friends get "Join Game"; cleared when we stop.
+//               "+b4bcoop_join steam:<our id64> addr:<ip:port>" -> friends get "Join Game"; cleared when we stop.
 //   join        GameRichPresenceJoinRequested_t (337, friend clicked Join Game / accepted an invite while running)
 //               or the same string on the command line (Steam started the game for it) -> session join target
 //               (cmds_set_session_join: overrides host=/join= from the ini), auto sign-in Offline (testing.c),
@@ -91,6 +90,23 @@ static int cb_size(void *self) { (void)self; return 8 + CONNECT_MAX; }
 static void *cb_vtbl[3] = { (void *)cb_run, (void *)cb_run, (void *)cb_size };
 static CallbackBase join_cb = { cb_vtbl, 0, 0 };
 
+// Other modules' Steam callbacks (steamnet.c: P2P session requests), registered like ours: on the pump thread.
+#define MAX_EXTRA_CB 4
+static struct { void *cb; int id; } extra_cb[MAX_EXTRA_CB];
+static volatile LONG n_extra, n_extra_done;
+void presence_add_callback(void *cb, int id) {   // before presence_init / Steam binding
+    if (n_extra >= MAX_EXTRA_CB) return;
+    extra_cb[n_extra].cb = cb; extra_cb[n_extra].id = id;
+    InterlockedIncrement(&n_extra);
+}
+static void register_extra(void) {
+    while (n_extra_done < n_extra) {
+        S.RegisterCallback(extra_cb[n_extra_done].cb, extra_cb[n_extra_done].id);
+        LOG("presence: registered Steam callback %d for another module", extra_cb[n_extra_done].id);
+        n_extra_done++;
+    }
+}
+
 static void (*orig_run_callbacks)(void);
 static void run_callbacks_detour(void) {
     InterlockedIncrement(&pump_calls);
@@ -98,6 +114,7 @@ static void run_callbacks_detour(void) {
         pump_thread = GetCurrentThreadId();
         S.RegisterCallback(&join_cb, CB_JOIN_REQUEST);
     }
+    if (n_extra_done < n_extra && GetCurrentThreadId() == pump_thread) register_extra();
     orig_run_callbacks();
 }
 
@@ -115,15 +132,10 @@ static int valid_host(const char *s) {   // host[:port], letters/digits/.-, noth
     }
     return !colon || (colon[1] && strchr(colon + 1, ':') == NULL && colon > s);
 }
-static int valid_id64(const char *s) {   // <id64>[:port] (the port is the host's P2P channel when not 7777)
-    size_t n = strcspn(s, ":");
+static int valid_id64(const char *s) {
+    size_t n = strlen(s);
     if (n < 5 || n > 20) return 0;
-    for (size_t i = 0; i < n; i++) if (s[i] < '0' || s[i] > '9') return 0;
-    if (!s[n]) return 1;
-    const char *p = s + n + 1;
-    size_t m = strlen(p);
-    if (m < 1 || m > 5) return 0;
-    for (; *p; p++) if (*p < '0' || *p > '9') return 0;
+    for (; *s; s++) if (*s < '0' || *s > '9') return 0;
     return 1;
 }
 
@@ -271,6 +283,7 @@ static int bind_steam(void) {
         LOG("presence: SteamAPI_RunCallbacks hook failed, registering from the game thread");
         cb_registered = 1;
         S.RegisterCallback(&join_cb, CB_JOIN_REQUEST);
+        register_extra();
     }
     if (!launch_connect[0] && sapps) {   // steam://run/924970//+b4bcoop_join... style launches
         char buf[1024] = "";
@@ -314,13 +327,11 @@ static void advertise_tick(void) {
     }
     if (!hosting) return;   // mid-travel: keep what is set
     char connect[CONNECT_MAX], status[128], group[40], size[8], pkg[256];
-    // Advertise what we listen on (steamnet.c): a Steam P2P host is not reachable over IP, an IP host not over Steam.
-    int port = 0, on_steam = steamnet_hosting_steam(&port);
-    const char *addr = on_steam ? "" : fallback_addr();
-    char steam[48] = "";
-    if (on_steam && port && port != 7777) snprintf(steam, sizeof steam, " steam:%llu:%d", (unsigned long long)my_id, port);
-    else if (on_steam) snprintf(steam, sizeof steam, " steam:%llu", (unsigned long long)my_id);
-    snprintf(connect, sizeof connect, JOIN_TOKEN "%s%s%s", steam, addr[0] ? " addr:" : "", addr);
+    const char *addr = fallback_addr();
+    const char *steam = steamnet_p2p_on() ? " steam:" : "";   // steamnet.c: we accept Steam P2P next to UDP
+    char id[24] = "";
+    if (steam[0]) snprintf(id, sizeof id, "%llu", (unsigned long long)my_id);
+    snprintf(connect, sizeof connect, JOIN_TOKEN "%s%s%s%s", steam, id, addr[0] ? " addr:" : "", addr);
     int players = ue_num_clients(w) + 1;
     ue_world_package(w, pkg, sizeof pkg);
     snprintf(status, sizeof status, "b4bcoop: hosting %s (%d player%s)", strstr(pkg, "FortHope") ? "Fort Hope" : "a mission",

@@ -82,21 +82,19 @@ static void cmd_host(Out *o) {
     char pkg[512], cmd[600];
     ue_world_package(w, pkg, sizeof pkg);
     snprintf(cmd, sizeof cmd, "open %s?listen", pkg);
-    int steam = steamnet_prepare_host();   // transport= ini key; falls back to IP when Steam P2P is unavailable
     game_exec(cmd);
-    out_printf(o, "hosting (%s): %s\n", steam ? "steam" : "ip", cmd);
+    out_printf(o, "hosting: %s\n", cmd);
 }
 
-// target: "ip[:port]" (default 7777) or "steam:<steamid64>[:port]" (Steam P2P, steamnet.c)
+// target: "ip[:port]" (default 7777) or "steam:<steamid64>" (Steam P2P, steamnet.c)
 // Returns 0 when the join started, -1 for a bad target, -2 for a Steam target without Steam P2P.
 static int cmd_join(const char *target, Out *o) {
     char url[300], cmd[310];
-    int steam = steamnet_parse_target(target, url, sizeof url);
-    if (steam < 0) { LOG("join: bad target '%s'", target); out_printf(o, "bad join target: %s (ip[:port] or steam:<id64>[:port])\n", target); return -1; }
-    if (steamnet_prepare_url(url) < 0) { out_printf(o, "cannot join %s: Steam P2P unavailable here (%s)\n", url, steamnet_last_error()); return -2; }
+    int steam = steamnet_resolve_target(target, url, sizeof url);   // steam: -> a fake address carried over Steam P2P
+    if (steam == -1) { LOG("join: bad target '%s'", target); out_printf(o, "bad join target: %s (ip[:port] or steam:<id64>)\n", target); return -1; }
+    if (steam == -2) { out_printf(o, "cannot join %s: Steam P2P unavailable here (%s)\n", target, steamnet_last_error()); return -2; }
     snprintf(cmd, sizeof cmd, "open %s", url);
-    travel_set_host(url);        // the follow/rejoin logic reopens exactly this URL (travel.c)
-    steamnet_note_join(url);
+    travel_set_host(url);        // the follow/rejoin logic reopens exactly this URL (travel.c), same Steam peer
     if (!steam) netguard_allow_host(url);   // a host given by name must still resolve
     game_exec(cmd);
     out_printf(o, "joining (%s): %s\n", steam ? "steam" : "ip", cmd);
@@ -175,9 +173,9 @@ static void cmd_players(Out *o) {
 
 // ---- auto host/join from b4bcoop.ini next to the DLL ----
 //   host=1            -> whenever we're offline & standalone in Fort Hope, reopen it as a listen server
-//   transport=steam   -> host over Steam P2P (steamnet.c; falls back to IP when Steam P2P is unavailable)
+//   steam_p2p=0       -> no Steam P2P (steamnet.c; default on: a host takes UDP and Steam P2P joins)
 //   join=1.2.3.4[:p]  -> whenever we're offline & standalone in Fort Hope, join that host (retry every 20s);
-//   join=steam:<id64> -> same over Steam P2P (steam:<id64>:<port> if the host's listen port is not 7777);
+//   join=steam:<id64> -> same over Steam P2P
 //                        a comma-separated list is tried in turn (e.g. steam:<id64>,1.2.3.4:7777)
 // A session join target from Steam (presence.c: Join Game, invite, launch command line) overrides both.
 static int auto_host;
@@ -234,7 +232,7 @@ void cmds_auto_join_backoff(double seconds) {
 }
 
 // ---- join / host / leave entry points (chat commands, Steam invites, future in-game UI) ----
-// coop_join: "ip[:port]" joins over IP, "steam:<id64>[:port]" over Steam P2P (steamnet.c). Any thread: off the game
+// coop_join: "ip[:port]" joins over IP, "steam:<id64>" over Steam P2P (steamnet.c). Any thread: off the game
 // thread the request is queued for the next engine tick. Callers on the game thread that need to know whether an
 // attempt started compare g_travel_calls (travel.c) around it (a Steam target without Steam P2P starts nothing).
 void coop_join(const char *target) {
@@ -248,8 +246,8 @@ void coop_join(const char *target) {
     if (r == -2) chat_local("Steam P2P is not available here (%s), use /join <ip[:port]>", steamnet_last_error());
 }
 
-// coop_host: host the offline camp we are in (and keep hosting it after missions, like host=1), over the ini
-// transport (transport=steam: Steam P2P, IP if that is unavailable).
+// coop_host: host the offline camp we are in (and keep hosting it after missions, like host=1). Any thread.
+// The host takes UDP and (unless steam_p2p=0) Steam P2P joins.
 void coop_host(void) {
     static Out scratch;
     if (off_game_thread()) { pend_lock(1); pend_host = 1; pend_lock(0); return; }
@@ -346,8 +344,8 @@ static void set_float(UObject *o, const char *prop, float v) {
 // Raise net timeouts on the driver class defaults so slow (Proton, first-run shader) map loads don't
 // drop clients mid-travel. Retail values are tuned for dedicated servers.
 static void tune_net_defaults(void) {
-    const char *classes[] = {"NetDriver", "IpNetDriver", "PacketRelayNetDriver", "SteamNetDriver"};
-    for (int i = 0; i < 4; i++) {
+    const char *classes[] = {"NetDriver", "IpNetDriver", "PacketRelayNetDriver"};
+    for (int i = 0; i < 3; i++) {
         UClass *c = ue_find_class(classes[i]);
         if (!c || !UC_CDO(c)) continue;
         set_float(UC_CDO(c), "InitialConnectTimeout", 180.f);
@@ -362,7 +360,6 @@ void cmds_tick(float dt) {
     if (!tuned) { tuned = 1; tune_net_defaults(); }
     pending_tick();
     travel_tick(dt);
-    steamnet_tick(dt);
     auto_tick(dt);
     flashlight_tick(dt);
     testing_tick(dt);

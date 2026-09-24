@@ -1,149 +1,153 @@
-# Steam P2P transport (no port forwarding)
+# Steam P2P (no port forwarding)
 
-Build 14216215. Static analysis of `Back4Blood.exe` / `steam_api64.dll` (Steamv147) plus single-account live checks.
-Implementation: `native/src/steamnet.c` (+ small hooks in `cmds.c`, `travel.c`, `uelog.c`).
+Build 14216215. Static analysis of `Back4Blood.exe` / `steam_api64.dll` (Steamv147) plus single-account live runs.
+Implementation: `native/src/steamnet.c` (+ small hooks in `cmds.c`, `uelog.c`, `main.c`, `presence.c`).
 
-Status 2026-09-24: **implemented, single-account checks only** (see "Local checks"). Nothing has crossed Steam's
-network between two accounts yet; the two-account test plan is at the end.
+Status 2026-09-24: **a Steam P2P join worked between two local copies on one Steam account** (DTLS, login, 60 s of
+play traffic; see "Local checks"), but one account can't test it reliably: Steam hands each packet addressed to "our
+own" SteamID to either copy, so later runs lost 30-70 % of packets. Not yet run between two accounts / machines, and
+only that can show the P2P session request/accept and Steam's routing between SteamIDs. Test plan at the end.
 
 ## Usage
 
 | Where | What |
 |---|---|
-| host `b4bcoop.ini` | `transport=steam` (default `ip`). `host=1` then opens the camp on the Steam net driver. |
-| host log / `status` | `steamnet: hosting on Steam P2P: join steam:7656...` and `steam: id=... (share: steam:...)` |
-| client `b4bcoop.ini` | `join=steam:<host steamid64>` (auto-join), or `join=1.2.3.4[:port]` as before |
-| agent commands | `join steam:<id64>[:port]`, `join <ip>[:port]`, `host`, `steamnet` (details, P2P state per peer), `steamnet transport steam\|ip` |
-| C API (`cmds.h`) | `void coop_join(const char *target)` (same targets as `join`), `void coop_host(void)`; callable from any thread (queued to the game thread) |
+| host | nothing to do: Steam P2P is on by default and the host accepts Steam joins **and** UDP 7777 at the same time. `status` shows `steam: id=7656... p2p=on (join me: steam:7656...)`. |
+| client `b4bcoop.ini` | `join=steam:<host SteamID64>` (or `join=1.2.3.4[:port]` as before; `join=steam:<id>,1.2.3.4` tries both) |
+| agent commands | `join steam:<id64>`, `join <ip>[:port]`, `steamnet` (per-peer P2P session state), `steamnet on\|off` |
+| chat | `/join steam:<id64>` (chat.c → `coop_join`) |
+| Steam "Join Game" | presence.c advertises `+b4bcoop_join steam:<id64> addr:<ip:port>`; the joiner tries `steam:` first |
+| C API (`cmds.h`) | `void coop_join(const char *target)` (`ip[:port]` or `steam:<id64>`), `void coop_host(void)`; any thread (queued to the game thread) |
+| ini | `steam_p2p=0` turns Steam P2P off (also `transport=ip`) |
 
-`:port` on a Steam target is the P2P channel = the host's listen port (7777 unless `-Port=`; the test instances
-use 7787, so locally it is `steam:<id>:7787`).
+The host's SteamID64 is on its Steam profile URL, in `status`, and in the agent log.
 
-## Findings
+## How it works
 
-### How the game net driver is chosen
-- `UEngine::NetDriverDefinitions` (engine property `+0xC18`, `FNetDriverDefinition` = `DefName`, `DriverClassName`,
-  `DriverClassNameFallback`, 3 FNames). `CreateNamedNetDriver(World, GameNetDriver, GameNetDriver)` looks up the
-  `GameNetDriver` entry on the live `GEngine`, loads `DriverClassName`, and if the class is missing or its CDO
-  says `!IsAvailable()` it loads `DriverClassNameFallback`. Both a listen world (`open map?listen`, `servertravel`
-  to a new map) and a client's pending net game (`open <url>`, a follow) go through this entry.
-- Retail entry (live, logged by the agent at the first switch): `GameNetDriver` →
-  `OnlineSubsystemPacketRelay.PacketRelayNetDriver`, fallback `OnlineSubsystemUtils.IpNetDriver`. PacketRelayNetDriver is TRS's IpNetDriver subclass for
-  their relay service; offline it runs as a plain IP driver ("PacketRelay API disabled").
-- The ini files live in the obfuscated paks (no standard pak magic in the footer), so `DefaultEngine.ini` could
-  not be read statically; everything below comes from code and live reflection.
+A UDP shim under the retail net driver, which stays untouched (`PacketRelayNetDriver` = IpNetDriver + DTLS):
 
-### USteamNetDriver in this build is stock 4.25
-Vtable `0x14526E0F8` (IpNetDriver's is `0x145246408`); overrides:
+- Every Steam peer gets a fake IPv4 in `198.18.0.0/15` (RFC 2544 benchmarking range, not routed): `198.18.0.1`,
+  `198.18.0.2`, ... in order of first contact, per process.
+- `join steam:<id>` = `open 198.18.0.N:7777`. The game's `sendto()` to a fake address is turned into
+  `ISteamNetworking::SendP2PPacket(id, ..., channel 27)` (unreliable ≤ 1200 bytes, reliable above, logged).
+- `recvfrom()` on the game's socket first returns pending P2P packets (`IsP2PPacketAvailable`/`ReadP2PPacket`,
+  channel 27) with the peer's fake address as source, then falls through to the real socket. The game's socket is
+  the one bound to the game net driver's listen port (host; port taken from the engine log line
+  `GameNetDriver ... listening on port N`, bound ports recorded by a `bind()` hook) or the one that sent to the joined
+  fake address (client).
+- The source port reported for a peer is the port the game last sent to it (client: 7777), or `20000+N` for a peer
+  that contacted us first (host), so UE's stateless handshake and connection lookup see a stable address.
+- P2P session requests (`P2PSessionRequest_t`, callback 1202) are accepted while Steam P2P is on; connect failures
+  (1203) are logged with the `EP2PSessionError`. The callbacks are registered through presence.c's hook of
+  `SteamAPI_RunCallbacks` (same thread and same reason as its own join-request callback).
+- `AllowP2PPacketRelay(true)` on every Steam join (SDR relay when NAT punching fails; Steam's default anyway).
+- Every P2P datagram carries an 8-byte header: magic `B4C1` + a random per-process tag. Packets without the magic are
+  dropped; packets with our own tag came back to us (only possible with one account on two copies) and are dropped.
 
-| Slot | VA | Function | Notes |
-|---|---|---|---|
-| 79 | `0x140D26000` | `IsAvailable` | `IOnlineSubsystem::Get("STEAM")` (`0x140BB07D0`) && `ISocketSubsystem::Get("STEAM")` (`0x1429AE6A0`) |
-| 80 | `0x140D262A0` | `InitBase` | `bIsPassthrough` (`+0x7D0`) → `UIpNetDriver::InitBase` (`0x140BF0740`) |
-| 81 | `0x140D26720` | `InitConnect` | `steam.` URL → Steam socket, else passthrough |
-| 82 | `0x140D26970` | `InitListen` | STEAM socket subsystem present and no `bIsLanMatch` option → `SteamClientSocket`, else passthrough; then `UIpNetDriver::InitListen` (`0x140BF1B70`) |
+Because packets are addressed by SteamID, the port in a Steam target doesn't matter (`steam:<id>:7787` = `steam:<id>`).
+The follow/rejoin logic in `travel.c` needs no change: it reopens the same fake URL, which keeps mapping to the same
+SteamID for the life of the process.
 
-- **No IP fallback inside one Steam listen driver**: with the Steam socket it listens only on Steam P2P. Passthrough
-  (plain IP) only happens when the STEAM socket subsystem is missing or `?bIsLanMatch` is on the URL. A world has one
-  game net driver, so **a host is reachable over Steam or over IP, not both**. Hence `transport=steam|ip`.
-- The engine fallback covers "Steam OSS/socket subsystem missing" (IsAvailable false → retail driver).
-- The Steam socket subsystem uses legacy `ISteamNetworking` (`SteamNetworking006`, `SendP2PPacket`/`ReadP2PPacket`,
-  channel = port). Modern Steam clients run it on top of Steam Datagram Relay; relay fallback is on by default per
-  the Steamworks docs, and the agent calls `AllowP2PPacketRelay(true)` again when it selects Steam and after the
-  listen socket exists, in case the game's `[OnlineSubsystemSteam] bAllowP2PPacketRelay` is false (the only reader of
-  that key, `0x140D08A10`, also reads `bUseSteamNetworking`; its value is not visible statically).
-- P2P session requests are accepted blindly by the stock handler (`0x140CEBCEC` → `AcceptP2PConnection`
-  `0x140D25180`, log `Adding P2P connection information with user %s`; failure log
-  `Rejected P2P connection request from %s`).
+## Why not USteamNetDriver
 
-### OSS configuration
-- Online subsystems in the exe: Steam, EOS, EOSPlus, PacketRelay (TRS). Every session log shows the Steam OSS alive:
-  `STEAM: Obtained steam authticket`, `STEAM: Steam achievements have not been read for player 7656...`, two
-  `OnlineSubsystemSteam::Shutdown()` at exit (two instances). `DefaultPlatformService`/`NativePlatformService`
-  are read from config we can't see; it does not matter here: SteamNetDriver asks for the `STEAM` OSS and socket
-  subsystem by name, not for the default OSS.
-- The login identity (`HydraPublicId=offline.<steamid64>`, `platform: Steam`) comes from the game, not from the
-  transport, so it is the same over IP and Steam.
+The engine ships Unreal's Steam net driver, and it would have been the obvious route, but it can't run in this game:
 
-### Driver defaults
-- `SteamNetDriver` has no config section of its own in this game (to be confirmed live, `steamnet` prints its
-  `NetConnectionClassName`). A stock UE setup needs
-  `[/Script/OnlineSubsystemSteam.SteamNetDriver] NetConnectionClassName=/Script/OnlineSubsystemSteam.SteamNetConnection`.
-  `mirror_defaults()` sets the CDO's `NetConnectionClass` (UClass*, which `UNetDriver::InitConnectionClass` uses
-  before the name) to `SteamNetConnection` when the name is not already that, and copies the retail driver's
-  rates/timeouts/replication driver class onto the Steam CDO (ints/floats and one class pointer; no FString
-  writes). `tune_net_defaults()` also raises the Steam driver's connect timeouts like the others.
+- `UEngine::NetDriverDefinitions` (engine `+0xC18`, `FNetDriverDefinition` = DefName, DriverClassName,
+  DriverClassNameFallback). Live retail entry: `GameNetDriver` → `OnlineSubsystemPacketRelay.PacketRelayNetDriver`,
+  fallback `OnlineSubsystemUtils.IpNetDriver`. Swapping the entry to `/Script/OnlineSubsystemSteam.SteamNetDriver` is
+  easy (the first revision of this branch did it).
+- `USteamNetDriver` is stock 4.25 (vtable `0x14526E0F8`; IsAvailable `0x140D26000`, InitBase `0x140D262A0`,
+  InitConnect `0x140D26720`, InitListen `0x140D26970`, `bIsPassthrough` at `+0x7D0`). IsAvailable needs
+  `IOnlineSubsystem::Get("STEAM")` (`0x140BB07D0`) **and** `ISocketSubsystem::Get("STEAM")` (`0x1429AE6A0`).
+- **Live: `ISocketSubsystem::Get("STEAM")` returns null** in every session. The Steam OSS is up (auth tickets,
+  achievements, rich presence), but it never registers its socket subsystem: `FSocketSubsystemSteam::Init`'s config
+  reads (`P2PConnectionTimeout` etc.) aren't in the binary, and the only reader of `bUseSteamNetworking` /
+  `bAllowP2PPacketRelay` (`0x140D08A10`) builds session settings. So the engine would always fall back to IP (the
+  first revision confirmed it live: `transport=steam` hosted on PacketRelayNetDriver).
+  `SteamNetDriver`'s CDO has `NetConnectionClassName=SteamNetConnection`, so its config section does exist.
+- Even with a socket subsystem, a Steam listen driver takes only Steam connections (IP only in passthrough), and a
+  world has one game net driver: a host would be Steam-only or IP-only. The shim gives both at once.
+- `DefaultPlatformService`/`NativePlatformService` live in the obfuscated paks (no standard pak footer); not needed:
+  the shim talks to steam_api directly (the same `SteamUser020`/`SteamNetworking006` interfaces the game uses).
 
-### DTLS / PacketHandler
-- The connectionless handler loads `DTLSHandlerComponent` and logs `EnableEncryption: Server` right before
-  `GameNetDriver ... listening on port`, and every connection logs the PSK callback. The DTLS layer sits between the
-  net connection and the socket, so it does not care whether the socket is UDP or `ISteamNetworking`. Whether the
-  DTLS component is configured per driver name (`GameNetDriver`, applies to Steam too) or per class: see the local
-  check below. Either way both sides run the same driver and the same config, so they agree.
-- Packet size: UE's default MaxPacket (1024 incl. handler overhead) is below ISteamNetworking's 1200-byte
-  unreliable limit.
+## DTLS / PacketHandler
 
-### netguard
-Nothing to change. Steam's networking runs inside steamclient (Windows: `steamclient64.dll` in the game process;
-Proton: `lsteamclient.dll` → native `steamclient.so`, which never goes through Wine's ws2_32):
-- UDP is never filtered (`decide_addr`: only noted).
-- TCP and DNS from a Steam module (`steam*`, `lsteamclient`, `gameoverlayrenderer`, `tier0_s`, `vstdlib_s`) are
-  `trusted-caller` → allowed. SDR gets its relay list via the Steam client connection, not DNS.
-- `join steam:...` does not add a runtime DNS allow (there is no hostname).
+Unchanged: DTLS runs inside the net connection, above the socket, so it neither knows nor cares that the datagrams
+travel through Steam. Verified live: `DTLSPSKServerCallback: Key successfully set`, `Handshaking completed`,
+`Login request ... platform: Steam`, `Join succeeded` over the P2P path (below).
 
-### Fallback
-- Host, `transport=steam`: `steamnet_available()` checks steam_api64 loaded, `SteamUser020` present and
-  `BLoggedOn()`, `SteamNetworking006`, `ISocketSubsystem::Get("STEAM")`. If any fails:
-  `steamnet: Steam P2P unavailable (<reason>); hosting falls back to IP`, and the retail definition is used. If the
-  engine itself still picks the retail driver (IsAvailable false), `steamnet_tick` logs
-  `transport=steam but hosting on IP (...)`.
-- Client, `join steam:...` without Steam P2P: nothing to fall back to (a Steam target has no IP), so the join is
-  refused with `cannot reach steam.<id>:<port> without Steam P2P (<reason>); ask the host for an IP join instead`.
-- A Steam P2P session that can't be established (NAT and relay both fail) shows up as the Steam OSS log
-  `k_EP2PSessionError...` (mirrored as `steamnet: P2P problem: ...`) and a connect timeout; the agent does not switch
-  a session between transports on its own.
+## netguard
 
-### Follow / rejoin
-`travel.c` stores the URL the client joined (`ip:port` or `steam.<id64>:<port>`) and its retry path reopens exactly
-that URL; `steamnet_prepare_url()` re-selects the matching definition first. A server-travel follow reuses the
-definition, which stays on Steam for the whole session (it is only switched back by an IP host/join).
+Nothing to change:
+- Fake-address datagrams never reach a real socket (the `sendto` hook consumes them), and UDP is never filtered.
+- Steam's networking runs in steamclient (Windows: `steamclient64.dll` in the game process; Proton: `lsteamclient` →
+  native `steamclient.so`, outside Wine's ws2_32). TCP/DNS from Steam modules (`steam*`, `lsteamclient`,
+  `gameoverlayrenderer`, `tier0_s`, `vstdlib_s`) is `trusted-caller` → allowed; SDR gets its relay config over the
+  Steam client connection.
+- A Steam join adds no DNS allow (no hostname).
 
-## Local checks (single Steam account)
+## Fallback
 
-(filled in below)
+- Steam P2P needs: steam_api64 loaded, `SteamUser020` logged on, `SteamNetworking006`, our ws2_32 hooks, and
+  `steam_p2p` not 0. Otherwise `status` says `p2p=<reason>` and:
+  - host: nothing changes, it takes UDP joins as always;
+  - client: `join steam:<id>` is refused (`cannot join steam:<id>: Steam P2P unavailable here (<reason>)`, also as a
+    local chat line through `coop_join`) and starts no travel, so a target list (`steam:<id>,1.2.3.4:7777`, Steam
+    Join Game) falls through to the address at once.
+- A P2P session that can't be established shows `steamnet: P2P session with <id> failed, EP2PSessionError N` and the
+  usual connect timeout; `steamnet` shows the session state (`active`, `connecting`, `relay`, `error`).
+
+## Local checks (one Steam account, two copies, Proton)
+
+Both copies have the same SteamID, so every P2P packet is addressed to "ourselves" and Steam delivers it to one of
+the two processes, not necessarily the other one. Runs with `launch/multi.sh 2` on 2026-09-24:
+
+| Check | Result |
+|---|---|
+| IP regression, Steam P2P on (default) | host 2/2 players over `127.0.0.1:7787`, `PacketRelayNetConnection`, unchanged |
+| `status` | `steam: id=76561198063588550 p2p=on (join me: steam:76561198063588550)` on the host |
+| Client `leave`, then `join steam:<own id>` | `open 198.18.0.1:7777`; host: `NotifyAcceptedConnection`, DTLS `Handshaking completed`, `Login request`, `Join succeeded` 3 s later; host 2 players; `steamnet` on both: `session: active=1 relay=0 error=0`, rx/tx ≈ 5000 packets each way after 60 s |
+| `steamnet off` + `join steam:` | refused, `Steam P2P unavailable here (disabled (steam_p2p=0))` |
+| IP join after the Steam session | works (`open 127.0.0.1:7787`, host 2 players) |
+| ini `join=steam:<id>` auto-join (run 2) | several DTLS handshake failures (`unexpected_message`), then `Handshaking completed`, `Welcomed by server`, host 2 players. Host `rx` ≫ client `tx`: the host was reading its own packets, which garbled DTLS. That led to the header tag above. |
+| same, then `mission Easy` (run 2) | host travelled, the client's follow kept failing DTLS (same self-delivery), and it fell back to its own camp after the retries |
+| ini auto-join with the tag (run 3) | no more garbled handshakes (`dropped: own=113` on the host, `own=322` on the client), but only ~35 % of the host's packets reached the client: DTLS timed out, no join |
+| IP regression with the final build + mission follow over IP | host 2/2 over `127.0.0.1:7787`; `mission Easy`: the client followed into Evansburgh (`server_conn=yes`) |
+| Steam callbacks | `presence: registered Steam callback 1202/1203 for another module` in every run |
+
+Conclusion: the shim's data path (fake address → SendP2PPacket → ReadP2PPacket → the game's socket, DTLS and login
+on top) works; what's left for two accounts is session acceptance and Steam's routing between different SteamIDs,
+which one account can't show. Not covered locally: `P2PSessionRequest_t` (never fires for our own SteamID), relay
+(`relay=1`), NAT, a Windows client, a peer on another network.
 
 ## Two-account test plan
 
 Needs: machines A (host) and B (client), two Steam accounts that own the game, both Steam clients online, this build
-on both, **no port forwarding** (remove any 7777 forward on A's router). Put B on a different network (phone
-hotspot / CGNAT) for at least one run so NAT punching can fail and SDR relay has to carry it. Keep both agent logs
-(`Gobi/Binaries/Win64/b4bcoop-*.log`); `tools/b4b.py steamnet` on each side prints transport and per-peer P2P state
-(`active`, `relay`, `error`, remote IP).
+on both, **no port forwarding** (remove any 7777 forward on A's router). For at least one run put B on another
+network (phone hotspot / CGNAT) so NAT punching can fail and SDR relay has to carry it. Keep both agent logs
+(`Gobi/Binaries/Win64/b4bcoop-*.log`); `tools/b4b.py steamnet` prints per-peer session state (`active`, `relay`,
+`error`, remote IP) and packet counters.
 
-Confidence is for "works as described without further code changes".
+Confidence = "works as described without code changes".
 
-| # | Step | Expect (logs / commands) | Confidence |
+| # | Step | Expect | Confidence |
 |---|---|---|---|
-| 1 | A: `b4bcoop.ini` = `host=1` + `transport=steam`. Start, Offline, Fort Hope. | `steamnet: hosting over Steam P2P (SteamNetDriver)`, `LogNet: GameNetDriver SteamNetDriver_... IpNetDriver listening on port 7777`, `steamnet: hosting on Steam P2P: join steam:<A id>`; `steamnet` → `world net driver: Steam P2P, listening`. | high (checked locally, see above) |
-| 2 | B: `join=steam:<A id>`. Start, Offline, Fort Hope. | B: `steamnet: joining over Steam P2P`, `exec: open steam.<A id>:7777`. A: `Adding P2P connection information with user <B id>` / `steamnet: P2P session accepted`, `NotifyAcceptedConnection ... SteamNetConnection_...`, DTLS `Handshaking completed`, `Login request ... platform: Steam`. B spawns in A's camp. | medium (60%): first time bytes cross ISteamNetworking; risks are DTLS over Steam, connection class, P2P session acceptance |
-| 3 | Same with B on another network. | `steamnet` on B: `peer <A id>: active=1 relay=1` (or relay=0 if NAT punch worked). Play for a few minutes; no timeouts. | medium (55%) |
-| 4 | A starts a mission from the war table. | B follows: `SetClientTravel type=2 ... ` then a pending net game to `steam.<A id>:7777`; on a DTLS race, `travel: rejoin attempt ... open steam.<A id>:7777` and success. Host keeps `SteamNetDriver` after `servertravel` (`steamnet` on A). | medium (65%, given 2) |
-| 5 | Finish chapter 1, go to chapter 2 (seamless travel). | Same driver, B stays connected. | high (given 4) |
-| 6 | B takes over a bot, plays a burn card, gets rewards. | Same as over IP (transport-agnostic RPCs). | high (given 2) |
-| 7 | B quits to menu and rejoins (`join steam:<A id>` or auto-join). | A: old P2P session removed (`Removing P2P Session Id`), new one accepted; B back in. | medium (60%) |
-| 8 | Third account C joins too (3 players). | Two peers in `steamnet` on A, both `active=1`. | medium-high (given 2) |
-| 9 | IP regression: A `transport=ip` (or no key), B `join=<A ip>` with a forward or VPN. | Retail `PacketRelayNetDriver` exactly as before. | high (checked locally) |
-| 10 | Fallback: A sets Steam to offline mode (or kill Steam networking), `transport=steam`. | `steamnet: Steam P2P unavailable (<reason>); hosting falls back to IP`, listen on UDP 7777. B with a Steam target and no Steam: join refused with `cannot reach steam.<id>...`. | medium: the log lines are simple; whether the game starts at all with Steam offline is unknown |
-| 11 | Wrong target: B `join steam:<A id>` while A hosts over IP. | B's connect times out after `InitialConnectTimeout` (180 s, raised by the agent); A never sees a P2P request. Expected failure, documents the either/or. | high |
+| 1 | A: `host=1` (default ini). Start, Offline, Fort Hope. `tools/b4b.py status`. | `steam: id=<A> p2p=on (join me: steam:<A>)`; log `steamnet: game listen port 7777; Steam P2P packets go to that socket too`, `presence: registered Steam callback 1202` and `1203`. | high (seen locally) |
+| 2 | B: `join=steam:<A>` in the ini (or `/join steam:<A>` in chat). Start, Offline, Fort Hope. | B: `steamnet: steam:<A> -> 198.18.0.1:7777`, `open 198.18.0.1:7777`. A: `steamnet: P2P session request from <B>: accepted`, `NotifyAcceptedConnection`, DTLS `Handshaking completed`, `Login request`, `Join succeeded`. B spawns in A's camp. | medium-high (75%): the data path is verified locally; new here is the session request/accept between two accounts |
+| 3 | `steamnet` on both after a minute. | `active=1`, rx/tx growing on both, `error=0`. Note `relay`. | high (given 2) |
+| 4 | Repeat 2 with B on another network. | `relay=1` (or 0 if punching worked), same result. | medium (65%): SDR; the legacy API relays by default |
+| 5 | A starts a mission from the war table. | B follows (server travel reopens `198.18.0.1:7777`), DTLS retry if B arrives early (`travel: rejoin attempt ... 198.18.0.1:7777`). | high (given 2; checked locally) |
+| 6 | Next chapter (seamless travel), bot take-over, burn card, rewards. | as over IP (nothing transport-specific). | high (given 2) |
+| 7 | B `/leave`, then `/join steam:<A>` again. | session reused or re-accepted, B back in. | medium-high |
+| 8 | A third account C joins over Steam while B is in over IP (forward/VPN). | host has a Steam peer (`198.18.0.x`) and an IP peer at once. | medium-high |
+| 9 | Steam Join Game (presence.c): B clicks Join Game on A in the friends list, no `presence_addr`. | B's target list `steam:<A>,<addr>`: joins over Steam. | medium (Join Game itself is presence.c's own two-account plan) |
+| 10 | Fallback: B with `steam_p2p=0`, `join=steam:<A>,<A's ip>`. | `cannot join steam:... disabled`, then the address. | high |
+| 11 | Play a full chapter over relay. | no rubber-banding beyond the relay latency; `steamnet` shows no growing `queued`. | medium |
 
-What to capture if step 2 fails: both logs from the `open steam.` line on (B) and from `listening on port` on (A),
-`steamnet` output on both, and whether A logged any `P2P` line at all (no line = packets never reached A's Steam
-client: SDR/relay issue; a `Rejected` line = acceptance issue; a DTLS error = handshake over Steam).
-
-Likely fixes by symptom:
-- A never sees a session request: check `[OnlineSubsystemSteam]`-level P2P settings; try the client with
-  `steam.<id>:7777` vs the host's actual channel (A's `last listen: port/channel`).
-- Session accepted but no `NotifyAcceptedConnection`: channel mismatch or `SteamNetConnection` class issue
-  (`steamnet` prints the Steam CDO's connection class).
-- DTLS handshake errors only over Steam: packet size/ordering; compare with the IP path, consider disabling DTLS for
-  the Steam driver only (not implemented).
+If step 2 fails, capture both logs from the `open 198.18...` line (B) and from `listening on port` (A), `steamnet`
+on both, and whether A logged `P2P session request`:
+- no request on A: B's packets never arrived (B's `session: connecting/error`, `P2P session ... failed`);
+- request but `accept failed`: Steam refused (app/rights);
+- no `presence: registered Steam callback 1202`: callback registration (accept from the game thread instead);
+- accepted but no `NotifyAcceptedConnection`: A didn't identify its game socket (`steamnet`: `game listen port=0`?),
+  or the delivered address family doesn't match the socket.

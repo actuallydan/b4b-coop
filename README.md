@@ -16,8 +16,8 @@ host into missions.
 3. Edit `b4bcoop.ini`:
    - Host: `host=1`. Your PC must accept UDP 7777 (router port-forward + firewall), or use Tailscale/a VPN.
    - Join: `join=<host IP>`.
-   - Experimental, untested between two accounts yet: Steam P2P, no port forwarding. Host adds `transport=steam`;
-     others use `join=steam:<host's SteamID64>` (the host's `b4bcoop-*.log` prints the exact line).
+   - Experimental, not yet tested between two accounts: join over Steam's relay network, no port forwarding:
+     `join=steam:<host's SteamID64>`. Hosts accept it next to UDP 7777 (`steam_p2p=0` turns it off).
 4. Windows: start the game with `Play B4B co-op.cmd` (Steam must be running). A normal Steam launch goes
    through Easy Anti-Cheat and the mod won't load.
    Linux / Steam Deck: launch from Steam with launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`

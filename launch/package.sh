@@ -19,9 +19,9 @@ cat > "$out/b4bcoop.ini" <<'INI'
 ;host=1
 ; Join: when you reach offline Fort Hope, connect to the host's IP.
 ;join=HOST.IP.GOES.HERE
-; Experimental, no port forwarding: host over Steam's relay network instead (transport=steam), and friends
-; join with your Steam ID (17 digits; the host's log says "join steam:7656..."): join=steam:76561198000000000
-;transport=steam
+; Or join over Steam's relay network, no port forwarding (experimental): join=steam:<host's 17-digit Steam ID>
+; (a host accepts both; its status/log shows "join me: steam:7656..."). Turn Steam P2P off: steam_p2p=0
+;steam_p2p=0
 ; Flashlight toggle key (default L; 0 disables).
 ;flashlight_key=L
 ; Host only: allow 5 survivors (default 4).

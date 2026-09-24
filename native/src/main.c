@@ -111,6 +111,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     chat_init();
     admin_init();
     cmds_init();
+    steamnet_init();
     presence_init();
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
     return 0;

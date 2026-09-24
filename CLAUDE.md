@@ -40,12 +40,13 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     join requests (callback 337) and the same string on the command line become a session join target (overrides
     host=/join=, auto sign-in Offline). `presence [on|off]`, `steamjoin <string>` (simulate), `invite`, `friends`;
     ini `presence=0`, `presence_addr=`. docs/investigations/steam-invites.md.
-  - `steamnet.c` Steam P2P transport: `transport=steam` hosts on SteamNetDriver (GameNetDriver definition switch,
-    IP fallback), `join steam:<id64>[:port]`, SteamID in `status`, `steamnet` command. Not yet tested between two
-    accounts. docs/investigations/steam-p2p.md.
+  - `steamnet.c` Steam P2P: UDP shim under the retail net driver (ws2_32 sendto/recvfrom ↔ ISteamNetworking P2P,
+    Steam peers get fake 198.18.x.y addresses); hosts take UDP and Steam joins at once, `join steam:<id64>`, SteamID
+    in `status`, `steamnet [on|off]`, ini `steam_p2p=0`. USteamNetDriver can't work here (no STEAM socket subsystem).
+    Not yet tested between two accounts. docs/investigations/steam-p2p.md.
   - `cmds.c` commands: `status players host join leave exec find call peek`; config = `b4bcoop.ini` next to the DLL or
-    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join transport offline flashlight_*`).
-    `coop_join(target)` = join entry point (`ip[:port]`, `steam:<id64>[:port]`; any thread); `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`);
+    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join steam_p2p offline flashlight_*`).
+    `coop_join(target)` = join entry point (`ip[:port]`, `steam:<id64>`; any thread); `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`);
     `coop_host`, `coop_leave`.
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
   no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test

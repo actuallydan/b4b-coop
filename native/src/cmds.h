@@ -34,9 +34,9 @@ int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if h
 void slotguard_tick(float dt);
 void cmds_auto_join_backoff(double seconds);  // client: the host rejected us as full
 // Join / host entry points (chat /join, Steam invites, CLI join). Any thread: off the game thread the request is
-// queued for the next tick. target: "ip[:port]" (default 7777) or "steam:<steamid64>[:port]" (Steam P2P, steamnet.c).
+// queued for the next tick. target: "ip[:port]" (default 7777) or "steam:<steamid64>" (Steam P2P, steamnet.c).
 void coop_join(const char *target);
-void coop_host(void);                  // host the current offline camp (transport= ini key: steam or ip)
+void coop_host(void);                  // host the current offline camp (UDP + Steam P2P)
 void coop_leave(void);                 // client: disconnect, back to own camp, no auto-rejoin
 int slotguard_kick(UObject *pc);       // host: close a remote player's connection
 int chat_init(void);
@@ -67,15 +67,13 @@ int presence_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if ha
 // steamnet.c: Steam P2P transport (docs/investigations/steam-p2p.md)
 #include <stdint.h>
 uint64_t steamnet_local_id(void);                          // 0 if Steam is not available
-int steamnet_available(void);
 const char *steamnet_last_error(void);                     // why Steam P2P is unavailable (last check)
-int steamnet_prepare_host(void);                           // game thread; 1 = Steam driver selected
-int steamnet_prepare_url(const char *url);                 // game thread; 1 steam, 0 ip, -1 steam URL but no Steam
-int steamnet_parse_target(const char *target, char *url, size_t n);   // 1 steam, 0 ip, -1 malformed
-void steamnet_note_join(const char *url);
-int steamnet_hosting_steam(int *port);                     // listen server on Steam P2P? *port = P2P channel (0 unknown)
+int steamnet_p2p_on(void);                                 // Steam P2P usable (enabled, Steam up, hooks in)
+// "steam:<id64>" -> url "<fake ip>:7777" (1); "host[:port]" -> "host:port" (0); -1 malformed; -2 no Steam P2P here
+int steamnet_resolve_target(const char *target, char *url, size_t n);
+void steamnet_init(void);                                  // init_thread: ws2_32 hooks, Steam callbacks
+void presence_add_callback(void *cb, int id);              // presence.c: register a Steam callback (steamnet.c)
 void steamnet_on_log(const char *cat, const char *msg);    // uelog.c: every engine log line
-void steamnet_tick(float dt);
 void steamnet_status(Out *o);
-int steamnet_cmd(const char *verb, char *rest, Out *o);    // `steamnet [transport ip|steam]`; 1 if handled
-void steamnet_config(const char *key, const char *value);  // b4bcoop.ini key (transport=)
+int steamnet_cmd(const char *verb, char *rest, Out *o);    // `steamnet [on|off]`; 1 if handled
+void steamnet_config(const char *key, const char *value);  // b4bcoop.ini keys steam_p2p=, transport=
