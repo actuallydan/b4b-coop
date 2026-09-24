@@ -17,6 +17,7 @@ void travel_tick(float dt);
 void travel_on_handshake_failed(void);
 int cards_init(void);
 int rewards_init(void);
+int burncards_init(void);
 int cmds_auto_host(void);
 const char *cmds_config_path(void);    // b4bcoop.ini, or B4B_COOP_CONFIG
 int flashlight_init(void);
