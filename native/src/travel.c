@@ -12,7 +12,7 @@ static SetClientTravelFn orig_travel;
 static int redirecting;
 
 // client auto-rejoin state
-static char host_addr[256];          // last host we joined (set by `join`)
+static char host_addr[256];          // last host URL we joined (set by `join`): ip:port or steam.<id64>:port
 static double follow_until;           // rejoin window after following a server travel
 static int retries_left;
 static double retry_at;
@@ -37,6 +37,7 @@ void travel_tick(float dt) {
         char cmd[300];
         snprintf(cmd, sizeof cmd, "open %s", host_addr);
         LOG("travel: rejoin attempt (%d left): %s", retries_left, cmd);
+        steamnet_prepare_url(host_addr);   // same transport as the original join (steamnet.c)
         game_exec(cmd);
     }
 }
@@ -72,6 +73,7 @@ static void travel_detour(void *engine, UObject *world, const wchar_t *url, uint
         for (size_t j = 0; suffix[j]; j++) w[k++] = suffix[j];
         w[k] = 0;
         LOG("travel: auto-host, opening camp with ?listen");
+        steamnet_prepare_host();           // transport= ini key (steamnet.c)
         orig_travel(engine, world, w, type);
         return;
     }
