@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Build a zip for other players: dwmapi.dll + b4bcoop.ini template + README.
+# Build a zip for other players: the player build of dwmapi.dll (native/build.sh --release: no command server, no
+# test commands) + b4bcoop.ini template + README + LICENSE. Also writes dist/SHA256SUMS. CI runs this on a v* tag
+# (.github/workflows/release.yml).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-"$root/native/build.sh" >/dev/null
+"$root/native/build.sh" --release >/dev/null
 out="$root/dist/b4bcoop"; rm -rf "$out"; mkdir -p "$out"
-cp "$root/native/out/dwmapi.dll" "$out/"
+cp "$root/native/out/release/dwmapi.dll" "$out/"
+cp "$root/LICENSE" "$out/LICENSE.txt"
 # Windows launcher: lives next to Back4Blood.exe and starts it directly (no EAC bootstrapper, so the agent loads).
 printf '%s\r\n' '@echo off' \
   'rem b4bcoop: start Back 4 Blood directly (no EAC bootstrapper) so dwmapi.dll loads. Steam must be running.' \
@@ -24,6 +27,10 @@ cat > "$out/b4bcoop.ini" <<'INI'
 ;steam_p2p=0
 ; Flashlight toggle key (default L; 0 disables).
 ;flashlight_key=L
+; Host only: who may join. Default: only your Steam friends. allow_joins=anyone lets in anyone who has your address.
+;allow_joins=friends
+; Host only: always let these Steam IDs in (17-digit Steam IDs, comma-separated), friends or not.
+;allow_steamids=7656119XXXXXXXXXX
 ; Host only: allow 5 survivors (default 4).
 ;teamsize=5
 ; Blocks all third-party network traffic (Epic/WB/Turtle Rock services) while you play. If something won't
@@ -47,9 +54,20 @@ PLAY
 - Start the game, choose to play OFFLINE, and go to Fort Hope. You'll connect to the host automatically
   (it retries every 20 seconds until the host is up).
 - When the host starts a mission from the war table, you follow automatically.
+- Hosts only accept their Steam friends by default (see allow_joins / allow_steamids in b4bcoop.ini).
+- Chat commands: type /help in the chat box.
+
+SAFETY
+Unofficial, not affiliated with Turtle Rock Studios or Warner Bros. Games. Offline mode only: it blocks the game's
+online services while it runs. Don't use it for online play. No warranty (see LICENSE.txt).
+Source code and how to check this download: https://github.com/actuallydan/b4b-coop
 
 UNINSTALL: delete dwmapi.dll, b4bcoop.ini and "Play B4B co-op.cmd" from Gobi\Binaries\Win64 (and the launch option on Linux).
 Log file for troubleshooting: Gobi\Binaries\Win64\b4bcoop-<number>.log
 TXT
-(cd "$root/dist" && rm -f b4bcoop.zip && zip -qr b4bcoop.zip b4bcoop)
+# Reproducible zip: fixed timestamps and file order, no extra attributes.
+find "$out" -type d -exec chmod 755 {} + ; find "$out" -type f -exec chmod 644 {} +
+find "$out" -exec touch -d '2020-01-01 00:00:00 UTC' {} +
+(cd "$root/dist" && rm -f b4bcoop.zip && find b4bcoop | LC_ALL=C sort | TZ=UTC zip -qX -@ b4bcoop.zip)
+(cd "$root/dist" && sha256sum b4bcoop.zip b4bcoop/dwmapi.dll > SHA256SUMS)
 echo "$root/dist/b4bcoop.zip"

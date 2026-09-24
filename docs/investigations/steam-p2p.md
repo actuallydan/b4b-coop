@@ -37,7 +37,8 @@ A UDP shim under the retail net driver, which stays untouched (`PacketRelayNetDr
   fake address (client).
 - The source port reported for a peer is the port the game last sent to it (client: 7777), or `20000+N` for a peer
   that contacted us first (host), so UE's stateless handshake and connection lookup see a stable address.
-- P2P session requests (`P2PSessionRequest_t`, callback 1202) are accepted while Steam P2P is on; connect failures
+- P2P session requests (`P2PSessionRequest_t`, callback 1202) are accepted while Steam P2P is on and the join policy
+  allows the remote SteamID (below); connect failures
   (1203) are logged with the `EP2PSessionError`. The callbacks are registered through presence.c's hook of
   `SteamAPI_RunCallbacks` (same thread and same reason as its own join-request callback).
 - `AllowP2PPacketRelay(true)` on every Steam join (SDR relay when NAT punching fails; Steam's default anyway).
@@ -47,6 +48,29 @@ A UDP shim under the retail net driver, which stays untouched (`PacketRelayNetDr
 Because packets are addressed by SteamID, the port in a Steam target doesn't matter (`steam:<id>:7787` = `steam:<id>`).
 The follow/rejoin logic in `travel.c` needs no change: it reopens the same fake URL, which keeps mapping to the same
 SteamID for the life of the process.
+
+## Join policy (`native/src/joinpolicy.c`)
+Hosts accept only their Steam friends by default (`ISteamFriends::HasFriend(id, k_EFriendFlagImmediate)`) and their
+own SteamID; `allow_steamids=<id64>,...` always allows, `allow_joins=anyone` turns the check off. Friends list
+unavailable → only the allowlist and self (fails closed).
+- Steam P2P: checked when a peer first appears (session request or first packet). A refused peer's session is never
+  accepted and `CloseP2PSessionWithUser` is called; its packets are read and dropped in `recvfrom` (`steamnet`:
+  `refused=N`, peer `policy=REFUSED`), so nothing reaches the game. The id is Steam-authenticated.
+- IP: the PreLogin hook (admin.c) checks the SteamID in the login's `FUniqueNetIdRepl` before the game's own PreLogin
+  runs and refuses with "This host only accepts their Steam friends. …" (the client shows `Could not join: …` and
+  retries every 60 s). Offline mode has no auth ticket check, so this id is the joiner's claim: it keeps strangers
+  out, but someone who knows a friend's SteamID and the host's address could impersonate them.
+- The host gets a chat line per refused SteamID ("Refused a join from <name> (steam:<id>) … allow_steamids=<id>").
+- A refused Steam joiner only sees its connection time out; when Steam reports the session failed it gets a hint in
+  chat.
+
+Live (one account, so the joiner is "self"; dev knob `allow_self=0` treats self as a stranger):
+- default: IP join allowed (`admin: join policy: steam:7656… allowed (the host's own account)`); release build too.
+- `allow_self=0`, fake allowlist: IP join refused before PreLogin (`refused by the join policy: not on the host's
+  Steam friends list`; client `PendingConnectionFailure … This host only accepts their Steam friends`), `join
+  steam:<id>` refused (`steamnet: refused Steam P2P from 7656… (Hergmgurk)`, `rx=0 refused=7`).
+- `allow_self=0;allow_steamids=<own id>`: P2P peer `policy=allowed`, packets delivered. The handshake itself did not
+  complete in this one-account setup, exactly as with main's build (baseline run, same result): see "Local checks".
 
 ## Why not USteamNetDriver
 

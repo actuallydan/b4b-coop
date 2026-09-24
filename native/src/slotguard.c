@@ -166,7 +166,8 @@ void slotguard_tick(float dt) {
     }
 }
 
-// ---- command: slotguard [gate 0|1 | kick <PlayerArray index>] ----
+#ifndef B4B_RELEASE
+// ---- command (dev builds): slotguard [gate 0|1 | kick <PlayerArray index>] ----
 int slotguard_cmd(const char *verb, char *rest, Out *o) {
     if (strcmp(verb, "slotguard")) return 0;
     char *a = rest ? strtok(rest, " ") : NULL, *b = a ? strtok(NULL, " ") : NULL;
@@ -185,6 +186,7 @@ int slotguard_cmd(const char *verb, char *rest, Out *o) {
                ue_is_listen_server(w), n_rejected, n_kicked, n_guarded);
     return 1;
 }
+#endif  // !B4B_RELEASE
 
 static int hook(uintptr_t at, const uint8_t *sig, size_t n, void *detour, void **orig, const char *what) {
     if (memcmp((void *)at, sig, n)) { LOG("slotguard: %s signature mismatch", what); return -1; }

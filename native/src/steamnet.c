@@ -7,7 +7,10 @@
 //   - ws2_32 sendto() to a fake address from the game goes out as ISteamNetworking::SendP2PPacket to that SteamID;
 //   - ws2_32 recvfrom() on the game's socket (the listen socket on a host, the socket that talked to a fake address on
 //     a client) first returns queued P2P packets, with the peer's fake address as the source;
-//   - P2P session requests (callback 1202) are accepted while Steam P2P is enabled (registered through presence.c).
+//   - P2P session requests (callback 1202) are accepted while Steam P2P is enabled and the host's join policy allows
+//     the remote SteamID (joinpolicy.c: by default only the host's Steam friends and its own account); everyone else
+//     is refused before a single packet reaches the game (registered through presence.c). Steam authenticates the
+//     remote SteamID of a P2P session, so on this path the policy is not spoofable.
 // So a host listens on UDP *and* Steam at the same time, and `join steam:<id64>` is just `open <fake ip>:7777`:
 // travel.c's follow/rejoin reopens the same fake address, which keeps mapping to the same SteamID.
 // Steam's networking runs in steamclient (SDR relay, NAT punching); the game's socket never sees those packets.
@@ -39,7 +42,7 @@
 #define HDR_LEN         8
 static const uint8_t HDR_MAGIC[4] = {'B', '4', 'C', '1'};
 static uint32_t g_tag;
-static uint32_t g_self_drops, g_bad_drops;
+static uint32_t g_self_drops, g_bad_drops, g_refused_drops;
 enum { SEND_UNRELIABLE = 0, SEND_RELIABLE = 2 };
 
 static int g_enabled = 1;           // steam_p2p ini key
@@ -63,6 +66,7 @@ static struct {
     uint8_t (*avail)(void *self, uint32_t *size, int channel);
     uint8_t (*read)(void *self, void *dest, uint32_t cap, uint32_t *size, uint64_t *from, int channel);
     uint8_t (*accept)(void *self, uint64_t remote);
+    uint8_t (*close)(void *self, uint64_t remote);
     uint8_t (*relay)(void *self, uint8_t allow);
     uint8_t (*state)(void *self, uint64_t remote, P2PState *st);
 } S;
@@ -79,6 +83,7 @@ static int steam_api(void) {
           RESOLVE(avail, "SteamAPI_ISteamNetworking_IsP2PPacketAvailable") &&
           RESOLVE(read, "SteamAPI_ISteamNetworking_ReadP2PPacket") &&
           RESOLVE(accept, "SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser") &&
+          RESOLVE(close, "SteamAPI_ISteamNetworking_CloseP2PSessionWithUser") &&
           RESOLVE(relay, "SteamAPI_ISteamNetworking_AllowP2PPacketRelay") &&
           RESOLVE(state, "SteamAPI_ISteamNetworking_GetP2PSessionState"))) {
         LOG("steamnet: steam_api64 lacks an expected export; Steam P2P off");
@@ -116,6 +121,7 @@ typedef struct {
     uint16_t family;        // AF_INET or AF_INET6 (v4-mapped), as the game's socket uses
     uint32_t rx, tx;
     uint8_t accepted;
+    int8_t policy;          // join policy for this SteamID: 0 not checked yet, 1 allowed, -1 refused (packets dropped)
 } Peer;
 static Peer peers[MAX_PEERS];
 static int npeers;
@@ -189,6 +195,31 @@ static int is_game_socket(SOCKET s, uint16_t *fam) {   // under cs
     return 0;
 }
 
+// ---- join policy (joinpolicy.c) per Steam peer ----
+// The host we joined is always admitted (we opened that session). Anyone else is checked once per peer and cached;
+// a refused peer's session is closed and its packets are dropped (read and discarded) in recvfrom.
+static int peer_admitted(uint64_t id) {
+    EnterCriticalSection(&cs);
+    int i = peer_index(id, 0);
+    int pol = i >= 0 ? peers[i].policy : 0;
+    int joined = id == g_join_id;
+    LeaveCriticalSection(&cs);
+    if (joined) return 1;
+    if (pol) return pol > 0;
+    char why[96];
+    int ok = joinpolicy_check(id, why, sizeof why);
+    EnterCriticalSection(&cs);
+    if ((i = peer_index(id, 1)) >= 0) peers[i].policy = ok ? 1 : -1;
+    LeaveCriticalSection(&cs);
+    if (!ok) {
+        LOG("steamnet: refused Steam P2P from %llu (%s): %s", (unsigned long long)id, presence_persona(id), why);
+        joinpolicy_notify_refused(id, why);
+        void *n = net();
+        if (n) S.close(n, id);
+    }
+    return ok;
+}
+
 // ---- ws2_32 hooks ----
 typedef int (WSAAPI *sendto_t)(SOCKET, const char *, int, int, const struct sockaddr *, int);
 typedef int (WSAAPI *recvfrom_t)(SOCKET, char *, int, int, struct sockaddr *, int *);
@@ -236,6 +267,7 @@ static int WSAAPI h_recvfrom(SOCKET s, char *buf, int len, int flags, struct soc
         if (size < HDR_LEN || memcmp(pkt, HDR_MAGIC, 4)) { g_bad_drops++; continue; }
         if (!memcmp(pkt + 4, &g_tag, 4)) { g_self_drops++; continue; }
         size -= HDR_LEN;
+        if (!peer_admitted(remote)) { g_refused_drops++; continue; }   // join policy: not from this SteamID
         EnterCriticalSection(&cs);
         int i = peer_index(remote, 1);
         Peer p = {0};
@@ -287,6 +319,7 @@ static void req_run(void *self, void *param) {
     InterlockedIncrement(&n_requests);
     void *n = net();
     if (!g_enabled || !n) { LOG("steamnet: P2P session request from %llu ignored (Steam P2P off)", (unsigned long long)remote); return; }
+    if (!peer_admitted(remote)) return;   // not accepted: Steam drops the session; logged and noticed in peer_admitted
     EnterCriticalSection(&cs);
     int i = peer_index(remote, 1);
     if (i >= 0) peers[i].accepted = 1;
@@ -294,12 +327,24 @@ static void req_run(void *self, void *param) {
     uint8_t ok = S.accept(n, remote);
     LOG("steamnet: P2P session request from %llu: %s", (unsigned long long)remote, ok ? "accepted" : "accept failed");
 }
+static volatile LONG g_join_failed;   // the host we joined never accepted our P2P session (shown by steamnet_tick)
 static void fail_run(void *self, void *param) {
     (void)self;
     if (!param) return;
     InterlockedIncrement(&n_fails);
+    uint64_t id = *(uint64_t *)param;
     LOG("steamnet: P2P session with %llu failed, EP2PSessionError %u (1 not running app, 2 no rights, 3 not logged in, 4 timeout)",
-        (unsigned long long)*(uint64_t *)param, ((uint8_t *)param)[8]);
+        (unsigned long long)id, ((uint8_t *)param)[8]);
+    if (id == g_join_id) InterlockedExchange(&g_join_failed, 1);
+}
+
+// Game thread: a Steam join whose session was never accepted (the host is gone, or its join policy refused us; a
+// refusal is silent at the Steam level, so say what the likely reasons are).
+void steamnet_tick(float dt) {
+    (void)dt;
+    if (!g_join_failed || !InterlockedExchange(&g_join_failed, 0)) return;
+    chat_local_later("Could not reach the host over Steam. Is it still hosting? Hosts only accept their Steam "
+                     "friends by default (b4bcoop.ini allow_joins / allow_steamids on the host).");
 }
 static int req_size(void *self) { (void)self; return 8; }
 static int fail_size(void *self) { (void)self; return 16; }   // sizeof(P2PSessionConnectFail_t), pack 8
@@ -314,6 +359,18 @@ void steamnet_on_log(const char *cat, const char *msg) {
         g_listen_port = atoi(p + 18);
         LOG("steamnet: game listen port %d%s", g_listen_port, g_enabled ? "; Steam P2P packets go to that socket too" : "");
     }
+}
+
+// Host: the authenticated SteamID behind a fake P2P address ("198.18.0.1" or "198.18.0.1:port"), 0 if it is not one.
+uint64_t steamnet_peer_of_addr(const char *addr) {
+    unsigned a, b, c, d;
+    if (!addr || sscanf(addr, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 || b > 255 || c > 255 || d > 255) return 0;
+    uint32_t ip = a << 24 | b << 16 | c << 8 | d;
+    EnterCriticalSection(&cs);
+    int i = peer_of_ip(ip);
+    uint64_t id = i >= 0 ? peers[i].id : 0;
+    LeaveCriticalSection(&cs);
+    return id;
 }
 
 // ---- joins ----
@@ -334,6 +391,7 @@ int steamnet_resolve_target(const char *t, char *url, size_t n) {
         EnterCriticalSection(&cs);
         int i = peer_index(id, 1);
         g_join_id = id;
+        g_join_failed = 0;
         g_client_sock = INVALID_SOCKET;
         LeaveCriticalSection(&cs);
         if (i < 0) { snprintf(g_why, sizeof g_why, "peer table full"); return -2; }
@@ -351,6 +409,7 @@ int steamnet_resolve_target(const char *t, char *url, size_t n) {
 // ---- status / command ----
 int steamnet_p2p_on(void) { return steamnet_available(); }
 
+#ifndef B4B_RELEASE
 void steamnet_status(Out *o) {
     uint64_t id = steamnet_local_id();
     int ok = steamnet_available();
@@ -361,7 +420,8 @@ void steamnet_status(Out *o) {
 
 static void print_peer(Out *o, const Peer *p, int i) {
     char ip[20]; fmt_ip(fake_ip(i), ip, sizeof ip);
-    out_printf(o, "  peer %llu = %s%s: rx=%u tx=%u", (unsigned long long)p->id, ip, p->id == g_join_id ? " (joined host)" : "", p->rx, p->tx);
+    out_printf(o, "  peer %llu = %s%s: rx=%u tx=%u policy=%s", (unsigned long long)p->id, ip, p->id == g_join_id ? " (joined host)" : "",
+               p->rx, p->tx, p->policy > 0 ? "allowed" : p->policy < 0 ? "REFUSED" : "-");
     void *n = S.dll ? net() : NULL;
     P2PState s = {0};
     if (n && S.state(n, p->id, &s)) {
@@ -381,8 +441,8 @@ int steamnet_cmd(const char *verb, char *rest, Out *o) {
     }
     steamnet_status(o);
     out_printf(o, "hooks=%s game listen port=%d client socket=%s session requests=%ld failures=%ld channel=%d "
-               "dropped: own=%u bad=%u\n", g_ready ? "yes" : "no", g_listen_port, g_client_sock != INVALID_SOCKET ? "yes" : "no",
-               n_requests, n_fails, P2P_CHANNEL, g_self_drops, g_bad_drops);
+               "dropped: own=%u bad=%u refused=%u\n", g_ready ? "yes" : "no", g_listen_port, g_client_sock != INVALID_SOCKET ? "yes" : "no",
+               n_requests, n_fails, P2P_CHANNEL, g_self_drops, g_bad_drops, g_refused_drops);
     EnterCriticalSection(&cs);
     static Peer copy[MAX_PEERS];
     int n = npeers;
@@ -392,6 +452,7 @@ int steamnet_cmd(const char *verb, char *rest, Out *o) {
     if (!n) out_printf(o, "no Steam peers yet\n");
     return 1;
 }
+#endif  // !B4B_RELEASE
 
 void steamnet_config(const char *key, const char *v) {
     if (!strcmp(key, "steam_p2p")) g_enabled = atoi(v) != 0;

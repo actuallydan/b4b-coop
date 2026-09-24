@@ -1,0 +1,47 @@
+# CI: build the dev and player DLLs with the pinned toolchain on every push and pull request, and check that the player
+# build carries no dev code. Releases are built by release.yml.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the pinned toolchain (zig 0.15.2 + MinHook)
+        run: tools/fetch-deps.sh --build
+
+      - name: Dev build
+        run: native/build.sh
+
+      - name: Player package (native/build.sh --release)
+        run: launch/package.sh
+
+      - name: Check the player build has no dev code
+        run: |
+          dll=dist/b4bcoop/dwmapi.dll
+          for s in "server: listening" "exec failed" "rewardtest" "steamjoin" "Dev_JoinPool"; do
+            if grep -qaF -- "$s" "$dll"; then echo "::error::player build contains dev string '$s'"; exit 1; fi
+          done
+          # and the dev build still has them (so the check above means something)
+          grep -qaF "server: listening" native/out/dwmapi.dll
+          ls -l native/out/dwmapi.dll dist/b4bcoop/dwmapi.dll
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: b4bcoop-${{ github.sha }}
+          path: |
+            dist/b4bcoop.zip
+            dist/SHA256SUMS
+          retention-days: 14

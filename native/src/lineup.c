@@ -187,6 +187,8 @@ static void place(UObject *mgr, int type, int n) {
     LOG("lineup: layout %d, placed %d hero(es) beyond %d target points", type, n - tps->num, tps->num);
 }
 
+#ifndef B4B_RELEASE
+// ---- dev command: lineup [off <dx> <dy> | fov <deg> | apply] ----
 static void dump(Out *o) {
     UClass *c = ue_find_class("CharacterLineupLayoutManager");
     UObject *mgr = c ? ue_find_first_of("CharacterLineupLayoutManager") : NULL;
@@ -240,6 +242,7 @@ int lineup_cmd(const char *verb, char *rest, Out *o) {
     dump(o);
     return 1;
 }
+#endif  // !B4B_RELEASE
 
 int lineup_init(void) {
     const char *e = getenv("B4BCOOP_NO_LINEUP");
