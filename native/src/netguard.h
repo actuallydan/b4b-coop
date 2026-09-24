@@ -4,4 +4,4 @@
 #include "cmds.h"
 void netguard_init(void);                   // DllMain (process attach): installs the hooks before any game code runs
 void netguard_allow_host(const char *addr); // allow a hostname at runtime (e.g. a `join` target); "host:port" is fine
-void netguard_cmd(char *args, Out *o);      // `netguard [allow <host>]`: blocked / allowed destinations seen so far
+void netguard_cmd(char *args, Out *o);      // dev builds: `netguard [allow <host>]`, blocked / allowed destinations seen

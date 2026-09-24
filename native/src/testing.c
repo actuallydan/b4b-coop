@@ -1,9 +1,8 @@
-// Unattended local testing (launch/multi.sh): get from boot to offline Fort Hope with no clicks.
-//   offline=1 in the agent config: press "Sign in" on the title screen, then answer the Online/Offline popup
-//   with Offline, exactly like a click (PopupUserWidget::Close("Offline") -> SignInTask_OnlineOfflinePopup).
-//   Also armed for real players by a Steam "Join Game" / invite (presence.c -> testing_arm_signin).
+// Dev/test commands for unattended local testing (launch/multi.sh). Dev builds only: the whole file is compiled
+// out of player builds (native/build.sh --release). Sign-in automation lives in signin.c.
 // Commands: `signin` (one step by hand), `mission [raw] [map] [Easy|Normal|Hard|VeryHard]`, `ready [vote]`,
-// `endmission [1|0]`, `burncard list|map|status|charge|[row] [table]`, `callp <Class> <Func> [args]`.
+// `endmission [1|0]`, `burncard list|map|status|charge|[row] [table]`, `callp <Class> <Func> [args]`, `tp`, `takeover`.
+#ifndef B4B_RELEASE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +10,6 @@
 #include "log.h"
 #include "cmds.h"
 
-extern int g_auto_offline;
 typedef FName *(*FNameCtorFn)(FName *self, const wchar_t *name, int find_type);
 #define ADDR_FNAME_CTOR VA(0x1424BC8E0ull)   // FName::FName(const TCHAR*, EFindName)
 
@@ -26,112 +24,6 @@ static UObject *find_live(UClass *c, UObject *after) {
         return o;
     }
     return NULL;
-}
-
-static int call_bool(UObject *o, const char *fn_name) {
-    UFunction *f = ue_find_function(U_CLASS(o), fn_name);
-    if (!f) return -1;
-    uint8_t p[16] = {0};
-    ue_process_event(o, f, p);
-    return p[0];
-}
-
-static int state_of(UObject *task) { return *(int32_t *)((char *)task + 0x30); }   // ESignInTaskState, 1 = Running
-
-// Open popup whose OnPopupClosed delegate is bound to `task` (FScriptDelegate: weak {index, serial}, FName fn).
-static UObject *popup_for(UObject *task) {
-    static UClass *pc;
-    if (!pc) pc = ue_find_class("PopupUserWidget");
-    for (UObject *p = pc ? find_live(pc, NULL) : NULL; p; p = find_live(pc, p)) {
-        int32_t off = ue_prop_offset(p, "OnPopupClosed");
-        if (off < 0) continue;
-        TArray *inv = (TArray *)((char *)p + off);
-        for (int i = 0; i < inv->num; i++)
-            if (*(int32_t *)((char *)inv->data + i * 16) == U_INDEX(task) && call_bool(p, "IsOpen") == 1) return p;
-    }
-    return NULL;
-}
-
-#define SCREEN_STATE(s) (*(uint8_t *)((char *)(s) + 0x568))   // ESignInScreenState (SetState 0x141D37600)
-enum { SIS_NotSignedIn = 0, SIS_SignedIn = 7 };
-static int signin_done;
-
-// One step of the sign-in flow. Returns 1 when it acted.
-static int signin_step(Out *o) {
-    static UClass *task_c, *screen_c;
-    static int seen_screen;
-    if (!task_c) task_c = ue_find_class("SignInTask_OnlineOfflinePopup");
-    if (!screen_c) screen_c = ue_find_class("SignInScreen");
-    if (!task_c || !screen_c) { if (o) out_printf(o, "sign-in classes not loaded\n"); return 0; }
-    UObject *s = find_live(screen_c, NULL);
-    if (!s) {
-        if (seen_screen) signin_done = 1;   // screen gone after we saw it: signed in
-        if (o) out_printf(o, "no sign-in screen\n");
-        return 0;
-    }
-    seen_screen = 1;
-    int st = SCREEN_STATE(s);
-    if (o) out_printf(o, "sign-in screen %p state=%d\n", (void *)s, st);
-    if (st == SIS_SignedIn) { signin_done = 1; return 0; }
-    if (st == SIS_NotSignedIn) {   // title screen waiting for "Sign in" (skipped by the game while EOS pre-login runs)
-        UFunction *f = ue_find_function(U_CLASS(s), "StartSignIn");
-        if (!f) return 0;
-        LOG("testing: StartSignIn on %p", (void *)s);
-        uint8_t none[16] = {0};
-        ue_process_event(s, f, none);
-        return 1;
-    }
-    // signing in: Online/Offline popup up -> answer Offline
-    for (UObject *t = find_live(task_c, NULL); t; t = find_live(task_c, t)) {
-        if (state_of(t) != 1) continue;
-        UObject *p = popup_for(t);
-        if (o) out_printf(o, "online/offline task running, popup=%p\n", (void *)p);
-        if (!p) return 0;
-        UFunction *close = ue_find_function(U_CLASS(p), "Close");
-        struct { FName cmd; } args = { make_name(L"Offline") };
-        LOG("testing: answering online/offline popup with Offline");
-        ue_process_event(p, close, &args);
-        return 1;
-    }
-    return 0;
-}
-
-static double signin_clock, signin_deadline = 600;
-
-// A join target from Steam (presence.c): sign in Offline for a real player too, for the next 10 minutes.
-void testing_arm_signin(void) {
-    if (signin_done) return;
-    UClass *sc = ue_find_class("SignInScreen");
-    UObject *w = ue_world();
-    char pkg[256];
-    if (w && ue_local_pc() && strstr(ue_world_package(w, pkg, sizeof pkg), "FortHope") && sc && !find_live(sc, NULL)) {
-        signin_done = 1;   // already in the camp, past the title screen
-        return;
-    }
-    if (!g_auto_offline) LOG("testing: auto sign-in (Offline) armed for a Steam join");
-    g_auto_offline = 1;
-    signin_deadline = signin_clock + 600;
-}
-
-// Title screen up (auto-host makes even the title's Fort Hope a listen server): nothing to advertise yet.
-int testing_on_title(void) {
-    static UClass *sc;
-    if (!sc) sc = ue_find_class("SignInScreen");
-    UObject *s = sc ? find_live(sc, NULL) : NULL;
-    return s && SCREEN_STATE(s) != SIS_SignedIn;
-}
-
-int testing_signin_pending(void) { return g_auto_offline && !signin_done; }
-
-void testing_tick(float dt) {
-    static double next;
-    double clock = signin_clock += dt;
-    if (!g_auto_offline || signin_done || clock < next) return;
-    if (clock > signin_deadline) { signin_done = 1; LOG("testing: no sign-in after 10 min, auto sign-in off"); return; }
-    next = clock + 2;
-    if (!ue_world()) return;
-    signin_step(NULL);
-    if (signin_done) LOG("testing: signed in, auto sign-in off");
 }
 
 // ---- mission start without the war table ----
@@ -208,33 +100,6 @@ static void cmd_endmission(char *rest, Out *o) {
     LOG("testing: OnMissionEnd(%d)", ok);
     ue_process_event(gm, f, p);
     out_printf(o, "endmission: OnMissionEnd(%s)\n", ok ? "success" : "failure");
-}
-
-// ready [vote]: host readies every player so nobody has to click: the loadout screen's Ready
-// (GobiPlayerState::ServerRequestPlayerReady(true)) or, with "vote", the post-round screen's
-// (ServerSetReadyForPostRoundVote). Server RPCs called on the server run locally, so this works for remote players too.
-static void cmd_ready(char *rest, Out *o) {
-    int vote = rest && !strncmp(rest, "vote", 4);
-    const char *fname = vote ? "ServerSetReadyForPostRoundVote" : "ServerRequestPlayerReady";
-    UObject *w = ue_world();
-    UObject *gs = w ? ue_get_ptr(w, "GameState") : NULL;
-    UClass *psc = ue_find_class("GobiPlayerState");
-    int32_t off = gs ? ue_prop_offset(gs, "PlayerArray") : -1;
-    if (!psc || off < 0) { out_printf(o, "no gamestate\n"); return; }
-    TArray *pa = (TArray *)((char *)gs + off);
-    int n = 0;
-    for (int i = 0; i < pa->num; i++) {
-        UObject *ps = ((UObject **)pa->data)[i];
-        UFunction *f = ps && ue_is_a(ps, psc) ? ue_find_function(U_CLASS(ps), fname) : NULL;
-        if (!f) continue;
-        uint8_t p[16] = {0};
-        int32_t ob = vote ? -1 : param_off(f, "bReady");
-        if (ob >= 0) p[ob] = 1;
-        ue_process_event(ps, f, p);
-        n++;
-    }
-    LOG("testing: %s on %d player(s)", fname, n);
-    out_printf(o, "%s: %d player(s)\n", fname, n);
 }
 
 // ---- burn cards (docs/investigations/burn-cards.md) ----
@@ -555,9 +420,10 @@ int testing_cmd(const char *verb, char *rest, Out *o) {
     (void)rest;
     if (!strcmp(verb, "signin")) { signin_step(o); return 1; }
     if (!strcmp(verb, "mission")) { cmd_mission(rest, o); return 1; }
-    if (!strcmp(verb, "ready")) { cmd_ready(rest, o); return 1; }
+    if (!strcmp(verb, "ready")) { admin_ready(rest, o); return 1; }
     if (!strcmp(verb, "burncard")) { cmd_burncard(rest, o); return 1; }
     if (!strcmp(verb, "callp")) { cmd_callp(rest, o); return 1; }
     if (!strcmp(verb, "endmission")) { cmd_endmission(rest, o); return 1; }
     return 0;
 }
+#endif  // !B4B_RELEASE

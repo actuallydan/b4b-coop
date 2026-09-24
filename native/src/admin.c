@@ -1,4 +1,4 @@
-// Chat commands (chat.c queues them) and the host's admin actions, also available as agent commands.
+// Chat commands (chat.c queues them) and the host's admin actions, also available as agent commands (dev builds).
 // docs/investigations/chat-commands.md.
 //
 // Roles: a command typed on this machine acts on this machine. Admin commands need this machine to be the server
@@ -6,8 +6,9 @@
 // A client's commands never reach the host (chat.c intercepts before anything is sent).
 //
 // Host-side enforcement (hook AGameModeBase::PreLogin override, the function that calls slotguard's ApproveLogin):
-// a banned player id, or any new player while the session is locked, gets a login error before a PlayerController
-// exists. Bans persist in b4bcoop-bans.txt next to the agent config (cmds_config_path()).
+// the join policy (joinpolicy.c: by default Steam friends only) is checked first, before the game's own PreLogin runs;
+// then a banned player id, or any new player while the session is locked, gets a login error before a
+// PlayerController exists. Bans persist in b4bcoop-bans.txt next to the agent config (cmds_config_path()).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +109,11 @@ static int uid_str(const void *repl, char *buf, size_t n) {
         if ((v >> 32) == 0x01100001ull) { snprintf(buf, n, "steam:%llu", (unsigned long long)v); return 1; }
     }
     return 0;
+}
+
+static uint64_t uid_id64(const void *repl) {
+    char b[40];
+    return uid_str(repl, b, sizeof b) ? strtoull(b + 6, NULL, 10) : 0;
 }
 
 // Ban/lock key for a player: its Steam id, else its name.
@@ -222,7 +228,26 @@ static void opt_value(const char *opts, const char *key, char *buf, size_t n) {
     }
 }
 
+// Join policy, before the game's own PreLogin: over Steam P2P the SteamID comes from the authenticated P2P session
+// (steamnet.c already refused anyone the policy rejects; this is the second check), over IP it is the login's claim.
+// Returns 1 if the login was refused here.
+static int policy_refused(const FString *opts, const FString *addr, const void *uid, FString *err) {
+    char o[1024], name[64], ip[64], why[96];
+    ascii_of(addr, ip, sizeof ip);
+    uint64_t claimed = uid_id64(uid), p2p = steamnet_peer_of_addr(ip), id = p2p ? p2p : claimed;
+    if (joinpolicy_check(id, why, sizeof why)) return 0;
+    ascii_of(opts, o, sizeof o);
+    opt_value(o, "Name", name, sizeof name);
+    LOG("admin: login %s from %s (steam:%llu%s): refused by the join policy: %s", name, ip, (unsigned long long)id,
+        p2p ? ", Steam P2P" : ", claimed", why);
+    if (!err || fstring_assign_game(err, joinpolicy_error())) { LOG("admin: could not set the login error, allowing"); return 0; }
+    n_refused++;
+    joinpolicy_notify_refused(id, why);
+    return 1;
+}
+
 static void prelogin_detour(UObject *gm, const FString *opts, const FString *addr, const void *uid, FString *err) {
+    if (policy_refused(opts, addr, uid, err)) return;   // strangers never reach the game's login code
     orig_prelogin(gm, opts, addr, uid, err);
     if (err && err->num > 1) return;   // already refused (e.g. slotguard's "Server full.")
     char o[1024], name[64], key[80], ip[64];
@@ -456,6 +481,34 @@ static void restart(Out *o) {
     out_printf(o, "restarting: mission failed on purpose (%s)\n", B[beh]);
 }
 
+// ready [vote]: host readies every player so nobody has to click: the loadout screen's Ready
+// (GobiPlayerState::ServerRequestPlayerReady(true)) or, with "vote", the post-round screen's
+// (ServerSetReadyForPostRoundVote). Server RPCs called on the server run locally, so this works for remote players too.
+void admin_ready(const char *rest, Out *o) {
+    int vote = rest && !strncmp(rest, "vote", 4);
+    const char *fname = vote ? "ServerSetReadyForPostRoundVote" : "ServerRequestPlayerReady";
+    UObject *w = ue_world();
+    UObject *gs = w ? ue_get_ptr(w, "GameState") : NULL;
+    UClass *psc = ue_find_class("GobiPlayerState");
+    int32_t off = gs ? ue_prop_offset(gs, "PlayerArray") : -1;
+    if (!psc || off < 0) { out_printf(o, "no gamestate\n"); return; }
+    TArray *pa = (TArray *)((char *)gs + off);
+    int n = 0;
+    for (int i = 0; i < pa->num; i++) {
+        UObject *ps = ((UObject **)pa->data)[i];
+        UFunction *f = ps && ue_is_a(ps, psc) ? ue_find_function(U_CLASS(ps), fname) : NULL;
+        if (!f) continue;
+        uint8_t p[16] = {0};
+        FField *pr = vote ? NULL : ue_find_prop(f, "bReady");
+        int32_t ob = pr ? FP_OFFSET(pr) : -1;
+        if (ob >= 0) p[ob] = 1;
+        ue_process_event(ps, f, p);
+        n++;
+    }
+    LOG("admin: %s on %d player(s)", fname, n);
+    out_printf(o, "%s: %d player(s)\n", fname, n);
+}
+
 // ---- dispatch ----
 static const struct { const char *name; int admin; const char *usage; } CMDS[] = {
     {"help", 0, "/help"}, {"join", 0, "/join <ip[:port] | steam:<id64>>"}, {"host", 0, "/host"}, {"leave", 0, "/leave"},
@@ -525,12 +578,13 @@ void admin_slash(char *line, Out *o) {
         teamsize_cmd("teamsize", rest, o);
     } else if (!strcmp(verb, "ready")) {
         if (!need_players(o)) return;
-        testing_cmd("ready", rest, o);
+        admin_ready(rest, o);
     } else run_admin(verb, rest, o);
 }
 
-// Agent CLI: kick ban unban bans lock unlock bots say restart, plus `slash <text>` (run a chat command directly,
-// without the chat box) and `players2` (the /players listing).
+#ifndef B4B_RELEASE
+// Agent CLI (dev builds): kick ban unban bans lock unlock bots say restart, plus `slash <text>` (run a chat command
+// directly, without the chat box) and `who` (the /players listing).
 int admin_cmd(const char *verb, char *rest, Out *o) {
     if (!strcmp(verb, "slash")) { if (rest) admin_slash(rest[0] == '/' ? rest + 1 : rest, o); return 1; }
     if (!strcmp(verb, "who")) { players(o); return 1; }
@@ -541,6 +595,7 @@ int admin_cmd(const char *verb, char *rest, Out *o) {
     }
     return run_admin(verb, rest, o);
 }
+#endif  // !B4B_RELEASE
 
 int admin_init(void) {
     alloc_ok = !memcmp((void *)ADDR_RESIZE, SIG_RESIZE, sizeof SIG_RESIZE) && !memcmp((void *)ADDR_FREE, SIG_FREE, sizeof SIG_FREE);

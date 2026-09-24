@@ -83,6 +83,7 @@ static UObject *slot_manager(void) {
     return gs ? ue_get_ptr(gs, "PlayerSlotManager") : NULL;
 }
 
+#ifndef B4B_RELEASE
 static void print_fstring(Out *o, FString *s) {
     for (int i = 0; s->data && i < s->num && s->data[i]; i++) out_printf(o, "%c", s->data[i] < 128 ? (char)s->data[i] : '?');
 }
@@ -132,10 +133,13 @@ static void cmd_slots(Out *o) {
         }
     }
 }
+#endif  // !B4B_RELEASE
 
 // Returns 1 if the verb was ours.
 int teamsize_cmd(const char *verb, char *rest, Out *o) {
-    if (!strcmp(verb, "slots")) { cmd_slots(o); return 1; }
+#ifndef B4B_RELEASE
+    if (!strcmp(verb, "slots")) { cmd_slots(o); return 1; }   // dev: slot layout dump
+#endif
     if (!strcmp(verb, "teamsize")) {
         if (rest && *rest) set_team_size(atoi(rest));
         out_printf(o, "teamsize=%d%s\n", team_size, team_size ? " (applies from the next map load, host only)" : " (game default)");

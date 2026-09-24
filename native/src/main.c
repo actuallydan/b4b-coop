@@ -1,5 +1,7 @@
-// b4bcoop: in-process agent. Hooks UGameEngine::Tick to run commands on the game thread; commands arrive
-// over a localhost TCP socket (127.0.0.1:47112), one line per connection, reply is the command's output.
+// b4bcoop: in-process agent. Hooks UGameEngine::Tick to drive every module on the game thread.
+// Dev builds only (not B4B_RELEASE): commands arrive over a localhost TCP socket (127.0.0.1:47112), one line per
+// connection, reply is the command's output (tools/b4b.py). Player builds (native/build.sh --release) have no
+// command server; players use chat commands (chat.c/admin.c) and b4bcoop.ini.
 #include <winsock2.h>
 #include <windows.h>
 #include <stdio.h>
@@ -12,12 +14,18 @@
 #include "cmds.h"
 #include "netguard.h"
 
-#define PORT 47112
-int g_agent_port;   // 0 until the command server binds; PORT for the first game instance on this machine
+int g_agent_port;   // 0 until the command server binds; PORT for the first game instance on this machine (dev)
 
 typedef void (*TickFn)(void *engine, float dt, uint8_t idle);
 static TickFn orig_tick;
 
+#ifdef B4B_RELEASE
+static void tick_detour(void *engine, float dt, uint8_t idle) {
+    cmds_tick(dt);
+    orig_tick(engine, dt, idle);
+}
+#else
+#define PORT 47112
 static CRITICAL_SECTION job_cs;
 static HANDLE job_done;
 static char *job_cmd;        // pending command (owned by server thread)
@@ -85,14 +93,17 @@ static DWORD WINAPI server_thread(LPVOID _) {
         closesocket(c);
     }
 }
+#endif  // !B4B_RELEASE
 
 static DWORD WINAPI init_thread(LPVOID _) {
     char err[256];
     if (ue_init(err, sizeof err)) { LOG("init: %s", err); return 1; }
     // wait until the engine has created its object array
     while (ue_num_objects() < 1000) Sleep(100);
+#ifndef B4B_RELEASE
     InitializeCriticalSection(&job_cs);
     job_done = CreateEventW(NULL, TRUE, FALSE, NULL);
+#endif
     MH_STATUS mh = MH_Initialize();   // netguard_init may have initialized MinHook already (DllMain)
     if ((mh != MH_OK && mh != MH_ERROR_ALREADY_INITIALIZED) ||
         MH_CreateHook((void *)ADDR_GAMEENGINETICK, (void *)tick_detour, (void **)&orig_tick) != MH_OK ||
@@ -105,6 +116,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     cards_init();
     flashlight_init();
     rewards_init();
+    rewardguard_init();
     burncards_init();
     teamsize_init();
     slotguard_init();
@@ -113,7 +125,10 @@ static DWORD WINAPI init_thread(LPVOID _) {
     cmds_init();
     steamnet_init();
     presence_init();
+    joinpolicy_init();
+#ifndef B4B_RELEASE
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
+#endif
     return 0;
 }
 
@@ -121,7 +136,11 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
         log_init(inst);
-        LOG("b4bcoop loaded");
+#ifdef B4B_RELEASE
+        LOG("b4bcoop loaded (player build)");
+#else
+        LOG("b4bcoop loaded (dev build: command server, test commands)");
+#endif
         netguard_init();   // before any game code runs: hooks name resolution / TCP connect / EOS (netguard.c)
         CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
     }

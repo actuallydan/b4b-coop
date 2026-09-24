@@ -232,11 +232,12 @@ void chat_on_join_failed(const char *error) {
     char msg[160];
     snprintf(msg, sizeof msg, "Could not join: %.*s", e ? (int)strcspn(e + 8, "'") : 40, e ? e + 8 : "connection failed");
     if (strstr(error, "banned")) cmds_auto_join_stop();
-    else if (strstr(error, "locked")) cmds_auto_join_backoff(60);
+    else if (strstr(error, "locked") || strstr(error, "Steam friends")) cmds_auto_join_backoff(60);
     chat_local_later(msg);
 }
 
-// ---- simulated typing (testing): real key messages to the game window, one step per tick ----
+#ifndef B4B_RELEASE
+// ---- simulated typing (testing, dev builds): real key messages to the game window, one step per tick ----
 static HWND game_window(void) {
     HWND w = NULL;
     while ((w = FindWindowExW(NULL, w, L"UnrealWindow", NULL))) {
@@ -274,9 +275,12 @@ static void type_tick(float dt) {
     LOG("chat: type: sent \"%s\" as key presses", typing);
     type_pos = -1;
 }
+#endif  // !B4B_RELEASE
 
 void chat_tick(float dt) {
+#ifndef B4B_RELEASE
     type_tick(dt);
+#endif
     later_tick(dt);
     if (leave_pending) { leave_pending = 0; coop_leave(); }
     while (q_head != q_tail) {
@@ -290,7 +294,6 @@ void chat_tick(float dt) {
     }
 }
 
-// ---- test commands ----
 // The live chat box: a ChatBoxUserWidget under the current game instance (the class also has widget-tree templates
 // that are not live; calling OnSendMessage on one of those crashes in HideInput).
 static UObject *live_chatbox(void) {
@@ -307,6 +310,8 @@ static UObject *live_chatbox(void) {
     return best;
 }
 
+#ifndef B4B_RELEASE
+// ---- test commands (dev builds) ----
 // chat <text>        send <text> as the chat box's Enter does (ChatBoxUserWidget::OnSendMessage)
 // chat status        counters, chat box state
 // chatshow <text>    print a local chat line
@@ -377,6 +382,7 @@ int chat_cmd(const char *verb, char *rest, Out *o) {
     out_printf(o, "sent via ChatBoxUserWidget::OnSendMessage: %s\n", rest);
     return 1;
 }
+#endif  // !B4B_RELEASE
 
 static int hook(uintptr_t at, const uint8_t *sig, size_t n, void *detour, void **orig, const char *what) {
     if (memcmp((void *)at, sig, n)) { LOG("chat: %s signature mismatch", what); return -1; }
