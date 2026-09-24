@@ -93,6 +93,15 @@ static void cmd_join(const char *addr, Out *o) {
     out_printf(o, "joining: %s\n", cmd);
 }
 
+// Join entry point: ip[:port] (UDP, as `join`) or steam:<id64> (Steam P2P, being added on another branch; until then
+// it only logs). Callers that need to know whether an attempt started compare g_travel_calls (travel.c) around it.
+void coop_join(const char *target) {
+    if (!strncmp(target, "steam:", 6)) { LOG("steam: transport not available (%s)", target); return; }
+    static Out scratch;
+    out_reset(&scratch);
+    cmd_join(target, &scratch);
+}
+
 static void cmd_find(const char *needle, int max, Out *o) {
     int n = ue_num_objects(), hits = 0;
     for (int i = 0; i < n && hits < max; i++) {
@@ -141,11 +150,18 @@ static void cmd_players(Out *o) {
 
 // ---- auto host/join from b4bcoop.ini next to the DLL ----
 //   host=1            -> whenever we're offline & standalone in Fort Hope, reopen it as a listen server
-//   join=1.2.3.4[:p]  -> whenever we're offline & standalone in Fort Hope, join that host (retry every 20s)
+//   join=1.2.3.4[:p]  -> whenever we're offline & standalone in Fort Hope, join that host (retry every 20s);
+//                        a comma-separated list is tried in turn (e.g. steam:<id64>,1.2.3.4:7777)
+// A session join target from Steam (presence.c: Join Game, invite, launch command line) overrides both.
 static int auto_host;
 static int own_config;   // config came from B4B_COOP_CONFIG (per-instance), not the shared game-dir ini
+static char session_join[300];   // from Steam, this session only
+static int session_fails;        // join attempts since we were last connected
 // Only the first instance on a machine auto-hosts from the shared ini (a second local copy shares it when testing).
-int cmds_auto_host(void) { extern int g_agent_port; return auto_host && (own_config || g_agent_port == 47112); }
+int cmds_auto_host(void) {
+    extern int g_agent_port;
+    return auto_host && !session_join[0] && (own_config || g_agent_port == 47112);
+}
 static char auto_join[256];
 static double auto_clock, auto_next;
 int g_auto_offline;      // offline=1: answer the Online/Offline sign-in prompt with Offline (testing.c)
@@ -189,19 +205,67 @@ void cmds_auto_join_backoff(double seconds) {
     LOG("auto: host is full, next join attempt in %.0fs", seconds);
 }
 
+void cmds_set_session_join(const char *targets) {
+    snprintf(session_join, sizeof session_join, "%s", targets ? targets : "");
+    session_fails = 0;
+    auto_next = auto_clock;
+    LOG("auto: session join target %s", session_join[0] ? session_join : "cleared");
+}
+const char *cmds_session_join(void) { return session_join; }
+
+// One join attempt: the next alternative of a comma-separated target list. An alternative that starts no travel
+// (e.g. steam: without the P2P transport) is skipped at once.
+static void join_next(const char *targets) {
+    static int alt;
+    char list[300], *alts[4];
+    int n = 0;
+    snprintf(list, sizeof list, "%s", targets);
+    for (char *t = list; t && *t && n < 4;) {
+        char *c = strchr(t, ',');
+        if (c) *c++ = 0;
+        while (*t == ' ') t++;
+        if (*t) alts[n++] = t;
+        t = c;
+    }
+    extern int g_travel_calls;
+    for (int k = 0; k < n; k++) {
+        const char *t = alts[alt++ % n];
+        int before = g_travel_calls;
+        LOG("auto: joining %s", t);
+        coop_join(t);
+        if (g_travel_calls != before) return;
+        LOG("auto: %s started no connection, trying the next target", t);
+    }
+}
+
+// Join the session target right away, from wherever we are (a Steam Join Game while hosting or in a session).
+void cmds_join_now(void) {
+    if (!session_join[0]) return;
+    join_next(session_join);
+    auto_next = auto_clock + 20;
+}
+
 static void auto_tick(float dt) {
     auto_clock += dt;
-    if ((!cmds_auto_host() && !auto_join[0]) || auto_clock < auto_next) return;
+    const char *join = session_join[0] ? session_join : auto_join;
+    if ((!cmds_auto_host() && !join[0]) || auto_clock < auto_next) return;
     auto_next = auto_clock + 2;
     UObject *w = ue_world();
-    if (!w || ue_get_ptr(w, "NetDriver")) return;             // already hosting or connected
+    UObject *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
+    if (nd && ue_get_ptr(nd, "ServerConnection")) session_fails = 0;   // connected
+    if (!w || nd) return;                                      // already hosting or connected
     char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
     if (!strstr(pkg, "FortHope")) return;                      // only act from the offline camp
     if (!ue_local_pc()) return;                                // still loading
+    if (session_join[0] && testing_signin_pending()) return;   // Steam join: sign in (Offline) first
     static Out scratch;
     out_reset(&scratch);
     if (cmds_auto_host()) { LOG("auto: hosting"); cmd_host(&scratch); auto_next = auto_clock + 30; }
-    else { LOG("auto: joining %s", auto_join); cmd_join(auto_join, &scratch); auto_next = auto_clock + 20; }
+    else if (session_join[0] && ++session_fails > 6) {         // Steam target: the host is gone; back to the ini
+        LOG("auto: no connection to %s after 6 attempts, giving up", session_join);
+        cmds_set_session_join(NULL);
+    }
+    else { join_next(join); auto_next = auto_clock + 20; }
 }
 
 void cmds_init(void) { load_config(); }
@@ -232,6 +296,7 @@ void cmds_tick(float dt) {
     testing_tick(dt);
     teamsize_tick(dt);
     slotguard_tick(dt);
+    presence_tick(dt);
 }
 
 void cmds_run(char *line, Out *o) {
@@ -250,7 +315,9 @@ void cmds_run(char *line, Out *o) {
         for (int i = 0; i < n; i++) out_printf(o, "%02x%s", p[i], (i % 16 == 15) ? "\n" : " ");
         out_printf(o, "\n");
     }
-    else if (!strcmp(verb, "join") && rest) cmd_join(rest, o);
+    else if (!strcmp(verb, "join") && rest) {
+        if (strncmp(rest, "steam:", 6)) cmd_join(rest, o); else { coop_join(rest); out_printf(o, "joining: %s\n", rest); }
+    }
     else if (!strcmp(verb, "exec") && rest) cmd_exec(rest, o);
     else if (!strcmp(verb, "netguard")) netguard_cmd(rest, o);
     else if (!strcmp(verb, "find") && rest) {
@@ -259,5 +326,6 @@ void cmds_run(char *line, Out *o) {
     } else if (!strcmp(verb, "call") && rest) {
         char *c = strtok(rest, " "), *f = strtok(NULL, " "), *cdo = strtok(NULL, " ");
         if (c && f) cmd_call(c, f, cdo && !strcmp(cdo, "cdo"), o); else out_printf(o, "usage: call <Class> <Func> [cdo]\n");
-    } else if (!testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o) && !slotguard_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
+    } else if (!testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o) && !slotguard_cmd(verb, rest, o) &&
+               !presence_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
 }

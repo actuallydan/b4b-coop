@@ -32,3 +32,12 @@ int slotguard_init(void);
 int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
 void slotguard_tick(float dt);
 void cmds_auto_join_backoff(double seconds);  // client: the host rejected us as full
+void coop_join(const char *target);           // game thread: ip[:port] or steam:<id64>
+void cmds_set_session_join(const char *targets); // Steam join target(s), comma-separated; overrides host=/join=
+const char *cmds_session_join(void);
+void cmds_join_now(void);                      // attempt the session target now (leaves the current session)
+void testing_arm_signin(void);                 // auto sign-in Offline (testing.c), for a Steam join
+int testing_signin_pending(void);              // auto sign-in armed and not finished
+void presence_init(void);                      // presence.c: Steam rich presence, Join Game, invites
+void presence_tick(float dt);
+int presence_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled

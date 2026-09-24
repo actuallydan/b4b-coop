@@ -109,6 +109,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     teamsize_init();
     slotguard_init();
     cmds_init();
+    presence_init();
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
     return 0;
 }
