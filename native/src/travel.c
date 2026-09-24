@@ -64,6 +64,17 @@ static void travel_detour(void *engine, UObject *world, const wchar_t *url, uint
         redirecting = 0;
         return;
     }
+    // auto-host: open the offline camp as a listen server directly instead of loading it twice
+    if (!redirecting && cmds_auto_host() && type == TRAVEL_Absolute && strstr(u, "FortHope") && !strstr(u, "listen")) {
+        static wchar_t w[2100]; size_t k = 0;
+        for (; url[k] && k < 2090; k++) w[k] = url[k];
+        const wchar_t *suffix = L"?listen";
+        for (size_t j = 0; suffix[j]; j++) w[k++] = suffix[j];
+        w[k] = 0;
+        LOG("travel: auto-host, opening camp with ?listen");
+        orig_travel(engine, world, w, type);
+        return;
+    }
     // client: server travel told us to follow the host -> open a rejoin window
     if (type == TRAVEL_Relative && !listen && host_addr[0] && is_session_map(u)) {
         follow_until = now_s + 300; retries_left = 20;

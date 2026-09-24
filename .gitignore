@@ -4,3 +4,4 @@ __pycache__/
 native/out/
 sdk/sdk.json
 *.log
+dist/

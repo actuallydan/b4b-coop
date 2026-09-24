@@ -137,7 +137,48 @@ static void cmd_players(Out *o) {
     }
 }
 
-void cmds_init(void) {}
+// ---- auto host/join from b4bcoop.ini next to the DLL ----
+//   host=1            -> whenever we're offline & standalone in Fort Hope, reopen it as a listen server
+//   join=1.2.3.4[:p]  -> whenever we're offline & standalone in Fort Hope, join that host (retry every 20s)
+static int auto_host;
+int cmds_auto_host(void) { return auto_host; }
+static char auto_join[256];
+static double auto_clock, auto_next;
+
+static void load_config(void) {
+    extern char g_module_dir[];
+    char path[600]; snprintf(path, sizeof path, "%sb4bcoop.ini", g_module_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) { LOG("config: no %s (manual mode)", path); return; }
+    char line[300];
+    while (fgets(line, sizeof line, f)) {
+        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
+        char *v = strchr(line, '='); if (!v || line[0] == '#' || line[0] == ';') continue;
+        *v++ = 0;
+        while (*v == ' ') v++;
+        if (!strcmp(line, "host")) auto_host = atoi(v);
+        else if (!strcmp(line, "join") && *v) snprintf(auto_join, sizeof auto_join, "%s", v);
+    }
+    fclose(f);
+    LOG("config: host=%d join=%s", auto_host, auto_join[0] ? auto_join : "-");
+}
+
+static void auto_tick(float dt) {
+    auto_clock += dt;
+    if ((!auto_host && !auto_join[0]) || auto_clock < auto_next) return;
+    auto_next = auto_clock + 2;
+    UObject *w = ue_world();
+    if (!w || ue_get_ptr(w, "NetDriver")) return;             // already hosting or connected
+    char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
+    if (!strstr(pkg, "FortHope")) return;                      // only act from the offline camp
+    if (!ue_local_pc()) return;                                // still loading
+    static Out scratch;
+    out_reset(&scratch);
+    if (auto_host) { LOG("auto: hosting"); cmd_host(&scratch); auto_next = auto_clock + 30; }
+    else { LOG("auto: joining %s", auto_join); cmd_join(auto_join, &scratch); auto_next = auto_clock + 20; }
+}
+
+void cmds_init(void) { load_config(); }
 static void set_float(UObject *o, const char *prop, float v) {
     int32_t off = o ? ue_prop_offset(o, prop) : -1;
     if (off >= 0) { *(float *)((char *)o + off) = v; }
@@ -160,6 +201,7 @@ void cmds_tick(float dt) {
     static int tuned;
     if (!tuned) { tuned = 1; tune_net_defaults(); }
     travel_tick(dt);
+    auto_tick(dt);
 }
 
 void cmds_run(char *line, Out *o) {
