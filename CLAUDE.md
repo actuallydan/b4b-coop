@@ -13,6 +13,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `main.c` Tick hook + game-thread command queue + TCP command server (127.0.0.1:47112, +1 per extra instance).
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
   - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log`.
+  - `cards.c` host card-ownership override for remote players (interim).
   - `cmds.c` commands: `status players host join exec find call peek`.
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
   no EAC), `two.sh` (host+client copies on one machine, labels windows), `winpy.sh`, `probed.sh`, `uninstall.sh`.
@@ -41,8 +42,10 @@ Done (2026-09-23):
   client claims a slot (~13s end to end).
 
 Known issues:
-- Joining client is asked to "pick remaining cards" one by one for its 15-card deck (pre-launch-era draft flow);
-  host unaffected. Likely the host has no copy of the client's decks. Investigation: `docs/investigations/card-draft.md`.
+- Card draft: host had no profile for remote players, so every deck card failed ownership → client got a 15-card
+  draft and actually played with no deck cards. Fix `native/src/cards.c` (host hook on 0x14176DDA0, remote humans
+  own their deck) built+installed, **not yet verified** (needs a fresh client join). Details:
+  `docs/investigations/card-draft.md`. Real fix is part of per-player profile sync.
 
 Next:
 1. Internet play with a second machine (Tailscale or UDP 7777 forward); package mod for the friend.
