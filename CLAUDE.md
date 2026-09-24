@@ -36,8 +36,14 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     presses), `chat status`, `popup [close]`. `admin.c` the commands (`/help join host leave players ping kick ban
     lock bots restart say ...`, same verbs on the CLI) and the host's PreLogin gate (bans in `b4bcoop-bans.txt`,
     lock). docs/investigations/chat-commands.md.
-  - `cmds.c` commands: `status players host join leave exec find call peek`; `coop_join/coop_host/coop_leave`; config = `b4bcoop.ini` next to the DLL or
-    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
+  - `presence.c` Steam "Join Game": while hosting, rich presence `connect=+b4bcoop_join steam:<id64> addr:<ip:port>`;
+    join requests (callback 337) and the same string on the command line become a session join target (overrides
+    host=/join=, auto sign-in Offline). `presence [on|off]`, `steamjoin <string>` (simulate), `invite`, `friends`;
+    ini `presence=0`, `presence_addr=`. docs/investigations/steam-invites.md.
+  - `cmds.c` commands: `status players host join leave exec find call peek`; config = `b4bcoop.ini` next to the DLL or
+    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`). `coop_join(target)`
+    = join entry point (`ip[:port]`, `steam:<id64>`); `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`);
+    `coop_host`, `coop_leave`.
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
   no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test
   instances, below), `two.sh` (old: two copies on the real prefix), `winpy.sh`, `probed.sh`, `uninstall.sh`.
@@ -104,6 +110,9 @@ Known issues / open:
 - #8 post-round lineup shows 4 of 5 heroes with teamsize=5 (cosmetic).
 - Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines.
 - All local test copies share one Steam id; two-account behavior is only covered by the one real session.
+- Steam Join Game/invites (`presence.c`): rich presence, launch-command-line join and simulated join requests verified
+  on one account; the real callback, the Join Game menu and Steam-initiated launch need the two-account plan in
+  docs/investigations/steam-invites.md. Local copies on one account overwrite each other's rich presence.
 - A client that disconnects before the saferoom-exit charge keeps its burn card; skull totem points and duffel-bag
   rewards use the verified forwarding path but weren't awarded in tests.
 

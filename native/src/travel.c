@@ -49,7 +49,10 @@ static int is_session_map(const char *u) {
     return u[0] == '/' || strstr(u, "MAP_") != NULL;
 }
 
+int g_travel_calls;   // SetClientTravel calls so far: cmds.c checks whether a join attempt started a travel
+
 static void travel_detour(void *engine, UObject *world, const wchar_t *url, uint8_t type) {
+    g_travel_calls++;
     char u[2048]; size_t n = 0;
     for (; url && url[n] && n < sizeof u - 1; n++) u[n] = url[n] < 128 ? (char)url[n] : '?';
     u[n] = 0;
