@@ -121,7 +121,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
     lstrcpyW(lp, bin); lstrcatW(lp, L"b4bcoop-launcher.log");
     logf = CreateFileW(lp, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     SYSTEMTIME t; GetLocalTime(&t);
-    logw(L"b4bcoop launcher (xinput1_3.dll) %04d-%02d-%02d %02d:%02d:%02d in %s", t.wYear, t.wMonth, t.wDay,
+    logw(L"b4bcoop launcher (xinput1_3.dll) %04d-%02d-%02d %02d:%02d:%02d, game root %s", t.wYear, t.wMonth, t.wDay,
          t.wHour, t.wMinute, t.wSecond, exe);
     logw(patch_iat(GetModuleHandleW(NULL)) ? L"hooked CreateProcessW" : L"CreateProcessW import not found");
     return TRUE;

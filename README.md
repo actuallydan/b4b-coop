@@ -29,7 +29,7 @@ Proton, and our copy forwards to the real one. On Windows, Steam's Play button s
 start Easy Anti-Cheat, which keeps mods out; `xinput1_3.dll` is loaded by that launcher and makes it start the game
 directly instead (only while the mod is installed; `-b4bcoop=off` in the launch options turns that off).
 Details: `docs/investigations/launch.md`. The Windows part of this flow is not yet verified on a Windows PC; until it
-is, `dist/b4bcoop-legacy.zip` (old `dwmapi.dll` + `Play B4B co-op.cmd`) still works.
+is, `b4bcoop-legacy.zip` (old `dwmapi.dll` + `Play B4B co-op.cmd`, built next to it by `launch/package.sh`) still works.
 
 Upgrading from the `dwmapi.dll` version: delete `Gobi/Binaries/Win64/dwmapi.dll` and `Play B4B co-op.cmd`, and on
 Linux remove the `WINEDLLOVERRIDES` launch option.

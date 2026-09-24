@@ -137,7 +137,9 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
-- Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines.
+- Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines,
+  and the no-script launch (root `xinput1_3.dll` redirect + `X3DAudio1_7.dll`; test script in
+  docs/investigations/launch.md §6). On Proton the `X3DAudio1_7.dll` agent is verified with a plain Steam launch.
 - All local test copies share one Steam id; two-account behavior is only covered by the one real session.
 - Steam Join Game/invites (`presence.c`): rich presence, launch-command-line join and simulated join requests verified
   on one account; the real callback, the Join Game menu and Steam-initiated launch need the two-account plan in

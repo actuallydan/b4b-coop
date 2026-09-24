@@ -124,10 +124,6 @@ extern const wchar_t b4b_proxy_name[];   // native/proxy/<name>.c: the system DL
 // per process may run it, the other stays a plain proxy. A dwmapi.dll from our own directory wins: it may be an
 // older build that doesn't know this rule. Runs under the loader lock, but all static imports are mapped by now.
 static int agent_is_elsewhere(HINSTANCE inst) {
-    wchar_t mx[64];
-    wsprintfW(mx, L"Local\\b4bcoop-agent-%lu", GetCurrentProcessId());
-    HANDLE h = CreateMutexW(NULL, FALSE, mx);
-    if (h && GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(h); return 1; }
     HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
     if (dwm && dwm != (HMODULE)inst) {
         wchar_t a[MAX_PATH], b[MAX_PATH];
@@ -135,6 +131,10 @@ static int agent_is_elsewhere(HINSTANCE inst) {
         wchar_t *sa = wcsrchr(a, L'\\'), *sb = wcsrchr(b, L'\\');
         if (sa && sb && sa - a == sb - b && !_wcsnicmp(a, b, sa - a)) return 1;   // same directory
     }
+    wchar_t mx[64];
+    wsprintfW(mx, L"Local\\b4bcoop-agent-%lu", GetCurrentProcessId());
+    HANDLE h = CreateMutexW(NULL, FALSE, mx);
+    if (h && GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(h); return 1; }
     return 0;   // the mutex handle stays open for the process lifetime
 }
 
