@@ -1,7 +1,7 @@
 # Remote players can't play burn cards (issue #6)
 
-Build 14216215. Static analysis of `Back4Blood.exe` and the SDK dump, plus the test prefixes' profiles (read only). No
-live run yet; section 5 is the plan for one.
+Build 14216215. Static analysis of `Back4Blood.exe` and the SDK dump, plus the test prefixes' profiles (read only).
+Verified live on 2026-09-24 with two local instances (§5a).
 
 ## 1. Summary
 
@@ -29,11 +29,9 @@ live run yet; section 5 is the plan for one.
 - **Test tooling:** `burncard` never played anything because it built the card handle with a guessed DataTable. It now
   takes the handles from the game's own list and can print slot state and trigger the charge. Details in §4.
 
-Confidence: high on the root cause. The play and charge paths were read end to end, and every check is listed below.
-Medium on the fix until the live test (§5), mainly on two points:
-- the key rewrite through the game's `FString` assignment;
-- the client-side `ClientExecuteAdjustConsumableQuantityCommand` path, which has never run live. SP used the same
-  mechanism, with a different RPC.
+Confidence: high. The root cause was confirmed live (kill-switch baseline: the client's card is rejected), and the fix
+was verified live end to end, including the key rewrite and the client-side `ClientExecuteAdjustConsumableQuantityCommand`
+path (§5a).
 
 ## 2. Host-side path, check by check
 
@@ -142,15 +140,16 @@ Now:
   prints the profile-independent server checks (`IsBurnCard`, `CanBurnCardBePlayedThisMap`,
   `HasPlayedBurnCardThisMap`). On a client this sends the real server RPC. `burncard <row> <table>` keeps the
   explicit-handle form.
-- `burncard status`: for each slot, `BurnCardsPlayedThisMap`, `NumBurnCardsEverPlayed` and, on the host, the queued
-  charge count and its key.
+- `burncard status`: for each slot, `BurnCardsPlayedThisMap`, `NumBurnCardsEverPlayed`, the number of
+  `ActiveHeroCards` with any active `Burn_*` card (the played card's effect), and, on the host, the queued charge count
+  and its key.
 - `burncard charge` (host): calls `GCM::OnSafeRoomStateChanged(InStartingRoom, NotInRoom)`, the charge that runs when
   the party walks out of the start saferoom. The queues are emptied, so the real exit later charges nothing twice.
 - `burncard map`: the old card → product dump.
 - `callp` targets the live GCM (`GameState.GameplayCardManager`) or the instance in the current world, and takes object
   args `pc | ps | gs | gcm | world | null`.
 
-## 5. Live test plan (not run)
+## 5. Live test plan
 `launch/install.sh`, then `launch/multi.sh 2` (instance 1 hosts; separate prefixes, so separate profiles; same Steam id,
 the case that exercises the key fix). `P<n>=~/.local/share/b4b-coop/prefixes/test<n>/pfx/drive_c/users/steamuser/AppData/Local/Back4Blood/Steam/Saved/SaveGames/PlayerProfileSettings.json`.
 `b4b` = `.venv/bin/python tools/b4b.py`.
@@ -193,12 +192,49 @@ the case that exercises the key fix). `P<n>=~/.local/share/b4b-coop/prefixes/tes
 If step 4 is rejected, the `precheck` line shows which profile-independent check failed; the quantity check is the
 only other one.
 
+## 5a. Live results (2026-09-24, branch rebased on main 31d84ae)
+Two instances (`launch/multi.sh 2`), same Steam account, Evansburgh Easy. Both profiles backed up before each run;
+diffs are of the whole `PlayerProfileSettings.json` after the deferred save (it landed ~2 s after the charge), with the
+`campaignRuns` entry (the new run itself) left out.
+
+**Fix, chapter 1** (host A = `Burn_RollGunAR`, client B = `Burn_RollGunSMG`), then `ready`, `burncard charge`,
+`endmission 1`:
+- Client play: precheck `1/1/0`; host log `trusting remote player's quantity`, `##> … played burn card … Burn_RollGunSMG`,
+  `remote player played Burn_RollGunSMG (slot 1); charge key 'offline.76561198063588550' -> b4bcoop.burn.0`.
+- Host play: `local player played Burn_RollGunAR (slot 0); charge key 'offline.76561198063588550' -> b4bcoop.burn.1`,
+  no "trusting". Both native keys were the same id, the merge case the fix exists for.
+- `burncard status` on host and client: slot 0 `played this map 1 Burn_RollGunAR [active Burn_RollGunAR]`, slot 1
+  `… Burn_RollGunSMG [active Burn_RollGunSMG]`, host `queued charge 1` with `b4bcoop.burn.1` / `.0`.
+- Charge: `charging b4bcoop.burn.1 -> local player's profile` + `ApplyCommandToOfflineData:AdjustConsumableQuantity`;
+  `charging b4bcoop.burn.0 -> remote player's profile` + `rewards: forwarding AdjustConsumableQuantity (-1)`. Client:
+  `[CLIENT RPC] adjusting consumable Burn_RollGunSMG by -1` + `ApplyCommandToOfflineData`. Queues 0 afterwards.
+- `endmission 1`: no second charge; SP 73 forwarded as before.
+- Diff: host `Burn_RollGunAR.spent` 15 → 16; client `Burn_RollGunSMG.spent` 13 → 14. After `endmission 1` also
+  `supplyPoints.acquired` +73 on each. Nothing else.
+
+**Fix, chapter 2** (host `Burn_RollGunHG`, client `Burn_TeamCurrency_250`, to see an effect in the log), same steps
+without `endmission`:
+- The client's card took effect on the host at once: `Cause: LoadoutGrantedCurrency AdjustCurrency: 150`,
+  `SetCurrency: 1600 => 1750` for both human players.
+- Keys `b4bcoop.burn.2` (host) / `.3` (client), charged to local / remote respectively, one `[CLIENT RPC]` on the client.
+- Diff: host `Burn_RollGunHG.spent` 4 → 5; client `Burn_TeamCurrency_250.spent` 23 → 24. Nothing else.
+
+**Baseline** (`B4BCOOP_NO_BURNCARDS=1 launch/multi.sh 2`; log `burncards: disabled by B4BCOOP_NO_BURNCARDS`):
+- Client `burncard Burn_RollGunSMG`: precheck `1/1/0` (every profile-independent check passes), but the host logs no
+  `played burn card`, and `burncard status` shows slot 1 `played this map 0` on both sides. Root cause confirmed.
+- Host `Burn_RollGunAR` plays and is charged natively (key `offline.76561198063588550`).
+- Diff: host `Burn_RollGunAR.spent` 16 → 17; client unchanged.
+
+Effects: every played card is in its slot's `ActiveHeroCards` (host and replicated to the client), and the team-currency
+card paid out. `Burn_RollGun*` effects are not logged, so the weapon roll itself was not observed (the test windows
+show the loading screen overlay).
+
 ## 6. Unresolved
-- Nothing here was run live.
+- The retail walk-out trigger (step 10) was not run. `burncard charge` calls the same `OnSafeRoomStateChanged`
+  UFunction, so only the trigger differs.
 - The duffel-bag "maxed-out burn card" test sees 0 for remote players (§2), which is cosmetic.
 - A remote player who disconnects before the charge keeps the card for free (the charge is dropped, and logged).
-- The client-side `ClientExecuteAdjustConsumableQuantityCommand` path has not run live (in #4 the duffel bags were
-  empty). Step 7 is its first test.
+- Not tested across two machines / two accounts; the key fix does not depend on the ids, so no difference is expected.
 
 ## 7. Addresses
 | What | VA |

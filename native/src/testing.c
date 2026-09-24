@@ -302,6 +302,13 @@ static void burn_status(UObject *gcm, Out *o) {
         out_printf(o, "slot %d (index %d/%d, player id %d): played this map %d, ever %d", i, *(int32_t *)s, s[4],
                    *(int32_t *)(s + 8), played->num, *(int32_t *)(s + 0x70));
         for (int k = 0; k < played->num; k++) out_printf(o, " %s", ue_name(((RowHandle *)played->data)[k].row, a, sizeof a));
+        // the card's effect: PlayBurnCard adds it to the slot's ActiveHeroCards (+0x10, FActiveGameplayCard 0x28 each)
+        TArray *active = (TArray *)(s + 0x10);
+        out_printf(o, "; active cards %d", active->num);
+        for (int k = 0; k < active->num; k++) {
+            ue_name(*(FName *)((char *)active->data + k * 0x28 + 8), a, sizeof a);
+            if (!_strnicmp(a, "Burn_", 5)) out_printf(o, " [active %s]", a);
+        }
         if (host) {   // unreflected, server only: queued for the saferoom-exit charge + the key it is charged under
             TArray *q = (TArray *)(s + 0x78);
             FString *key = (FString *)(s + 0x88);

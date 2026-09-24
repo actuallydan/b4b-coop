@@ -94,7 +94,8 @@ Known issues:
 
 - Burn cards (#6): a remote player could not play them (the host checks the quantity in a profile it doesn't have),
   and the saferoom-exit charge was keyed by a hydra id that is empty or shared in our setups. `native/src/burncards.c`
-  fixes both; it is statically verified only, and the live test plan is in `docs/investigations/burn-cards.md` §5.
+  fixes both; verified live with two instances (each card charged once, to its own player's profile; kill switch
+  baseline rejects the client's card). Results: `docs/investigations/burn-cards.md` §5a.
 
 Next:
 0. Read the friend's client log: explain why card ownership passed natively for a different account.
