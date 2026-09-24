@@ -252,8 +252,11 @@ static void auto_tick(float dt) {
     auto_next = auto_clock + 2;
     UObject *w = ue_world();
     UObject *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
-    if (nd && ue_get_ptr(nd, "ServerConnection")) session_fails = 0;   // connected
-    if (!w || nd) return;                                      // already hosting or connected
+    int connected = nd && ue_get_ptr(nd, "ServerConnection");
+    if (connected) session_fails = 0;
+    // A Steam join may leave our own empty camp (host=1 opened even the title's Fort Hope with ?listen)
+    int empty_host = session_join[0] && nd && !connected && ue_num_clients(w) == 0;
+    if (!w || (nd && !empty_host)) return;                     // already hosting or connected
     char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
     if (!strstr(pkg, "FortHope")) return;                      // only act from the offline camp
     if (!ue_local_pc()) return;                                // still loading

@@ -113,6 +113,14 @@ void testing_arm_signin(void) {
     signin_deadline = signin_clock + 600;
 }
 
+// Title screen up (auto-host makes even the title's Fort Hope a listen server): nothing to advertise yet.
+int testing_on_title(void) {
+    static UClass *sc;
+    if (!sc) sc = ue_find_class("SignInScreen");
+    UObject *s = sc ? find_live(sc, NULL) : NULL;
+    return s && SCREEN_STATE(s) != SIS_SignedIn;
+}
+
 int testing_signin_pending(void) { return g_auto_offline && !signin_done; }
 
 void testing_tick(float dt) {

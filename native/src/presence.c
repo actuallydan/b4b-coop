@@ -291,7 +291,11 @@ static void set_key(int i, const char *v) {
 
 static void advertise_tick(void) {
     UObject *w = ue_world();
-    int hosting = w && ue_is_listen_server(w);
+    int hosting = w && ue_is_listen_server(w) && !cmds_session_join()[0];   // about to join someone: not hosting
+    static int past_title;   // checked until the first time we host past the sign-in screen
+    if (hosting && !past_title) {
+        if (testing_on_title()) hosting = 0; else past_title = 1;
+    }
     if (hosting) last_hosting = clock_s;
     int want = advertise && clock_s - last_hosting < 15;   // hysteresis: server travel briefly has no NetDriver
     if (!want) {
@@ -313,13 +317,17 @@ static void advertise_tick(void) {
     snprintf(group, sizeof group, "b4bcoop-%llu", (unsigned long long)my_id);
     snprintf(size, sizeof size, "%d", players);
     if (!advertising) LOG("presence: advertising connect=\"%s\"", connect);
-    if (clock_s >= next_verify) {   // someone else (the game's own presence) may have replaced our keys
-        next_verify = clock_s + 30;
-        const char *cur = advertising ? S.GetFriendRichPresence(friends, my_id, "connect") : NULL;
-        if (cur && strcmp(cur, applied[0])) {
-            LOG("presence: connect was changed to \"%s\", re-applying", cur);
-            for (int i = 0; i < NKEYS; i++) applied[i][0] = 0;
+    // The game's own presence push (Steam OSS SetPresence: steam_display "Solo in Fort Hope" etc.) replaces the whole
+    // key set, dropping ours; another copy of the game on the same account does too. Read back (local cache) and
+    // re-apply every check.
+    const char *cur = advertising ? S.GetFriendRichPresence(friends, my_id, "connect") : NULL;
+    if (cur && strcmp(cur, applied[0])) {
+        static unsigned reapplied;
+        if (reapplied++ < 5 || clock_s >= next_verify) {
+            LOG("presence: connect was changed to \"%s\", re-applying (%u so far)", cur, reapplied);
+            next_verify = clock_s + 300;
         }
+        for (int i = 0; i < NKEYS; i++) applied[i][0] = 0;
     }
     set_key(0, connect); set_key(1, status); set_key(2, group); set_key(3, size);
     advertising = 1;
@@ -336,10 +344,10 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
     cmds_set_session_join(targets);
     testing_arm_signin();
     UObject *w = ue_world();
-    if (w && ue_get_ptr(w, "NetDriver")) {   // hosting or in someone's session: the player asked to switch
+    if (w && ue_get_ptr(w, "NetDriver") && !testing_on_title()) {   // in a session: the player asked to switch
         LOG("presence: leaving the current session to join");
         cmds_join_now();
-    }   // else: the auto-join machinery joins once we are signed in, standalone in offline Fort Hope
+    }   // else: the auto-join machinery joins once we are signed in and in offline Fort Hope (alone)
 }
 
 void presence_init(void) {

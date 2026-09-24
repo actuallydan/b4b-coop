@@ -37,7 +37,8 @@ void cmds_set_session_join(const char *targets); // Steam join target(s), comma-
 const char *cmds_session_join(void);
 void cmds_join_now(void);                      // attempt the session target now (leaves the current session)
 void testing_arm_signin(void);                 // auto sign-in Offline (testing.c), for a Steam join
-int testing_signin_pending(void);              // auto sign-in armed and not finished
+int testing_signin_pending(void);
+int testing_on_title(void);                    // sign-in screen up (not signed in yet)              // auto sign-in armed and not finished
 void presence_init(void);                      // presence.c: Steam rich presence, Join Game, invites
 void presence_tick(float dt);
 int presence_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
