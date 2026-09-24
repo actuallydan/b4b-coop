@@ -5,3 +5,4 @@ native/out/
 sdk/
 *.log
 dist/
+.claude/
