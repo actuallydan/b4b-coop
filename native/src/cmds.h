@@ -1,5 +1,6 @@
 #pragma once
 #include <stddef.h>
+#include "ue.h"
 
 typedef struct { char buf[256 * 1024]; size_t len; } Out;
 void out_reset(Out *o);
@@ -32,20 +33,47 @@ int slotguard_init(void);
 int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
 void slotguard_tick(float dt);
 void cmds_auto_join_backoff(double seconds);  // client: the host rejected us as full
-
-// Join / host entry points for other features (Steam invites, chat commands). Any thread (queued to the game thread).
-// target: "ip[:port]" (default port 7777) or "steam:<steamid64>[:port]" (Steam P2P). Also used by the `join` command.
+// Join / host entry points (chat /join, Steam invites, CLI join). Any thread: off the game thread the request is
+// queued for the next tick. target: "ip[:port]" (default 7777) or "steam:<steamid64>[:port]" (Steam P2P, steamnet.c).
 void coop_join(const char *target);
-void coop_host(void);    // reopen the current map as a listen server on the ini transport (`host` command)
+void coop_host(void);                  // host the current offline camp (transport= ini key: steam or ip)
+void coop_leave(void);                 // client: disconnect, back to own camp, no auto-rejoin
+int slotguard_kick(UObject *pc);       // host: close a remote player's connection
+int chat_init(void);
+void chat_tick(float dt);
+int chat_cmd(const char *verb, char *rest, Out *o);
+void chat_local(const char *fmt, ...);  // local-only chat line(s)
+#define CHAT_NOTICE_TYPE L"b4bcoop"      // ClientTeamMessage Type of host notices (shown by chat.c on the receiver)
+#define CHAT_KICK_TYPE L"b4bcoopkick"    // ... a notice after which the receiving client leaves (kick/ban)
+FName chat_notice_type(int kick);
+void chat_local_later(const char *text); // show after the next map load (e.g. why a join was refused)
+void chat_on_join_failed(const char *error);  // uelog.c: PendingConnectionFailure on this client
+void cmds_auto_join_stop(void);        // client: no more ini auto-join attempts this session
+int admin_init(void);
+void admin_tick(float dt);
+int admin_cmd(const char *verb, char *rest, Out *o);
+void admin_slash(char *line, Out *o);  // a chat command typed by the local player (without the '/')
+void admin_on_initslots(UObject *psm); // teamsize.c: right before APlayerSlotManager::InitSlots
+void cmds_set_session_join(const char *targets); // Steam join target(s), comma-separated; overrides host=/join=
+const char *cmds_session_join(void);
+void cmds_join_now(void);                      // attempt the session target now (leaves the current session)
+void testing_arm_signin(void);                 // auto sign-in Offline (testing.c), for a Steam join
+int testing_signin_pending(void);
+int testing_on_title(void);                    // sign-in screen up (not signed in yet)              // auto sign-in armed and not finished
+void presence_init(void);                      // presence.c: Steam rich presence, Join Game, invites
+void presence_tick(float dt);
+int presence_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
 
 // steamnet.c: Steam P2P transport (docs/investigations/steam-p2p.md)
 #include <stdint.h>
 uint64_t steamnet_local_id(void);                          // 0 if Steam is not available
 int steamnet_available(void);
+const char *steamnet_last_error(void);                     // why Steam P2P is unavailable (last check)
 int steamnet_prepare_host(void);                           // game thread; 1 = Steam driver selected
 int steamnet_prepare_url(const char *url);                 // game thread; 1 steam, 0 ip, -1 steam URL but no Steam
 int steamnet_parse_target(const char *target, char *url, size_t n);   // 1 steam, 0 ip, -1 malformed
 void steamnet_note_join(const char *url);
+int steamnet_hosting_steam(int *port);                     // listen server on Steam P2P? *port = P2P channel (0 unknown)
 void steamnet_on_log(const char *cat, const char *msg);    // uelog.c: every engine log line
 void steamnet_tick(float dt);
 void steamnet_status(Out *o);

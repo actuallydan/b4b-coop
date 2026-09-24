@@ -129,6 +129,12 @@ static void kick_now(UObject *pc) {
     LOG("slotguard: closed the connection of player %p", (void *)pc);
 }
 
+int slotguard_kick(UObject *pc) {   // admin.c /kick, /ban
+    if (!is_remote_pc(pc)) return -1;
+    kick_now(pc);
+    return 0;
+}
+
 static void failclaim_detour(UObject *pc) {
     orig_failclaim(pc);   // retail: log "Failed To claim slot!", player goes Spectating
     if (is_remote_pc(pc)) { LOG("slotguard: remote player %p got no slot, kicking", (void *)pc); push(kicks, pc); }

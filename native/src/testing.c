@@ -1,6 +1,7 @@
 // Unattended local testing (launch/multi.sh): get from boot to offline Fort Hope with no clicks.
 //   offline=1 in the agent config: press "Sign in" on the title screen, then answer the Online/Offline popup
 //   with Offline, exactly like a click (PopupUserWidget::Close("Offline") -> SignInTask_OnlineOfflinePopup).
+//   Also armed for real players by a Steam "Join Game" / invite (presence.c -> testing_arm_signin).
 // Commands: `signin` (one step by hand), `mission [raw] [map] [Easy|Normal|Hard|VeryHard]`, `ready [vote]`,
 // `endmission [1|0]`, `burncard list|map|status|charge|[row] [table]`, `callp <Class> <Func> [args]`.
 #include <stdio.h>
@@ -95,11 +96,38 @@ static int signin_step(Out *o) {
     return 0;
 }
 
+static double signin_clock, signin_deadline = 600;
+
+// A join target from Steam (presence.c): sign in Offline for a real player too, for the next 10 minutes.
+void testing_arm_signin(void) {
+    if (signin_done) return;
+    UClass *sc = ue_find_class("SignInScreen");
+    UObject *w = ue_world();
+    char pkg[256];
+    if (w && ue_local_pc() && strstr(ue_world_package(w, pkg, sizeof pkg), "FortHope") && sc && !find_live(sc, NULL)) {
+        signin_done = 1;   // already in the camp, past the title screen
+        return;
+    }
+    if (!g_auto_offline) LOG("testing: auto sign-in (Offline) armed for a Steam join");
+    g_auto_offline = 1;
+    signin_deadline = signin_clock + 600;
+}
+
+// Title screen up (auto-host makes even the title's Fort Hope a listen server): nothing to advertise yet.
+int testing_on_title(void) {
+    static UClass *sc;
+    if (!sc) sc = ue_find_class("SignInScreen");
+    UObject *s = sc ? find_live(sc, NULL) : NULL;
+    return s && SCREEN_STATE(s) != SIS_SignedIn;
+}
+
+int testing_signin_pending(void) { return g_auto_offline && !signin_done; }
+
 void testing_tick(float dt) {
-    static double clock, next;
-    clock += dt;
+    static double next;
+    double clock = signin_clock += dt;
     if (!g_auto_offline || signin_done || clock < next) return;
-    if (clock > 600) { signin_done = 1; LOG("testing: no sign-in after 10 min, auto sign-in off"); return; }
+    if (clock > signin_deadline) { signin_done = 1; LOG("testing: no sign-in after 10 min, auto sign-in off"); return; }
     next = clock + 2;
     if (!ue_world()) return;
     signin_step(NULL);

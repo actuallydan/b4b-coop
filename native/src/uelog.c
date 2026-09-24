@@ -31,6 +31,7 @@ static void logf_detour(const char *file, int line, const FName *cat, uint8_t ve
     steamnet_on_log(cname, buf);
     if (!strcmp(cname, "LogNet") && strstr(buf, "NetworkFailure: PendingConnectionFailure") && strstr(buf, "Server full."))
         cmds_auto_join_backoff(60);
+    if (!strcmp(cname, "LogNet") && strstr(buf, "NetworkFailure: PendingConnectionFailure")) chat_on_join_failed(buf);
     orig_logf(file, line, cat, verb, L"%s", wbuf);
 }
 

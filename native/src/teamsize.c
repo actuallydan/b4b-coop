@@ -43,6 +43,7 @@ static void initslots_detour(UObject *psm, void *a2) {
         LOG("teamsize: InitSlots %d team(s): TeamSize %d -> %d", cfg[0] + 1, cfg[1], team_size);
         cfg[1] = team_size;
     }
+    admin_on_initslots(psm);   // /bots on|off
     orig_initslots(psm, a2);
 }
 

@@ -98,6 +98,8 @@ static int sigs_ok(void) {
 }
 static FName make_name(const wchar_t *s) { FName n = {0}; ((FNameCtorFn)ADDR_FNAME_CTOR)(&n, s, 1 /*FNAME_Add*/); return n; }
 
+const char *steamnet_last_error(void) { return g_last_why[0] ? g_last_why : "unknown"; }
+
 // 1 if Steam P2P can carry a session from this process; otherwise 0 and the reason in g_last_why.
 int steamnet_available(void) {
     const char *why = NULL;
@@ -305,6 +307,14 @@ void steamnet_tick(float dt) {
         if (g_listen_port && g_listen_port != 7777) LOG("steamnet: hosting on Steam P2P: join steam:%llu:%d", (unsigned long long)id, g_listen_port);
         else LOG("steamnet: hosting on Steam P2P: join steam:%llu", (unsigned long long)id);
     } else if (g_transport_steam) LOG("steamnet: transport=steam but hosting on %s (%s)", st, g_last_why[0] ? g_last_why : "fallback");
+}
+
+// 1 if the current world is a listen server on Steam P2P; *port = its P2P channel (listen port) when known.
+int steamnet_hosting_steam(int *port) {
+    UObject *w = ue_world(), *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
+    char st[64];
+    if (port) *port = g_listen_steam == 1 ? g_listen_port : 0;
+    return nd && ue_is_listen_server(w) && !strcmp(driver_state(nd, st, sizeof st), "Steam P2P");
 }
 
 static void print_p2p(Out *o, uint64_t id) {
