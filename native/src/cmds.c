@@ -6,6 +6,7 @@
 #include "cmds.h"
 #include "ue.h"
 #include "log.h"
+#include "netguard.h"
 
 void out_reset(Out *o) { o->len = 0; o->buf[0] = 0; }
 void out_printf(Out *o, const char *fmt, ...) {
@@ -87,6 +88,7 @@ static void cmd_join(const char *addr, Out *o) {
     char cmd[300];
     snprintf(cmd, sizeof cmd, "open %s%s", addr, strchr(addr, ':') ? "" : ":7777");
     travel_set_host(cmd + 5);
+    netguard_allow_host(addr);   // a host given by name must still resolve
     game_exec(cmd);
     out_printf(o, "joining: %s\n", cmd);
 }
@@ -240,6 +242,7 @@ void cmds_run(char *line, Out *o) {
     }
     else if (!strcmp(verb, "join") && rest) cmd_join(rest, o);
     else if (!strcmp(verb, "exec") && rest) cmd_exec(rest, o);
+    else if (!strcmp(verb, "netguard")) netguard_cmd(rest, o);
     else if (!strcmp(verb, "find") && rest) {
         char *needle = strtok(rest, " "), *m = strtok(NULL, " ");
         cmd_find(needle, m ? atoi(m) : 50, o);

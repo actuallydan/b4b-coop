@@ -13,6 +13,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `main.c` Tick hook + game-thread command queue + TCP command server (127.0.0.1:47112, first free of +0..7;
     `B4B_COOP_PORT` pins it).
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
+  - `netguard.c` outbound-traffic guard from DllMain (DNS/WinHTTP/TCP allowlist, EOS network off; `netguard`
+    command, `netguard=` ini keys); docs/investigations/outbound-traffic.md.
   - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log` (`b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
   - `cards.c` host card-ownership override for remote players (interim).
   - `flashlight.c` manual flashlight toggle (`flashlight` command, ini hotkey); docs/investigations/flashlight.md.
