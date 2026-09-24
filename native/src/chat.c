@@ -335,6 +335,20 @@ int chat_cmd(const char *verb, char *rest, Out *o) {
         }
         return 1;
     }
+    if (!strcmp(verb, "click")) {   // click <x> <y>: left click at window client coordinates (e.g. a post-round Continue)
+        int x = -1, y = -1;
+        if (rest) sscanf(rest, "%d %d", &x, &y);
+        HWND w = game_window();
+        if (!w || x < 0 || y < 0) { out_printf(o, "usage: click <x> <y> (client coordinates; window %p)\n", (void *)w); return 1; }
+        LPARAM at = MAKELPARAM(x, y);
+        PostMessageW(w, WM_MOUSEMOVE, 0, at);
+        PostMessageW(w, WM_LBUTTONDOWN, MK_LBUTTON, at);
+        PostMessageW(w, WM_LBUTTONUP, 0, at);
+        RECT r = {0};
+        GetClientRect(w, &r);
+        out_printf(o, "click at %d,%d (client %ldx%ld)\n", x, y, r.right, r.bottom);
+        return 1;
+    }
     if (!strcmp(verb, "type")) {
         if (!rest || !*rest) { out_printf(o, "usage: type [vk=<code>] <text>\n"); return 1; }
         if (type_pos >= 0) { out_printf(o, "still typing \"%s\"\n", typing); return 1; }

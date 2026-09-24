@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end regression suite: real game instances on the test prefixes (launch/multi.sh), driven by the agent.
 
-    tools/e2e.py [--quick | --full] [--no-lock] [--out DIR] [--keep]
+    tools/e2e.py [--quick | --full] [--no-lock] [--out DIR]
 
 --quick (default, ~6 min): 2 instances (host + client), Evansburgh Easy:
     join, mission follow, client flashlight replicated to the host, a host and a client burn card (charged to their

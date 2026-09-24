@@ -142,7 +142,7 @@ the mission, each gets a hero, 15 loadout cards, a HUD entry, and the party surv
 | HUD | Party panel in every window: 4 teammates + self (`hud-5-windows.jpg`). Risk item 2 did not happen. Character select also lists all 4 others (`character-select-host.jpg`). |
 | Loadout cards | Host: `GrantLoadoutCardsForSlot` ×5, `granting 15 cards` ×5, no draft. (Same account everywhere, so `cards.c` never had to override ownership.) |
 | Chapter transition | `ready`, `endmission 1`: post-round screen, then seamless travel to `Evansburgh_C` and, after a second round, `Evansburgh_D`. `HandleSeamlessTravelPlayer found previous slot` for all 5. Same heroes in the same slots each time (`reserved=1`). |
-| Post-round lineup | **Shows 4 of 5 heroes** (`postround-lineup.jpg`): the lineup level has 4 target points (risk item 3). Cosmetic, no error. |
+| Post-round lineup | **Shows 4 of 5 heroes** (`postround-lineup.jpg`): the lineup level has 4 target points (risk item 3). Cosmetic, no error. Fixed later (§6, #8). |
 | Leave | SIGKILL of one client in the pre-round: its slot sits unowned until the round starts, then a bot takes the hero over (`BotController`). Host fine. |
 | Baseline, no `teamsize`, `multi.sh 5` | **Host crashes in Fort Hope** as the 5th hero spawns (reproduced). |
 
@@ -169,5 +169,41 @@ session, a failed mission and the return to camp, resuming a 5-slot save with `t
 1. ~~Crash guard~~ Done (#7): `native/src/slotguard.c` refuses the login with "Server full." and never spawns a
    slotless hero. The "possession handler" above is actually `AHeroGameMode::RestartPlayerAtPlayerStart`. See
    `slot-guard.md`.
-2. Post-round lineup: add a 5th target point/mannequin (`CharacterLineupLayoutManager.PostRoundTargetPoints`), or accept it.
+2. ~~Post-round lineup~~ Done (#8, §6): `native/src/lineup.c` adds a 5th mannequin.
 3. Test hot-join into a running mission, and a real two-machine session with `teamsize=5`.
+
+## 6. Lineup with 5 heroes (issue #8, `native/src/lineup.c`)
+
+**How the lineup places heroes.** It never shows the real pawns. The lineup sublevel (`MAP_CharacterPreRound`,
+`GobiWorldSettings.CharacterLineupLevel`) is streamed in locally on every machine by the post-round / pre-round /
+character-select UI. It holds an `ACharacterLineupLayoutManager` whose level-placed arrays are fixed: `Mannequins`
+(4 `CustomizationMannequin_BP`), `PreRoundLockInTargetPoints` and `PostRoundTargetPoints` (both the same 4
+`PreRoundLineupSpot_1..4` `ATargetPoint`s), and a `CameraActor` (FOV 30). `SetLayoutType` (`0x141CBD120`; type
+1 character select, 2 pre-round lock-in, 3 post-round at `0x141CBD900`) walks the hero team's slots: slot index i →
+`Mannequins[i]` dressed as that slot's hero (bots included) → moved to `TargetPoints[i]`; `i >= Mannequins.Num` is
+skipped silently. The name plates are a Blueprint widget with 4 fixed columns.
+
+Live dump (`lineup` command, post-round): camera at (9758, 10000, 10134) looking +x; spots 1-4 at
+(10151, 9974), (10230, 9893), (10264, 10008), (10119, 10069), z 10000 — a staggered group, not a row.
+
+**Fix.** Hook `SetLayoutType`. Only when the hero team has more slots than there are mannequins (so never with 4):
+before the original, spawn a copy of the last mannequin (`BeginDeferredActorSpawnFromClass` / `FinishSpawningActor`,
+owner = the manager, so it lives in the lineup sublevel and goes away with it; not replicated) and append it to
+`Mannequins` (array grown with `GMalloc->Realloc`). The game then dresses and shows it like the others. After the
+original, the heroes without a target point are moved (`K2_SetActorTransform`) to the back row: last spot +
+(211, -11), i.e. about (10330, 10058), in the gap between the 3rd and 4th hero as seen from the camera. Kill switch
+`B4BCOOP_NO_LINEUP=1`. `lineup` dumps managers/mannequins/points/camera; `lineup off <dx> <dy>`, `lineup fov <deg>`,
+`lineup apply` were used to tune the placement live.
+
+**Result** (`B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5`, Evansburgh C post-round): all 5 instances show 5
+heroes (`five-players/postround-lineup-5.jpg`, instance 5's own view): `lineup: 5 hero slots, 4 mannequins: spawned
+…` and `layout 3, placed 1 hero(es) beyond 4 target points` on each. With 2 humans + 3 bots the bot in slot 4 shows
+the same way. Placement options tried: continuing the row past spot 4 (hero cut off at the right edge, overlapping
+spot 4), just behind spot 3 (hidden behind that hero). The back-row gap is the only spot that is fully in frame
+without moving the 4 lit heroes or the camera.
+
+**Limits (cosmetic).** The 5th hero stands in the back and is dimmer (the level's lights aim at the 4 spots) and has
+no name plate (the plate widget has 4 columns). Widening the FOV or re-spacing all 5 would misalign the 4 plates,
+so it was not done. The character-select (type 1) and pre-round (type 2) layouts get the same extra mannequin, so a
+5th player sees their own hero on character select; that path was not looked at separately. 6+ heroes would stack
+further back (untested).
