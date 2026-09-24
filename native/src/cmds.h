@@ -17,3 +17,6 @@ void travel_tick(float dt);
 void travel_on_handshake_failed(void);
 int cards_init(void);
 int cmds_auto_host(void);
+int flashlight_init(void);
+void flashlight_tick(float dt);
+void cmd_flashlight(const char *arg, Out *o);

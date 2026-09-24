@@ -19,6 +19,8 @@ cat > "$out/b4bcoop.ini" <<'INI'
 ;host=1
 ; Join: when you reach offline Fort Hope, connect to the host's IP.
 ;join=HOST.IP.GOES.HERE
+; Flashlight toggle key (default L; 0 disables).
+;flashlight_key=L
 INI
 cat > "$out/README.txt" <<'TXT'
 b4bcoop - private Back 4 Blood co-op (offline mode + listen server). No WB/Turtle Rock servers.
