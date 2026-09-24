@@ -11,16 +11,18 @@ host into missions.
 
 ## Install (players)
 1. Download `b4bcoop.zip` from [Releases](../../releases) and unzip it.
-2. Steam → Back 4 Blood → Manage → Browse local files → `Gobi/Binaries/Win64`. Copy `dwmapi.dll` and
-   `b4bcoop.ini` there.
+2. Steam → Back 4 Blood → Manage → Browse local files → `Gobi/Binaries/Win64`. Copy the zip's files there
+   (`dwmapi.dll`, `b4bcoop.ini`, `Play B4B co-op.cmd`).
 3. Edit `b4bcoop.ini`:
    - Host: `host=1`. Your PC must accept UDP 7777 (router port-forward + firewall), or use Tailscale/a VPN.
    - Join: `join=<host IP>`.
-4. Linux / Steam Deck only, Steam launch options: `WINEDLLOVERRIDES="dwmapi=n,b" %command%`
+4. Windows: start the game with `Play B4B co-op.cmd` (Steam must be running). A normal Steam launch goes
+   through Easy Anti-Cheat and the mod won't load.
+   Linux / Steam Deck: launch from Steam with launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`
 5. Start the game, pick **Offline**, go to Fort Hope. Clients connect automatically. When the host starts a mission
    from the war table, everyone follows.
 
-Uninstall: delete `dwmapi.dll` and `b4bcoop.ini`.
+Uninstall: delete the files you copied (`dwmapi.dll`, `b4bcoop.ini`, `Play B4B co-op.cmd`).
 
 ## Status
 Working: hosting, joining Fort Hope, following into missions, taking over bot slots, keeping your own deck.
