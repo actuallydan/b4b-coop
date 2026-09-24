@@ -204,9 +204,11 @@ Not covered live:
   (`PPC::GetConsumableQuantity`). Offline, that reads `0x141BC6930` (the LocalPlayer's profile), which is null for a
   remote PPC, so the play is rejected. This is the same class of bug as the card draft (`cards.c`). It needs its own
   hook (let remote players' burn-card quantity pass, or ask the client). The same unattended call on the host's own
-  player also logged nothing, so the call itself is not proven. The `played burn card` log is Verbose
-  (not captured), and the handle must be a card row (`BurnCards_DT` `Burn_TeamLife`, see `burncard list`), not a
-  product row.
+  player also logged nothing, so the call itself is not proven. The handle must be a card row (`BurnCards_DT`
+  `Burn_TeamLife`, see `burncard list`), not a product row.
+  *Correction (issue #6, `burn-cards.md`):* `played burn card` is Log level and is captured. "Nothing logged" means the
+  play was rejected, most likely because of the tool's guessed card table. The fix and the reworked `burncard` command
+  are in `native/src/burncards.c` and `docs/investigations/burn-cards.md`.
 
 Agent commands added for unattended runs (`testing.c`):
 - `ready` / `ready vote`: host sets every player ready (`GobiPlayerState::ServerRequestPlayerReady(true)` /

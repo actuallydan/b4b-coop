@@ -20,8 +20,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `flashlight.c` manual flashlight toggle (`flashlight` command, ini hotkey); docs/investigations/flashlight.md.
   - `rewards.c` host forwards remote players' dropped rewards (SP, STP, unlocks, consumables) to their clients via the
     game's unused ClientExecute*Command RPCs. Details: `docs/investigations/client-rewards.md`.
+  - `burncards.c` host: remote players can play burn cards (quantity trusted), and each charge is keyed to the player
+    who played it. Details: `docs/investigations/burn-cards.md`.
   - `testing.c` unattended testing: auto sign-in Offline (`offline=1`), `signin`, `mission [raw] [map] [difficulty]`,
-    `ready [vote]`, `endmission [1|0]`, `burncard`, `callp <Class> <Func> [args]`.
+    `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`.
   - `cmds.c` commands: `status players host join exec find call peek`; config = `b4bcoop.ini` next to the DLL or
     `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
@@ -90,8 +92,10 @@ Known issues:
   passed natively there (vs the same-account local test) is not understood yet; client log pending.
   Details: `docs/investigations/card-draft.md`.
 
-- Burn cards: a remote player cannot play them (the host checks the quantity in a profile it doesn't have). Found
-  in the issue #4 live test, not fixed. Details: `docs/investigations/client-rewards.md` §6.
+- Burn cards (#6): a remote player could not play them (the host checks the quantity in a profile it doesn't have),
+  and the saferoom-exit charge was keyed by a hydra id that is empty or shared in our setups. `native/src/burncards.c`
+  fixes both; verified live with two instances (each card charged once, to its own player's profile; kill switch
+  baseline rejects the client's card). Results: `docs/investigations/burn-cards.md` §5a.
 
 Next:
 0. Read the friend's client log: explain why card ownership passed natively for a different account.

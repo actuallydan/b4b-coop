@@ -2,7 +2,7 @@
 //   offline=1 in the agent config: press "Sign in" on the title screen, then answer the Online/Offline popup
 //   with Offline, exactly like a click (PopupUserWidget::Close("Offline") -> SignInTask_OnlineOfflinePopup).
 // Commands: `signin` (one step by hand), `mission [raw] [map] [Easy|Normal|Hard|VeryHard]`, `ready [vote]`,
-// `endmission [1|0]`, `burncard list|<card row> [table]`, `callp <Class> <Func> [args]`.
+// `endmission [1|0]`, `burncard list|map|status|charge|[row] [table]`, `callp <Class> <Func> [args]`.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -209,10 +209,25 @@ static void cmd_ready(char *rest, Out *o) {
     out_printf(o, "%s: %d player(s)\n", fname, n);
 }
 
-// burncard list | burncard <card row> [<card table>]: this instance's player plays a burn card, like the start
-// saferoom's card UI (GobiPlayerController::ServerPlayBurnCard). The handle is the gameplay CARD row (the server looks
-// its name up in GameplayCardManager.CardNameToProductHandles and charges that product when the party leaves the
-// saferoom). `list` prints that map: card row -> product row.
+// ---- burn cards (docs/investigations/burn-cards.md) ----
+// burncard list            cards this instance's player can play now: GameplayCardManager::GetPlayerBurnCards(own
+//                          PlayerState) — the list the start-saferoom card UI offers, read from this instance's profile
+// burncard [row]           play one of them (default: the first) via GobiPlayerController::ServerPlayBurnCard, like the
+//                          UI does. On a client that is a real server RPC to the host.
+// burncard <row> <table>   play an explicit card handle (row + card DataTable name), bypassing the list
+// burncard map             GameplayCardManager.CardNameToProductHandles: card row -> product row
+// burncard status          per player slot: burn cards played this map, total, and (host) queued charges + charge key
+// burncard charge          host: run the start-saferoom charge now: GameplayCardManager::OnSafeRoomStateChanged(
+//                          InStartingRoom, NotInRoom), the handler that fires when the party leaves the start saferoom
+// Why the first version never played anything: it built the handle with a guessed table (PlayerCards_MASTER_DT).
+// The server looks the card up by row name, but CanBurnCardBePlayedThisMap then needs the row in the handle's own
+// table, so a wrong table fails silently. The list now comes from the game (the handles the UI would pass).
+#define ADDR_FMEMORY_FREE VA(0x140C823B0ull)  // FMemory::Free
+static const uint8_t SIG_FREE[] = {0x48,0x85,0xc9,0x74,0x49,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9};
+static void game_free(void *p) {
+    if (p && !memcmp((void *)ADDR_FMEMORY_FREE, SIG_FREE, sizeof SIG_FREE)) ((void (*)(void *))ADDR_FMEMORY_FREE)(p);
+}
+
 static UObject *find_named(const char *name) {
     char nm[160];
     for (int32_t i = 0, n = ue_num_objects(); i < n; i++) {
@@ -222,48 +237,182 @@ static UObject *find_named(const char *name) {
     return NULL;
 }
 
+// The current world's instance (the first live one can be a leftover from the previous map)
+static UObject *find_in_world(UClass *c) {
+    UObject *w = ue_world(), *first = NULL;
+    for (UObject *o = c ? find_live(c, NULL) : NULL; o; o = find_live(c, o)) {
+        if (!first) first = o;
+        for (UObject *p = U_OUTER(o); p; p = U_OUTER(p))
+            if (p == w) return o;
+    }
+    return first;
+}
+
+static UObject *live_gcm(void) {
+    UObject *w = ue_world(), *gs = w ? ue_get_ptr(w, "GameState") : NULL;
+    return gs ? ue_get_ptr(gs, "GameplayCardManager") : NULL;
+}
+
+static UObject *local_ps(void) {
+    UObject *pc = ue_local_pc();
+    return pc ? ue_get_ptr(pc, "PlayerState") : NULL;
+}
+
+// FDataTableRowHandle in this build: {UDataTable*, FName RowName, FString (unreflected display name)} = 0x20
+typedef struct { UObject *table; FName row; FString display; } RowHandle;
+
+// GetPlayerBurnCards(ps) into *out (game-allocated; release with free_handles). Returns -1 if unavailable.
+static int player_burn_cards(UObject *gcm, UObject *ps, TArray *out) {
+    UFunction *f = gcm ? ue_find_function(U_CLASS(gcm), "GetPlayerBurnCards") : NULL;
+    int32_t op = f ? param_off(f, "GobiPlayerState") : -1, orv = f ? param_off(f, "ReturnValue") : -1;
+    if (op < 0 || orv < 0 || UFN_PARMSSIZE(f) > 64) return -1;
+    uint8_t p[64] = {0};
+    *(UObject **)(p + op) = ps;
+    ue_process_event(gcm, f, p);
+    *out = *(TArray *)(p + orv);
+    return out->num;
+}
+
+static void free_handles(TArray *a) {
+    for (int i = 0; i < a->num; i++) game_free(((RowHandle *)a->data)[i].display.data);
+    game_free(a->data);
+    a->data = NULL; a->num = a->max = 0;
+}
+
+// bool GCM function with one parameter; -1 if it is missing
+static int gcm_bool(UObject *gcm, const char *fname, const char *pname, const void *arg, size_t size) {
+    UFunction *f = ue_find_function(U_CLASS(gcm), fname);
+    int32_t op = f ? param_off(f, pname) : -1, orv = f ? param_off(f, "ReturnValue") : -1;
+    if (op < 0 || orv < 0 || UFN_PARMSSIZE(f) > 64) return -1;
+    uint8_t p[64] = {0};
+    memcpy(p + op, arg, size);
+    ue_process_event(gcm, f, p);
+    return p[orv];
+}
+
+static void burn_status(UObject *gcm, Out *o) {
+    int32_t off = ue_prop_offset(gcm, "PlayerActiveGameplayCardDataArray");
+    if (off < 0) { out_printf(o, "no slot data\n"); return; }
+    TArray *slots = (TArray *)((char *)gcm + off);
+    int host = ue_is_listen_server(ue_world());
+    char a[128], b[128];
+    for (int i = 0; i < slots->num; i++) {
+        char *s = (char *)slots->data + i * 0xD8;   // PlayerActiveGameplayCardData
+        TArray *played = (TArray *)(s + 0x60);      // BurnCardsPlayedThisMap
+        out_printf(o, "slot %d (index %d/%d, player id %d): played this map %d, ever %d", i, *(int32_t *)s, s[4],
+                   *(int32_t *)(s + 8), played->num, *(int32_t *)(s + 0x70));
+        for (int k = 0; k < played->num; k++) out_printf(o, " %s", ue_name(((RowHandle *)played->data)[k].row, a, sizeof a));
+        // the card's effect: PlayBurnCard adds it to the slot's ActiveHeroCards (+0x10, FActiveGameplayCard 0x28 each)
+        TArray *active = (TArray *)(s + 0x10);
+        out_printf(o, "; active cards %d", active->num);
+        for (int k = 0; k < active->num; k++) {
+            ue_name(*(FName *)((char *)active->data + k * 0x28 + 8), a, sizeof a);
+            if (!_strnicmp(a, "Burn_", 5)) out_printf(o, " [active %s]", a);
+        }
+        if (host) {   // unreflected, server only: queued for the saferoom-exit charge + the key it is charged under
+            TArray *q = (TArray *)(s + 0x78);
+            FString *key = (FString *)(s + 0x88);
+            size_t n = 0;
+            for (int k = 0; key->data && k < key->num && key->data[k] && n + 1 < sizeof b; k++) b[n++] = (char)key->data[k];
+            b[n] = 0;
+            out_printf(o, "; queued charge %d, key '%s'", q->num, b);
+        }
+        out_printf(o, "\n");
+    }
+}
+
 static void cmd_burncard(char *rest, Out *o) {
     char *row = rest ? strtok(rest, " ") : NULL, *table = row ? strtok(NULL, " ") : NULL;
-    if (!row) { out_printf(o, "usage: burncard list | burncard <card row> [card table]\n"); return; }
-    UObject *gcm = ue_find_first_of("GameplayCardManager");
-    int32_t moff = gcm ? ue_prop_offset(gcm, "CardNameToProductHandles") : -1;
-    if (moff < 0) { out_printf(o, "no GameplayCardManager\n"); return; }
-    // TMap<FName, FDataTableRowHandle>: sparse array of {FName key, handle {UDataTable*, FName, FString}, hash} (0x30)
-    TArray *elems = (TArray *)((char *)gcm + moff);
+    UObject *gcm = live_gcm();
+    if (!gcm) { out_printf(o, "no GameplayCardManager (not in a mission?)\n"); return; }
     char a[160], b[160], c[160];
-    if (!strcmp(row, "list")) {
-        for (int i = 0; i < elems->num && i < 200; i++) {
+    if (row && !strcmp(row, "map")) {
+        // TMap<FName, FDataTableRowHandle>: sparse array of {FName key, handle (0x20), hash} (0x30)
+        int32_t moff = ue_prop_offset(gcm, "CardNameToProductHandles");
+        TArray *elems = moff >= 0 ? (TArray *)((char *)gcm + moff) : NULL;
+        for (int i = 0; elems && i < elems->num && i < 400; i++) {
             char *e = (char *)elems->data + i * 0x30;
             UObject *dt = *(UObject **)(e + 8);
             out_printf(o, "  %s -> %s %s\n", ue_name(*(FName *)e, a, sizeof a), dt ? ue_obj_name(dt, b, sizeof b) : "null",
                        ue_name(*(FName *)(e + 0x10), c, sizeof c));
         }
-        out_printf(o, "%d entries\n", elems->num);
+        out_printf(o, "%d entries\n", elems ? elems->num : 0);
         return;
     }
-    UObject *pc = ue_local_pc(), *dt = find_named(table ? table : "PlayerCards_MASTER_DT");
+    if (row && !strcmp(row, "status")) { burn_status(gcm, o); return; }
+    if (row && !strcmp(row, "charge")) {
+        UFunction *f = ue_find_function(U_CLASS(gcm), "OnSafeRoomStateChanged");
+        int32_t oo = f ? param_off(f, "OldPartySafeRoomState") : -1, on = f ? param_off(f, "NewPartySafeRoomState") : -1;
+        if (oo < 0 || on < 0 || !ue_is_listen_server(ue_world())) { out_printf(o, "host only (OnSafeRoomStateChanged)\n"); return; }
+        uint8_t p[16] = {0};
+        p[oo] = 1 /*InStartingRoom*/; p[on] = 0 /*NotInRoom*/;
+        LOG("testing: GCM OnSafeRoomStateChanged(InStartingRoom, NotInRoom)");
+        ue_process_event(gcm, f, p);
+        out_printf(o, "charge: OnSafeRoomStateChanged(InStartingRoom -> NotInRoom)\n");
+        return;
+    }
+    UObject *pc = ue_local_pc(), *ps = local_ps();
     UFunction *f = pc ? ue_find_function(U_CLASS(pc), "ServerPlayBurnCard") : NULL;
     int32_t off = f ? param_off(f, "ProductRowHandle") : -1;
-    if (!dt || off < 0) { out_printf(o, "no card table (%p) or ServerPlayBurnCard\n", (void *)dt); return; }
+    if (!ps || off < 0) { out_printf(o, "no local player / ServerPlayBurnCard\n"); return; }
     static uint8_t p[64];
-    static wchar_t wrow[128];
     memset(p, 0, sizeof p);
-    int k = 0;
-    for (; row[k] && k < 127; k++) wrow[k] = (wchar_t)row[k];
-    wrow[k] = 0;
-    *(UObject **)(p + off) = dt;
-    *(FName *)(p + off + 8) = make_name(wrow);
-    LOG("testing: ServerPlayBurnCard %s (%s)", row, ue_obj_name(dt, a, sizeof a));
+    RowHandle *h = (RowHandle *)(p + off);
+    if (table) {   // explicit handle
+        static wchar_t wrow[128];
+        int k = 0;
+        for (; row[k] && k < 127; k++) wrow[k] = (wchar_t)row[k];
+        wrow[k] = 0;
+        if (!(h->table = find_named(table))) { out_printf(o, "no table %s\n", table); return; }
+        h->row = make_name(wrow);
+    } else {
+        TArray cards;
+        int n = player_burn_cards(gcm, ps, &cards);
+        if (n < 0) { out_printf(o, "GetPlayerBurnCards unavailable\n"); return; }
+        int pick = -1;
+        for (int i = 0; i < n; i++) {
+            RowHandle *x = &((RowHandle *)cards.data)[i];
+            ue_name(x->row, a, sizeof a);
+            if (!row || !strcmp(row, "list"))
+                out_printf(o, "  %s %s\n", x->table ? ue_obj_name(x->table, b, sizeof b) : "null", a);
+            if (pick < 0 && row && strcmp(row, "list") && !_stricmp(a, row)) pick = i;
+        }
+        if (!row && n > 0) pick = 0;
+        if (pick >= 0) { h->table = ((RowHandle *)cards.data)[pick].table; h->row = ((RowHandle *)cards.data)[pick].row; }
+        free_handles(&cards);
+        if (row && !strcmp(row, "list")) { out_printf(o, "%d playable burn card(s)\n", n); return; }
+        if (pick < 0) { out_printf(o, "%s is not among this player's %d playable burn cards (burncard list)\n", row ? row : "-", n); return; }
+    }
+    ue_obj_name(h->table, a, sizeof a);
+    ue_name(h->row, b, sizeof b);
+    // the server's own checks that do not depend on the profile, evaluated here on replicated data
+    out_printf(o, "precheck: IsBurnCard %d, CanBurnCardBePlayedThisMap %d, HasPlayedBurnCardThisMap %d\n",
+               gcm_bool(gcm, "IsBurnCard", "CardRowHandle", h, sizeof *h),
+               gcm_bool(gcm, "CanBurnCardBePlayedThisMap", "GameplayCardRowHandle", h, sizeof *h),
+               gcm_bool(gcm, "HasPlayedBurnCardThisMap", "GobiPlayerState", &ps, sizeof ps));
+    LOG("testing: ServerPlayBurnCard %s (%s)", b, a);
     ue_process_event(pc, f, p);
-    out_printf(o, "burncard: ServerPlayBurnCard(%s %s)\n", a, row);
+    out_printf(o, "burncard: ServerPlayBurnCard(%s %s); check with `burncard status`\n", a, b);
 }
 
-// callp <Class> <Func> [args...]: call a function on the first live instance, parameters in declaration order
-// (bool/int/byte/enum/float/string; the return value is skipped). Bytes of the parms block are printed back.
+// callp <Class> <Func> [args...]: call a function on the live instance in the current world, parameters in declaration
+// order (bool/int/byte/enum/float/string, objects: pc | ps | gs | gcm | world | null); the return value is skipped.
+// Bytes of the parms block are printed back. The first version took the first object of the class, which could be a
+// component template or a leftover from the previous map.
+static UObject *object_arg(const char *a) {
+    UObject *w = ue_world();
+    if (!strcmp(a, "pc")) return ue_local_pc();
+    if (!strcmp(a, "ps")) return local_ps();
+    if (!strcmp(a, "gs")) return w ? ue_get_ptr(w, "GameState") : NULL;
+    if (!strcmp(a, "gcm")) return live_gcm();
+    if (!strcmp(a, "world")) return w;
+    return NULL;
+}
+
 static void cmd_callp(char *rest, Out *o) {
     char *cls = rest ? strtok(rest, " ") : NULL, *fn = cls ? strtok(NULL, " ") : NULL;
     if (!fn) { out_printf(o, "usage: callp <Class> <Func> [args...]\n"); return; }
-    UObject *t = ue_find_first_of(cls);
+    UObject *t = !strcmp(cls, "GameplayCardManager") ? live_gcm() : find_in_world(ue_find_class(cls));
     UFunction *f = t ? ue_find_function(U_CLASS(t), fn) : NULL;
     if (!f) { out_printf(o, "no %s\n", t ? "function" : "instance"); return; }
     static uint8_t p[1024];
@@ -280,12 +429,14 @@ static void cmd_callp(char *rest, Out *o) {
         uint8_t *d = p + FP_OFFSET(prop);
         if (!strcmp(tn, "FloatProperty")) *(float *)d = (float)atof(a);
         else if (!strcmp(tn, "StrProperty") && ns < 4) fstring_set((FString *)d, a, sbuf[ns++], 256);
+        else if (!strcmp(tn, "ObjectProperty")) *(UObject **)d = object_arg(a);
         else if (FP_ELSIZE(prop) == 4) *(int32_t *)d = atoi(a);
         else if (FP_ELSIZE(prop) == 1) *d = (uint8_t)atoi(a);
         else { out_printf(o, "unsupported param type %s\n", tn); return; }
     }
+    char nm[128];
     ue_process_event(t, f, p);
-    out_printf(o, "called %s.%s; parms:", cls, fn);
+    out_printf(o, "called %s.%s on %s; parms:", cls, fn, ue_obj_name(t, nm, sizeof nm));
     for (int i = 0; i < UFN_PARMSSIZE(f) && i < 32; i++) out_printf(o, " %02x", p[i]);
     out_printf(o, "\n");
 }
