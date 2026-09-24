@@ -599,6 +599,7 @@ void netguard_allow_host(const char *addr) {
     LOG("netguard: runtime allow %s", h);
 }
 
+#ifndef B4B_RELEASE
 static void print_rows(Out *o, int verdict) {
     for (int i = 0; i < nseen; i++) {
         Seen *s = &seen[i];
@@ -630,3 +631,4 @@ void netguard_cmd(char *args, Out *o) {
     if (seen_dropped) out_printf(o, "(%u events not recorded: table full)\n", seen_dropped);
     LeaveCriticalSection(&cs);
 }
+#endif  // !B4B_RELEASE

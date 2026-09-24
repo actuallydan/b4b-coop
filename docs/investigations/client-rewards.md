@@ -281,3 +281,42 @@ client's ownership on the host (the same missing channel as for burn cards); lef
 | `CountSkullTotemPoints` (hooked by `stp`) / duffel issuer (PS, product, delta) | `0x141A08FB0` / `0x141BD7610` |
 | `ServerAddItemsOfHandle` exec / collected duffel bags (`GobiCollectionsSubsystem`) | `0x142186AE0` / subsystem `+0x698` |
 | Offsets | PPC owner +0xD8, PPC `HydraPublicId` +0x1A8, `PostRoundBonusSP` +0x7A0, AdjustSP `Delta` +0x8 |
+
+## 8. Client-side validation (`native/src/rewardguard.c`, 2026-09-24)
+
+The forwarding path lets the host write into a client's offline save, so a malicious or buggy host could send
+anything through the four `ClientExecute*Command` RPCs (plus `ClientExecuteSetSecureLeaderboardMetadataCommand`,
+which b4bcoop never sends). On a **network client** the agent hooks the five RPC handlers (`_Implementation`s, PPC
+vtable `+0x410..+0x450`, 32-byte signatures) and applies a command only if it passes:
+
+| Command | Accepted | Why this bound |
+|---|---|---|
+| AdjustSupplyPoints | delta 1..1000, ≤ 2000 per map | SP = CoreSp(map, difficulty) × (1 + bonuses). `MissionDifficulties` (DifficultyRow, `rewardguard difficulty`): CoreSp max 65 Easy / 114 Normal / 162 Hard / **195 VeryHard**; bonuses objective 0.5, glyph 0.15 each, group 0.1 per survivor (log: `Group = 0.300000` with 3), consecutive ≤ 0.3, party 0.05, quick play 0.25; failure pays 0.2×. Every bonus maxed stays under ×4 → < 800 per reward. |
+| AdjustSkullTotemPoints | same limits | 5 points per carried totem, each survivor gets the team total (§6b). |
+| AdjustConsumableQuantity −1 | only a burn card this client played on this map, once per play | the client records its own `ServerPlayBurnCard` (hook on `AActor::CallRemoteFunction` `0x143A013B0`, UObject vtable `+0x220`: every outgoing actor RPC, C++ and Blueprint alike; the card UI is Blueprint, so no C++ stub exists), card → product via `GameplayCardManager.CardNameToProductHandles` |
+| AdjustConsumableQuantity +N | 1..5, ≤ 10 per map, duffel-bag product | a duffel bag gives +1 per bag (§6b) |
+| UnlockProduct | duffel-bag product, ≤ 10 per map | set insert; a duffel bag gives one per bag |
+| SetSecureLeaderboardMetadata | never | not sent by b4bcoop |
+
+"Duffel-bag product": the handle's table is the game's own `Products_DT` (object identity with the profile component's
+`ProductsTable`) and the row's `ProductRow.DuffelBagTags` is not empty. `Products_DT` has 1135 rows, 658 of them with
+duffel-bag tags (every burn card, cards, skins); starter cards like `Health_01` have none. The row lookup walks
+`UDataTable::RowMap` (+0x38, TMap sparse array with its allocation bits).
+
+Rejections log `rewardguard: REJECTED <command> <detail> from the host: <reason>` and show one chat line per map.
+On the host (listen server) or offline the handlers run unchanged: the host's own rewards are applied locally and
+never pass through these RPCs.
+
+Live (dev build, `multi.sh 2`, Evansburgh B Easy):
+- client plays `Burn_RollGunSMG` → client log `rewardguard: you played burn card Burn_RollGunSMG (product AAC3D0CA…)`;
+  host `rewardtest cons <Burn_RollGunLMG product> -1` → `REJECTED … you did not play this burn card`; `burncard charge`
+  → real forward accepted + `[CLIENT RPC] adjusting consumable Burn_RollGunSMG by -1`; a second `-1` for the same card
+  → rejected.
+- `endmission 1` → forwarded SP 53 accepted and applied. `rewardtest sp 99999`, `sp -50`, `stp 50000`,
+  `unlock <Health_01 product>`, `cons <duffel product> 50`, `slb` → all rejected with their reason; `rewardtest sp 120`
+  → accepted.
+- `tools/e2e.py --quick` on the merged dev build: 10/10 (burn cards charged once each, SP forwarded and applied, profiles
+  diffed exactly).
+
+Residual risk: a host can still grant up to the bounds (e.g. a legitimate-looking 1000 SP) or charge one burn card
+per card the client actually played; other client RPCs (e.g. `ClientApplyStatDeltas`, stats only) are not validated.

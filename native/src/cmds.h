@@ -6,8 +6,9 @@ typedef struct { char buf[256 * 1024]; size_t len; } Out;
 void out_reset(Out *o);
 void out_printf(Out *o, const char *fmt, ...);
 
+// Dev builds only (not B4B_RELEASE): cmds_run and every *_cmd CLI handler below that is not also a chat command.
 void cmds_init(void);
-void cmds_run(char *line, Out *out);   // game thread
+void cmds_run(char *line, Out *out);   // game thread (dev: TCP command server in main.c)
 void cmds_tick(float dt);              // game thread, every engine tick
 
 void game_exec(const char *cmd);        // game thread: run a console command in the current world
@@ -24,12 +25,11 @@ const char *cmds_config_path(void);    // b4bcoop.ini, or B4B_COOP_CONFIG
 int flashlight_init(void);
 void flashlight_tick(float dt);
 void cmd_flashlight(const char *arg, Out *o);
-void testing_tick(float dt);                        // testing.c: unattended sign-in / mission start
-int testing_cmd(const char *verb, char *rest, Out *o); // 1 if handled
+int testing_cmd(const char *verb, char *rest, Out *o); // testing.c (dev builds): test commands; 1 if handled
 int teamsize_init(void);
-int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
+int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled (also chat /teamsize)
 int lineup_init(void);                                   // lineup.c: 5th+ hero in the character lineups (#8)
-int lineup_cmd(const char *verb, char *rest, Out *o);    // `lineup [off dx dy | fov deg | apply]`
+int lineup_cmd(const char *verb, char *rest, Out *o);    // dev builds: `lineup [off dx dy | fov deg | apply]`
 void teamsize_tick(float dt);
 int slotguard_init(void);
 int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
@@ -56,15 +56,21 @@ void admin_tick(float dt);
 int admin_cmd(const char *verb, char *rest, Out *o);
 void admin_slash(char *line, Out *o);  // a chat command typed by the local player (without the '/')
 void admin_on_initslots(UObject *psm); // teamsize.c: right before APlayerSlotManager::InitSlots
+void admin_ready(const char *rest, Out *o); // host: ready every player (chat /ready, dev `ready [vote]`)
 void cmds_set_session_join(const char *targets); // Steam join target(s), comma-separated; overrides host=/join=
 const char *cmds_session_join(void);
 void cmds_join_now(void);                      // attempt the session target now (leaves the current session)
-void testing_arm_signin(void);                 // auto sign-in Offline (testing.c), for a Steam join
-int testing_signin_pending(void);
-int testing_on_title(void);                    // sign-in screen up (not signed in yet)              // auto sign-in armed and not finished
+// signin.c: auto sign-in Offline (Steam join; dev builds also offline=1)
+void signin_arm(void);                         // arm it for a Steam join (next 10 minutes)
+int signin_pending(void);                      // auto sign-in armed and not finished
+int signin_on_title(void);                     // sign-in screen up (not signed in yet)
+int signin_step(Out *o);                       // one step (dev `signin` command); 1 if it acted
+void signin_tick(float dt);
 void presence_init(void);                      // presence.c: Steam rich presence, Join Game, invites
 void presence_tick(float dt);
 int presence_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
+int presence_has_friend(uint64_t id);          // 1 Steam friend, 0 not, -1 Steam not bound (any thread)
+const char *presence_persona(uint64_t id);     // persona name from the friends cache, "?" if unknown
 
 // steamnet.c: Steam P2P transport (docs/investigations/steam-p2p.md)
 #include <stdint.h>
@@ -79,3 +85,19 @@ void steamnet_on_log(const char *cat, const char *msg);    // uelog.c: every eng
 void steamnet_status(Out *o);
 int steamnet_cmd(const char *verb, char *rest, Out *o);    // `steamnet [on|off]`; 1 if handled
 void steamnet_config(const char *key, const char *value);  // b4bcoop.ini keys steam_p2p=, transport=
+uint64_t steamnet_peer_of_addr(const char *addr);          // host: SteamID behind a fake P2P address, 0 if none
+void steamnet_tick(float dt);                              // game thread
+
+// joinpolicy.c: who may join (host). Default Steam friends + own account; ini allow_joins=, allow_steamids=
+int joinpolicy_config(const char *key, const char *value);  // 1 if the key was ours
+void joinpolicy_init(void);
+int joinpolicy_check(uint64_t steamid, char *why, size_t n); // 1 allowed; why = deciding rule / refusal reason
+const char *joinpolicy_error(void);                          // login error text for a refused joiner
+void joinpolicy_notify_refused(uint64_t steamid, const char *why);  // any thread: host chat notice (next tick)
+void joinpolicy_tick(float dt);
+int joinpolicy_cmd(const char *verb, char *rest, Out *o);   // dev builds
+
+// rewardguard.c: client-side validation of host-sent profile commands (ClientExecute*Command RPCs)
+int rewardguard_init(void);
+void rewardguard_tick(float dt);
+int rewardguard_cmd(const char *verb, char *rest, Out *o);  // dev builds: `rewardguard`, host `rewardtest ...`

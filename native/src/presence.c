@@ -3,10 +3,11 @@
 //               "+b4bcoop_join steam:<our id64> addr:<ip:port>" -> friends get "Join Game"; cleared when we stop.
 //   join        GameRichPresenceJoinRequested_t (337, friend clicked Join Game / accepted an invite while running)
 //               or the same string on the command line (Steam started the game for it) -> session join target
-//               (cmds_set_session_join: overrides host=/join= from the ini), auto sign-in Offline (testing.c),
+//               (cmds_set_session_join: overrides host=/join= from the ini), auto sign-in Offline (signin.c),
 //               then the auto-join machinery joins from offline Fort Hope; steam: first, the address as fallback.
-//   commands    presence [on|off] | steamjoin <connect string> (simulate a join request) | invite <id64|name> |
-//               friends [all]
+//   friends     presence_has_friend(): ISteamFriends::HasFriend for the host's join policy (joinpolicy.c)
+//   commands    (dev builds) presence [on|off] | steamjoin <connect string> (simulate a join request) |
+//               invite <id64|name> | friends [all]
 // Steam: the game's own steam_api64.dll (v1.47, delay-loaded by OnlineSubsystemSteam), flat exports via
 // GetProcAddress. Our callback object is registered from inside SteamAPI_RunCallbacks (hooked), i.e. on the OSS's own
 // callback thread, so registration never races the dispatch loop (steam_api's callback map has no lock).
@@ -51,6 +52,7 @@ static struct {
     const char *(*GetPersonaName)(void *f);
     uint8_t (*GetFriendGamePlayed)(void *f, uint64_t id, FriendGameInfo *out);
     uint8_t (*InviteUserToGame)(void *f, uint64_t id, const char *connect);
+    uint8_t (*HasFriend)(void *f, uint64_t id, int flags);
     uint64_t (*GetSteamID)(void *u);
     int (*GetLaunchCommandLine)(void *a, char *buf, int n);
 } S;
@@ -264,6 +266,7 @@ static int bind_steam(void) {
                  RESOLVE(GetPersonaName, "SteamAPI_ISteamFriends_GetPersonaName") &&
                  RESOLVE(GetFriendGamePlayed, "SteamAPI_ISteamFriends_GetFriendGamePlayed") &&
                  RESOLVE(InviteUserToGame, "SteamAPI_ISteamFriends_InviteUserToGame") &&
+                 RESOLVE(HasFriend, "SteamAPI_ISteamFriends_HasFriend") &&
                  RESOLVE(GetSteamID, "SteamAPI_ISteamUser_GetSteamID") &&
                  RESOLVE(GetLaunchCommandLine, "SteamAPI_ISteamApps_GetLaunchCommandLine");
         if (!ok) { LOG("presence: steam_api64 lacks an expected export; Steam features off"); bound = -1; return 0; }
@@ -313,7 +316,7 @@ static void advertise_tick(void) {
     int hosting = w && ue_is_listen_server(w) && !cmds_session_join()[0];   // about to join someone: not hosting
     static int past_title;   // checked until the first time we host past the sign-in screen
     if (hosting && !past_title) {
-        if (testing_on_title()) hosting = 0; else past_title = 1;
+        if (signin_on_title()) hosting = 0; else past_title = 1;
     }
     if (hosting) last_hosting = clock_s;
     int want = advertise && clock_s - last_hosting < 15;   // hysteresis: server travel briefly has no NetDriver
@@ -364,9 +367,9 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
     }
     LOG("presence: %s from %llu: \"%s\" -> %s", source, (unsigned long long)friend_id, connect, targets);
     cmds_set_session_join(targets);
-    testing_arm_signin();
+    signin_arm();
     UObject *w = ue_world();
-    if (w && ue_get_ptr(w, "NetDriver") && !testing_on_title()) {   // in a session: the player asked to switch
+    if (w && ue_get_ptr(w, "NetDriver") && !signin_on_title()) {   // in a session: the player asked to switch
         LOG("presence: leaving the current session to join");
         cmds_join_now();
     }   // else: the auto-join machinery joins once we are signed in and in offline Fort Hope (alone)
@@ -396,7 +399,21 @@ void presence_tick(float dt) {
     advertise_tick();
 }
 
-// ---- commands ----
+// 1 if `id` is on this Steam user's friends list (k_EFriendFlagImmediate: real friends, not requests/blocked),
+// 0 if not, -1 if Steam is not bound (yet). Any thread: HasFriend reads steamclient's local friends cache.
+int presence_has_friend(uint64_t id) {
+    if (bound <= 0 || !friends) return -1;
+    return S.HasFriend(friends, id, 4 /*k_EFriendFlagImmediate*/) ? 1 : 0;
+}
+
+// Persona name for logs/notices (friends cache; "?" if unknown or Steam not bound).
+const char *presence_persona(uint64_t id) {
+    const char *n = bound > 0 && friends ? S.GetFriendPersonaName(friends, id) : NULL;
+    return n && *n ? n : "?";
+}
+
+#ifndef B4B_RELEASE
+// ---- commands (dev builds) ----
 static void print_rp(Out *o, uint64_t id) {
     int n = S.GetFriendRichPresenceKeyCount(friends, id);
     for (int i = 0; i < n; i++) {
@@ -483,3 +500,4 @@ int presence_cmd(const char *verb, char *rest, Out *o) {
     else cmd_friends(rest, o);
     return 1;
 }
+#endif  // !B4B_RELEASE

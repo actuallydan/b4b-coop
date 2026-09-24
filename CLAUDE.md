@@ -9,13 +9,17 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 
 ## Layout
 - `native/` — agent DLL (C, zig cc + MinHook), built as a proxy of `X3DAudio1_7.dll` (loads from the game dir on Proton
-  and Windows with no launch options) and of `dwmapi.dll` (legacy); `native/build.sh` → `native/out/`. Proxies are
-  generated into `native/proxy/` by `tools/gen-proxy.py`. `native/launcher/redirect.c` → `xinput1_3.dll` for the game
-  root: on Windows the Steam launcher stub loads it and it starts the game instead of the EAC bootstrapper.
-  docs/investigations/launch.md.
+  and Windows with no launch options) and of `dwmapi.dll` (legacy). Proxies are generated into `native/proxy/` by
+  `tools/gen-proxy.py`. `native/launcher/redirect.c` → `xinput1_3.dll` for the game root: on Windows the Steam
+  launcher stub loads it and it starts the game instead of the EAC bootstrapper. docs/investigations/launch.md.
+  `native/build.sh` → `native/out/` (dev build); `native/build.sh --release` → `native/out/release/` (player build,
+  defines `B4B_RELEASE`: no TCP command server, no dev/test commands, no `offline=1` automation; what
+  `launch/package.sh` ships); both produce all three DLLs. Dev-only code is under `#ifndef B4B_RELEASE` (whole
+  `testing.c`, the command server, every CLI-only `*_cmd` handler). Player builds are verified from their log
+  (`b4bcoop loaded (player build) as X3DAudio1_7.dll`), not with `tools/b4b.py`.
   - `ue.c/h` reflection layer for B4B's modified UE 4.25 (XOR'd GUObjectArray, shuffled FField, UObject +8).
-  - `main.c` Tick hook + game-thread command queue + TCP command server (127.0.0.1:47112, first free of +0..7;
-    `B4B_COOP_PORT` pins it).
+  - `main.c` Tick hook; dev builds: game-thread command queue + TCP command server (127.0.0.1:47112, first free of
+    +0..7; `B4B_COOP_PORT` pins it).
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
   - `netguard.c` outbound-traffic guard from DllMain (DNS/WinHTTP/TCP allowlist, EOS network off; `netguard`
     command, `netguard=` ini keys); docs/investigations/outbound-traffic.md.
@@ -25,9 +29,15 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     docs/investigations/flashlight.md.
   - `rewards.c` host forwards remote players' dropped rewards (SP, STP, unlocks, consumables) to their clients via the
     game's unused ClientExecute*Command RPCs. Details: `docs/investigations/client-rewards.md`.
+  - `rewardguard.c` client: validates those RPCs before they reach the offline save (SP/STP bounds, burn-card -1 only
+    for a card this client played this map, duffel-bag products only); rejects logged `rewardguard: REJECTED`. Dev:
+    `rewardguard [products|difficulty|product <row>]`, host `rewardtest sp|stp|cons|unlock|slb ...`.
+    client-rewards.md §8.
   - `burncards.c` host: remote players can play burn cards (quantity trusted), and each charge is keyed to the player
     who played it. Details: `docs/investigations/burn-cards.md`.
-  - `testing.c` unattended testing: auto sign-in Offline (`offline=1`), `signin`, `mission [raw] [map] [difficulty]`,
+  - `signin.c` auto sign-in Offline (press Sign in, answer the Online/Offline popup): armed by a Steam join
+    (presence.c); dev builds also by ini `offline=1`.
+  - `testing.c` (dev builds only) unattended testing: `signin`, `mission [raw] [map] [difficulty]`,
     `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`,
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
     never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
@@ -42,9 +52,14 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     docs/investigations/slot-guard.md.
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
     replies as local chat lines; host notices via ClientTeamMessage with our own type. Test: `type <text>` (real key
-    presses), `click <x> <y>` (mouse click, e.g. post-round Continue), `chat status`, `popup [close]`. `admin.c` the
-    commands (`/help join host leave players ping kick ban lock bots restart say ...`, same verbs on the CLI) and the
-    host's PreLogin gate (bans in `b4bcoop-bans.txt`, lock). docs/investigations/chat-commands.md.
+    presses), `click <x> <y>` (mouse click, e.g. post-round Continue), `chat status`, `popup [close]` (dev builds).
+    `admin.c` the commands (`/help join host leave players ping kick ban lock bots restart say ready ...`, same verbs
+    on the dev CLI) and the host's PreLogin gate (join policy first, then bans in `b4bcoop-bans.txt`, lock).
+    docs/investigations/chat-commands.md.
+  - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
+    SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
+    <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
+    joins: the login's claimed id). docs/investigations/steam-p2p.md "Join policy".
   - `presence.c` Steam "Join Game": while hosting, rich presence `connect=+b4bcoop_join steam:<id64> addr:<ip:port>`;
     join requests (callback 337) and the same string on the command line become a session join target (overrides
     host=/join=, auto sign-in Offline). `presence [on|off]`, `steamjoin <string>` (simulate), `invite`, `friends`;
@@ -53,12 +68,14 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     Steam peers get fake 198.18.x.y addresses); hosts take UDP and Steam joins at once, `join steam:<id64>`, SteamID
     in `status`, `steamnet [on|off]`, ini `steam_p2p=0`. USteamNetDriver can't work here (no STEAM socket subsystem).
     Not yet tested between two accounts. docs/investigations/steam-p2p.md.
-  - `cmds.c` commands: `status players host join leave exec find call peek`; config = `b4bcoop.ini` next to the DLL or
-    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join steam_p2p offline flashlight_*`).
+  - `cmds.c` dev commands: `status players host join leave exec find call peek`; config = `b4bcoop.ini` next to the DLL
+    or `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join steam_p2p allow_joins allow_steamids
+    flashlight_*`, dev `offline allow_self`).
     `coop_join(target)` = join entry point (`ip[:port]`, `steam:<id64>`; any thread); `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`);
     `coop_host`, `coop_leave`.
-- `launch/` — `install.sh` (build+copy DLLs, `--legacy` = dwmapi.dll; rm before cp — never overwrite a mapped DLL in
-  place), `package.sh` (player zip, mirrors the game folder), `run.sh` (Proton,
+- `launch/` — `install.sh [--release] [--legacy]` (build+copy DLLs, dev by default, `--legacy` = dwmapi.dll; rm before
+  cp — never overwrite a mapped DLL in place), `package.sh` (player zip mirroring the game folder + legacy zip +
+  `dist/SHA256SUMS`, reproducible), `run.sh` (Proton,
   no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test
   instances, below), `two.sh` (old: two copies on the real prefix), `winpy.sh`, `probed.sh`, `uninstall.sh`.
 - `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
@@ -67,7 +84,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
 
 ## Setup
-`tools/fetch-deps.sh` (zig, MinHook, Windows Python, .venv) → `launch/install.sh`.
+`tools/fetch-deps.sh` (zig 0.15.2 sha256-checked, MinHook pinned to commit 8af6b4a, Windows Python, .venv; `--build`
+= only zig + MinHook) → `launch/install.sh`. CI: `.github/workflows/ci.yml` builds dev + player on every push/PR;
+`release.yml` builds the zip on a `v*` tag and publishes it with `SHA256SUMS` and a build provenance attestation.
 No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the legacy `dwmapi.dll` needs
 `WINEDLLOVERRIDES="dwmapi=n,b" %command%`). Steam's only public launch entry runs the root `Back4Blood.exe` stub →
 `start_protected_game.exe` (EAC) → `Gobi/Binaries/Win64/Back4Blood.exe Gobi -SaveToUserDir`. Game build pinned: Steam buildid 14216215;

@@ -16,11 +16,13 @@ The zip mirrors the game folder:
 xinput1_3.dll                          Windows only: loaded by Steam's launcher stub, starts the game without EAC
 Gobi/Binaries/Win64/X3DAudio1_7.dll    the agent (a proxy of the real X3DAudio1_7), both OSes
 Gobi/Binaries/Win64/b4bcoop.ini
-b4bcoop-README.txt
+b4bcoop-README.txt, b4bcoop-LICENSE.txt
 ```
+All three DLLs come from the player build (`native/build.sh --release` → `native/out/release/`); the dev build
+(`native/build.sh` → `native/out/`) produces the same three names with the command server and test commands.
 
 The legacy layout (`dwmapi.dll` + Linux launch option + Windows `Play B4B co-op.cmd`) still builds and works
-(`dist/b4bcoop-legacy.zip`, `launch/install.sh --legacy`) until the Windows flow is verified.
+(`dist/b4bcoop-legacy.zip`, player build; `launch/install.sh [--release] --legacy`) until the Windows flow is verified.
 
 ## 1. Steam's launch config for app 924970
 

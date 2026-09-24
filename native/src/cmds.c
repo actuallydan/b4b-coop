@@ -18,18 +18,20 @@ void out_printf(Out *o, const char *fmt, ...) {
     if (n > 0) o->len += (size_t)n < sizeof o->buf - o->len ? (size_t)n : sizeof o->buf - o->len - 1;
 }
 
-static char nb[512], pb[1024];
-#define NAME(o) ((o) ? ue_obj_name((o), nb, sizeof nb) : "null")
-#define PATH(o) ((o) ? ue_full_path((o), pb, sizeof pb) : "null")
-
-static const char *class_of(UObject *o) { static char b[256]; return o ? ue_obj_name(U_CLASS(o), b, sizeof b) : "null"; }
-
 static void fstring_from(FString *s, const char *utf8, wchar_t *storage, int cap) {
     int n = 0;
     for (; utf8[n] && n < cap - 1; n++) storage[n] = (wchar_t)(unsigned char)utf8[n];
     storage[n] = 0;
     s->data = storage; s->num = n + 1; s->max = cap;
 }
+
+#ifndef B4B_RELEASE
+// ---- dev-only agent commands (TCP command server, main.c) ----
+static char nb[512], pb[1024];
+#define NAME(o) ((o) ? ue_obj_name((o), nb, sizeof nb) : "null")
+#define PATH(o) ((o) ? ue_full_path((o), pb, sizeof pb) : "null")
+
+static const char *class_of(UObject *o) { static char b[256]; return o ? ue_obj_name(U_CLASS(o), b, sizeof b) : "null"; }
 
 static void cmd_status(Out *o) {
     UObject *w = ue_world();
@@ -53,6 +55,7 @@ static void cmd_status(Out *o) {
         for (int i = 0; i < cc->num; i++) out_printf(o, "  conn[%d]: %s\n", i, class_of(((UObject **)cc->data)[i]));
     } else out_printf(o, "netdriver: none (standalone)\n");
 }
+#endif  // !B4B_RELEASE
 
 static int exec_console(const char *cmd) {
     static UClass *ksl; static UFunction *fn;
@@ -70,10 +73,6 @@ static int exec_console(const char *cmd) {
 }
 
 void game_exec(const char *cmd) { LOG("exec: %s", cmd); exec_console(cmd); }
-
-static void cmd_exec(const char *cmd, Out *o) {
-    out_printf(o, exec_console(cmd) ? "exec failed: %s\n" : "exec: %s\n", cmd);
-}
 
 static void cmd_host(Out *o) {
     UObject *w = ue_world();
@@ -125,6 +124,11 @@ static void pending_tick(void) {
     if (j[0]) coop_join(j);
 }
 
+#ifndef B4B_RELEASE
+static void cmd_exec(const char *cmd, Out *o) {
+    out_printf(o, exec_console(cmd) ? "exec failed: %s\n" : "exec: %s\n", cmd);
+}
+
 static void cmd_find(const char *needle, int max, Out *o) {
     int n = ue_num_objects(), hits = 0;
     for (int i = 0; i < n && hits < max; i++) {
@@ -170,6 +174,7 @@ static void cmd_players(Out *o) {
         out_printf(o, " pawn=%s\n", class_of(pawn));
     }
 }
+#endif  // !B4B_RELEASE
 
 // ---- auto host/join from b4bcoop.ini next to the DLL ----
 //   host=1            -> whenever we're offline & standalone in Fort Hope, reopen it as a listen server
@@ -184,12 +189,16 @@ static char session_join[300];   // from Steam, this session only
 static int session_fails;        // join attempts since we were last connected
 // Only the first instance on a machine auto-hosts from the shared ini (a second local copy shares it when testing).
 int cmds_auto_host(void) {
+#ifdef B4B_RELEASE
+    return auto_host && !session_join[0];   // no local test copies in a player build
+#else
     extern int g_agent_port;
     return auto_host && !session_join[0] && (own_config || g_agent_port == 47112);
+#endif
 }
 static char auto_join[256];
 static double auto_clock, auto_next;
-int g_auto_offline;      // offline=1: answer the Online/Offline sign-in prompt with Offline (testing.c)
+int g_auto_offline;      // auto sign-in Offline (signin.c): armed by a Steam join; dev builds also by offline=1
 
 // b4bcoop.ini next to the DLL, or B4B_COOP_CONFIG=<windows path> (per-instance config for several local copies
 // sharing one game dir, see launch/multi.sh). Every config reader goes through this.
@@ -216,8 +225,10 @@ static void load_config(void) {
         while (*v == ' ') v++;
         if (!strcmp(line, "host")) auto_host = atoi(v);
         else if (!strcmp(line, "join") && *v) snprintf(auto_join, sizeof auto_join, "%s", v);
-        else if (!strcmp(line, "offline")) g_auto_offline = atoi(v);
-        else steamnet_config(line, v);
+#ifndef B4B_RELEASE
+        else if (!strcmp(line, "offline")) g_auto_offline = atoi(v);   // unattended tests (launch/multi.sh)
+#endif
+        else if (!joinpolicy_config(line, v)) steamnet_config(line, v);
     }
     fclose(f);
     LOG("config: %s host=%d join=%s offline=%d", path, auto_host, auto_join[0] ? auto_join : "-", g_auto_offline);
@@ -228,7 +239,7 @@ static void load_config(void) {
 void cmds_auto_join_backoff(double seconds) {
     if (!auto_join[0] || auto_next >= auto_clock + seconds - 1) return;
     auto_next = auto_clock + seconds;
-    LOG("auto: host is full, next join attempt in %.0fs", seconds);
+    LOG("auto: the host refused the join, next attempt in %.0fs", seconds);
 }
 
 // ---- join / host / leave entry points (chat commands, Steam invites, future in-game UI) ----
@@ -324,7 +335,7 @@ static void auto_tick(float dt) {
     char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
     if (!strstr(pkg, "FortHope")) return;                      // only act from the offline camp
     if (!ue_local_pc()) return;                                // still loading
-    if (session_join[0] && testing_signin_pending()) return;   // Steam join: sign in (Offline) first
+    if (session_join[0] && signin_pending()) return;   // Steam join: sign in (Offline) first
     static Out scratch;
     out_reset(&scratch);
     if (cmds_auto_host()) { LOG("auto: hosting"); cmd_host(&scratch); auto_next = auto_clock + 30; }
@@ -362,14 +373,18 @@ void cmds_tick(float dt) {
     travel_tick(dt);
     auto_tick(dt);
     flashlight_tick(dt);
-    testing_tick(dt);
+    signin_tick(dt);
     teamsize_tick(dt);
     slotguard_tick(dt);
     chat_tick(dt);
     admin_tick(dt);
     presence_tick(dt);
+    steamnet_tick(dt);
+    joinpolicy_tick(dt);
+    rewardguard_tick(dt);
 }
 
+#ifndef B4B_RELEASE
 void cmds_run(char *line, Out *o) {
     char *verb = strtok(line, " ");
     char *rest = strtok(NULL, "");
@@ -398,5 +413,7 @@ void cmds_run(char *line, Out *o) {
         if (c && f) cmd_call(c, f, cdo && !strcmp(cdo, "cdo"), o); else out_printf(o, "usage: call <Class> <Func> [cdo]\n");
     } else if (!steamnet_cmd(verb, rest, o) && !testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o) && !lineup_cmd(verb, rest, o) &&
                !slotguard_cmd(verb, rest, o) && !chat_cmd(verb, rest, o) && !admin_cmd(verb, rest, o) &&
-               !presence_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
+               !presence_cmd(verb, rest, o) && !rewardguard_cmd(verb, rest, o) && !joinpolicy_cmd(verb, rest, o))
+        out_printf(o, "unknown command: %s\n", verb);
 }
+#endif  // !B4B_RELEASE
