@@ -91,7 +91,8 @@ static DWORD WINAPI init_thread(LPVOID _) {
         MH_CreateHook((void *)ADDR_GAMEENGINETICK, (void *)tick_detour, (void **)&orig_tick) != MH_OK ||
         MH_EnableHook((void *)ADDR_GAMEENGINETICK) != MH_OK) { LOG("init: hook failed"); return 1; }
     LOG("init: tick hooked, %d objects", ue_num_objects());
-    *(volatile uint8_t *)0x1469BD96Dull = 1;  // GLogEnabled-style gate checked before every UE_LOG
+    *(volatile uint8_t *)ADDR_LOG_GATE = 1;
+    LOG("init: image base delta %+lld", (long long)g_base_delta);
     travel_init();
     uelog_init();
     cards_init();

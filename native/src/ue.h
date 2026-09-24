@@ -5,11 +5,16 @@
 #include <wchar.h>
 
 // ---- addresses for Steam build 14216215 (verified against byte signatures in ue_init) ----
-#define ADDR_GUOBJECTARRAY   0x14667C740ull
-#define ADDR_NAMEPOOL        0x146986C80ull
-#define ADDR_PROCESSEVENT    0x1426C6F70ull
-#define ADDR_GAMEENGINETICK  0x143C955B0ull
-#define ADDR_SETCLIENTTRAVEL 0x144130880ull  // UEngine::SetClientTravel(UEngine*, UWorld*, const TCHAR*, ETravelType)
+// Static VAs at the preferred image base. The exe is DYNAMIC_BASE: Wine keeps the preferred base, Windows ASLR
+// relocates it, so every address goes through VA() (g_base_delta is set first thing in ue_init).
+extern uint64_t g_base_delta;
+#define VA(a)                ((a) + g_base_delta)
+#define ADDR_GUOBJECTARRAY   VA(0x14667C740ull)
+#define ADDR_NAMEPOOL        VA(0x146986C80ull)
+#define ADDR_PROCESSEVENT    VA(0x1426C6F70ull)
+#define ADDR_GAMEENGINETICK  VA(0x143C955B0ull)
+#define ADDR_SETCLIENTTRAVEL VA(0x144130880ull)  // UEngine::SetClientTravel(UEngine*, UWorld*, const TCHAR*, ETravelType)
+#define ADDR_LOG_GATE        VA(0x1469BD96Dull)  // GLogEnabled-style gate checked before every UE_LOG
 #define OBJECTS_XOR          0x8375ull
 #define VTIDX_PROCESSEVENT   66
 

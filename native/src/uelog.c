@@ -8,7 +8,7 @@
 #include "log.h"
 #include "cmds.h"
 
-#define ADDR_LOGF_INTERNAL 0x142411DB0ull  // FMsg::Logf_Internal(File, Line, const FName& Cat, Verbosity, Fmt, ...)
+#define ADDR_LOGF_INTERNAL VA(0x142411DB0ull) // FMsg::Logf_Internal(File, Line, const FName& Cat, Verbosity, Fmt, ...)
 static const uint8_t SIG_LOGF[] = {0x40,0x53,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0xb8,0x78,0x24,0x00,0x00};
 
 typedef void (*LogfFn)(const char *file, int line, const FName *cat, uint8_t verb, const wchar_t *fmt, ...);
