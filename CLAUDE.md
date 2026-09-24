@@ -31,8 +31,12 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.
-  - `cmds.c` commands: `status players host join exec find call peek`; config = `b4bcoop.ini` next to the DLL or
-    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
+  - `steamnet.c` Steam P2P transport: `transport=steam` hosts on SteamNetDriver (GameNetDriver definition switch,
+    IP fallback), `join steam:<id64>[:port]`, SteamID in `status`, `steamnet` command. Not yet tested between two
+    accounts. docs/investigations/steam-p2p.md.
+  - `cmds.c` commands: `status players host join exec find call peek`; `coop_join(target)`/`coop_host()` for other
+    features (any thread); config = `b4bcoop.ini` next to the DLL or
+    `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join transport offline flashlight_*`).
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
   no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test
   instances, below), `two.sh` (old: two copies on the real prefix), `winpy.sh`, `probed.sh`, `uninstall.sh`.
@@ -104,5 +108,5 @@ Known issues / open:
 
 Next:
 1. Real multi-machine session on the new build (Windows client): netguard, rewards, burn cards, 5 players.
-2. In-game UX for host/join (no ini/CLI); Steam P2P instead of raw IP + port forwarding.
+2. In-game UX for host/join (no ini/CLI); two-account test of Steam P2P (plan in docs/investigations/steam-p2p.md).
 3. #8 lineup.
