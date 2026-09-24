@@ -235,7 +235,10 @@ static int policy_refused(const FString *opts, const FString *addr, const void *
     char o[1024], name[64], ip[64], why[96];
     ascii_of(addr, ip, sizeof ip);
     uint64_t claimed = uid_id64(uid), p2p = steamnet_peer_of_addr(ip), id = p2p ? p2p : claimed;
-    if (joinpolicy_check(id, why, sizeof why)) return 0;
+    if (joinpolicy_check(id, why, sizeof why)) {
+        LOG("admin: join policy: steam:%llu%s allowed (%s)", (unsigned long long)id, p2p ? " (Steam P2P)" : "", why);
+        return 0;
+    }
     ascii_of(opts, o, sizeof o);
     opt_value(o, "Name", name, sizeof name);
     LOG("admin: login %s from %s (steam:%llu%s): refused by the join policy: %s", name, ip, (unsigned long long)id,

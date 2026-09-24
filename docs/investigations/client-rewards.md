@@ -193,7 +193,7 @@ Also verified:
 - **Deferred save**: `ApplyCommandToOfflineData` updates memory at once, but the `.sav`/`.json` are written up to
   about 30 s later. Killing an instance (SIGKILL) inside that window loses the change. Wait before `multi-stop.sh`.
 
-Not covered live:
+Not covered live in this run (both covered later, §6b):
 - **Skull totem points** (type 20): no difficulty/run in this test awarded any.
 - **Duffel bags** (UnlockProduct 6 / AdjustConsumableQuantity 19 via `RewardDuffelBags`): the director rolled
   `DuffelBag_None`, and `RewardDuffelBags found no collected duffel bags`. It walks a list of picked-up `DuffelBagItem`s,
@@ -222,6 +222,48 @@ Recommendation: merge. SP forwarding works for success and failure, exactly once
 switch. The unverified paths (STP, duffel bags) use the same code with a different RPC name. Burn cards need a
 separate fix (a new issue).
 
+## 6b. Skull totem points and duffel bags, live (2026-09-24)
+
+**Result: both forward exactly once to the client's own profile; the host's profile gets only the host's own
+rewards.** Two instances (`launch/multi.sh 2`, `teamsize=5`, so 2 humans + 3 bots), Evansburgh B → C → D on Easy.
+
+Why earlier runs never saw them (static, confirmed live):
+- **Skull totem points do not depend on difficulty.** `RewardSurvivorsForSuccess` gets the amount from
+  `AMissionGameMode::CountSkullTotemPoints` (`0x141A08FB0`, MissionGameMode vtable `+0xA30`): the sum of `PointsAwarded`
+  of the skull-totem items (`TierableItemComponent.ItemType == SkullTotem`) that human pawns carry in the Carried slot
+  (`EquipmentSlots[6]`) at mission end, and **every** eligible human gets that whole total. Totems come from the
+  TU07 dungeon dynamic cards (`Dungeon_*`, objective "Search for Skull Totems"); nobody carried one out in our
+  unattended runs, so the count was 0. `GiveSkullTotemPoints` / `GiveSupplyPoints` (Exec, `0x141FAEFD0`) are stubs.
+- **Duffel bags are rewarded per `ADuffelBagItem` actor alive at a successful mission end** (the list is
+  `GobiCollectionsSubsystem +0x698`, filled by the item's BeginPlay). The director rolls a `DuffelBag_*` dynamic
+  card (Evansburgh C mostly rolls `DuffelBag_AnySingle`, B mostly `DuffelBag_None`), the loot spawner places a
+  `Duffel_Utility_Pickup_BP`, and the item actor only exists once someone picks it up. Every non-bot hero then gets
+  one reward per bag, whoever carries it. Per player the issuer `0x141BD7610(PlayerState, product, delta)` runs
+  `UnlockProduct` or, for a consumable, `AdjustConsumableQuantity(delta)`. `DuffelBag.ChanceToPreserve` is a dead cvar.
+
+Test commands added to `testing.c` (host):
+- `stp <N>|off`: hooks `CountSkullTotemPoints` to return N, so `endmission 1` runs the real STP award.
+- `items`: live `ItemPickup`s and their item rows; `giveitem <slot> <pickup#>`: the pickup's row into that hero's
+  inventory (`InventoryComponent::ServerAddItemsOfHandle`, the server side of picking it up).
+- `duffelreward <slot> <Products_DT row guid> [delta]`: the per-player duffel-bag issuer directly.
+
+| Step | Host log | Client log | Profile diff (after save) |
+|---|---|---|---|
+| B: `stp 5`, `ready`, `endmission 1` | `CountSkullTotemPoints 0 -> 5`, `SkullTotem Points per safe survivor: 5`, `adjusting STP by 5` ×2 (host + Apply, client + `rewards: forwarding AdjustSkullTotemPoints (5)`) | `[CLIENT RPC] adjusting STP by 5` + `ApplyCommandToOfflineData:AdjustSkullTotemPoints` | host STP +5, client STP +5 |
+| C: `items` → `Duffel_Utility_Pickup_BP`, `giveitem 1 <#>` (client's hero), `endmission 1` | `Duffel_Utility_Item_BP_C… BeginPlay successful`; `GiveDelayedDuffelBagRewards … Num Duffel Bags 1`; host: `Giving Reward WeaponSkin_Sni02_Hoffman` + Apply; client: `Giving Card Reward Card_Improvised_Insight` + `rewards: forwarding UnlockProduct` | `[CLIENT RPC] unlocking product Card_Improvised_Insight` + Apply | host: new unlock `WeaponSkin_Sni02_Hoffman`; client: none (it already owned that card, see below) |
+| C post-round: `duffelreward 1 <Burn_TeamCurrency_250> 1` | `adjusting consumable Burn_TeamCurrency_250 by 1`, forwarded (1) | `[CLIENT RPC] adjusting consumable … by 1` + Apply | client `Burn_TeamCurrency_250.acquired` 114 → 115; host unchanged |
+| D post-round: `duffelreward 1 <WeaponSkin_Sni02_Hoffman> 0` | forwarded `UnlockProduct` | `[CLIENT RPC] unlocking product WeaponSkin_Sni02_Hoffman` + Apply | client: new unlock `WeaponSkin_Sni02_Hoffman` |
+
+Whole-session totals (SP B 77, C 66, D 67): host SP +210, STP +5, unlocks +1 (its own skin); client SP +210, STP +5,
+`Burn_TeamCurrency_250.acquired` +1, unlocks +1. Nothing else changed in either profile, nothing was applied twice,
+and no reward meant for the client landed in the host's profile.
+
+Finding (not fixed): **a remote player's duffel reward ignores what they own.** The issuer's "already owned" filter
+reads the host's copy of the player's profile, which does not exist for a remote player (`0x141BC6930` → null), so a
+client can be given a product it already has. That happened here (`Card_Improvised_Insight`): the forwarded
+`UnlockProduct` is then a no-op and the bag's reward is effectively lost for that client. Fixing it would need the
+client's ownership on the host (the same missing channel as for burn cards); left as a known limitation.
+
 ## 7. Addresses
 | What | VA |
 |---|---|
@@ -236,4 +278,6 @@ separate fix (a new issue).
 | Starting-location unlock / `OnRep_UnlockedNewMap` | `0x141BCEFE0` / `0x142136240` |
 | `ServerPlayBurnCard_Implementation` / GCM play burn card / PPC consumable quantity | `0x141B9CA60` / `0x141776EA0` / `0x141BC2A00` |
 | `MissionGameMode::OnMissionEnd` (exec thunk; virtual +0xA20) | `0x1421E2E10` |
+| `CountSkullTotemPoints` (hooked by `stp`) / duffel issuer (PS, product, delta) | `0x141A08FB0` / `0x141BD7610` |
+| `ServerAddItemsOfHandle` exec / collected duffel bags (`GobiCollectionsSubsystem`) | `0x142186AE0` / subsystem `+0x698` |
 | Offsets | PPC owner +0xD8, PPC `HydraPublicId` +0x1A8, `PostRoundBonusSP` +0x7A0, AdjustSP `Delta` +0x8 |

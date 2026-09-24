@@ -6,12 +6,12 @@
 // client's own PlayerProfileSettings. A malicious or buggy host could send anything through them (a million supply
 // points, -500 of every burn card). So on a network client we hook the five RPC handlers and apply a command only if
 // it looks like a real mission reward:
-//   AdjustSupplyPoints / AdjustSkullTotemPoints   delta 1..MAX_PER_CMD, at most MAX_PER_MAP per map (mission)
+//   AdjustSupplyPoints / AdjustSkullTotemPoints   delta 1..1000, at most 2000 per map (mission)
 //   AdjustConsumableQuantity -1                   only for a burn card this client itself played on this map (seen
 //                                                 leaving through ServerPlayBurnCard), once per played card
-//   AdjustConsumableQuantity +N                   duffel-bag reward: 1..CONS_GAIN_PER_CMD, at most CONS_GAIN_PER_MAP
-//                                                 per map, and the product must be a duffel-bag product (below)
-//   UnlockProduct                                 duffel-bag product only, at most UNLOCKS_PER_MAP per map
+//   AdjustConsumableQuantity +N                   duffel-bag reward: 1..5, at most 10 per map, and the product must
+//                                                 be a duffel-bag product (below)
+//   UnlockProduct                                 duffel-bag product only, at most 10 per map
 //   SetSecureLeaderboardMetadata                  never (b4bcoop hosts don't send it)
 // "Duffel-bag product": a row of the game's own products table (the profile component's ProductsTable, checked by
 // object identity) whose ProductRow.DuffelBagTags is not empty, i.e. one the duffel-bag reward roll can pick.
@@ -19,9 +19,12 @@
 // The host's own rewards never pass through here (they are applied locally, not via these RPCs), and on a host or in
 // a standalone game the handlers run unchanged.
 //
-// Bounds (see client-rewards.md §8 for the numbers they come from): the largest single-mission SP reward in the game's
-// DifficultyRow tables is a few hundred SP; 2000 per command / 4000 per map leaves room for every bonus and future
-// balance changes while stopping an absurd grant. Skull totem points use the same limits.
+// Bounds, from the game's own reward table (MissionDifficulties, DifficultyRow; `rewardguard difficulty`, see
+// client-rewards.md §8): a mission's SP reward is CoreSp(map, difficulty) * (1 + bonuses). The largest CoreSp is 195
+// (VeryHard), and every bonus at its maximum (objective 0.5, glyphs 0.15 each, group 0.1 per survivor, consecutive
+// maps <= 0.3, party, quick play 0.25) stays under x4, so one reward is < 800 SP. Failure pays 0.2 of that. Limits:
+// 1000 per command, 2000 per map (success after retried failures). Skull totem points (5 per carried totem, every
+// survivor gets the team's total) use the same limits.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,8 +33,8 @@
 #include "log.h"
 #include "cmds.h"
 
-#define MAX_PER_CMD        2000   // supply points / skull totem points per command
-#define MAX_PER_MAP        4000   // ... per map (one mission's success or failure reward, plus retries)
+#define MAX_PER_CMD        1000   // supply points / skull totem points per command
+#define MAX_PER_MAP        2000   // ... per map (one mission's success or failure reward, plus retries)
 #define CONS_GAIN_PER_CMD  5      // consumables (burn cards) gained from one duffel-bag reward
 #define CONS_GAIN_PER_MAP  10
 #define UNLOCKS_PER_MAP    10

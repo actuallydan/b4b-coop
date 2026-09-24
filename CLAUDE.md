@@ -35,17 +35,23 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     (presence.c); dev builds also by ini `offline=1`.
   - `testing.c` (dev builds only) unattended testing: `signin`, `mission [raw] [map] [difficulty]`,
     `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`,
-    `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`.
+    `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
+    never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
+    (hand a pickup, e.g. a duffel bag, to a hero), `duffelreward <slot> <product guid> [delta]`.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
+  - `lineup.c` post-round/pre-round/character-select lineup with 5+ heroes (#8): spawns an extra mannequin when the
+    hero team has more slots than the lineup level's 4 and places it in the back row; `lineup` dumps it.
+    five-players.md §6.
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
     replies as local chat lines; host notices via ClientTeamMessage with our own type. Test: `type <text>` (real key
-    presses), `chat status`, `popup [close]`. `admin.c` the commands (`/help join host leave players ping kick ban
-    lock bots restart say ready ...`, same verbs on the dev CLI) and the host's PreLogin gate (join policy first, then
-    bans in `b4bcoop-bans.txt`, lock). docs/investigations/chat-commands.md.
+    presses), `click <x> <y>` (mouse click, e.g. post-round Continue), `chat status`, `popup [close]` (dev builds).
+    `admin.c` the commands (`/help join host leave players ping kick ban lock bots restart say ready ...`, same verbs
+    on the dev CLI) and the host's PreLogin gate (join policy first, then bans in `b4bcoop-bans.txt`, lock).
+    docs/investigations/chat-commands.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
@@ -103,6 +109,17 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   (`slotguard.c`; before that it crashed the host). Results: `docs/investigations/five-players.md` §5,
   `docs/investigations/slot-guard.md`.
 
+## Regression suite
+**Before merging/releasing: run `tools/e2e.py --quick`** (install the DLL under test first; the suite takes
+`launch/gamelock.sh` itself, or pass `--no-lock` if you already hold it). It launches `multi.sh 2` and checks, each
+with a timeout and PASS/FAIL: join, mission follow, client flashlight replicated to the host, a host and a client burn
+card charged once to their own profiles, chat `/players` typed on the client, ready + `endmission 1` with the client's
+SP forwarded, a seamless chapter transition, both profiles diffed after the deferred save (client SP +forwarded
+amount exactly, host only its own), and no public peer on any game socket (`ss` sampler). `--full` adds a vanilla
+`multi.sh 5` (5th refused "Server full.", host survives) and a `teamsize=5` round (5 follow, SP forwarded to all 4
+clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
+screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
+
 ## Gotchas
 - UE4SS does not work on this game (obfuscated engine) — don't go back to it.
 - Wine reparents the game to systemd: `/proc/<pid>/mem` is unreadable (yama=1). Use the Windows-side tools.
@@ -124,21 +141,21 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
   to their own profile, #4) and can play burn cards, charged to their own profile (`burncards.c`, #6).
 - No third-party traffic offline (`netguard.c`, #5): 0 public connections in a 16-min session on Proton.
 - Manual flashlight toggle with replication and sticky mode (`flashlight.c`, #2).
-- 5-player co-op, opt-in `teamsize=5` (`teamsize.c`, #1); joins beyond the slot count are rejected with
-  "Server full." instead of crashing the host (`slotguard.c`, #7).
+- 5-player co-op, opt-in `teamsize=5` (`teamsize.c`, #1; post-round lineup shows all 5, `lineup.c`, #8); joins
+  beyond the slot count are rejected with "Server full." instead of crashing the host (`slotguard.c`, #7).
 - Unattended N-instance local testing (`launch/multi.sh`, `testing.c`, #3).
 
 Known issues / open:
-- #8 post-round lineup shows 4 of 5 heroes with teamsize=5 (cosmetic).
+- #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
 - Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines.
 - All local test copies share one Steam id; two-account behavior is only covered by the one real session.
 - Steam Join Game/invites (`presence.c`): rich presence, launch-command-line join and simulated join requests verified
   on one account; the real callback, the Join Game menu and Steam-initiated launch need the two-account plan in
   docs/investigations/steam-invites.md. Local copies on one account overwrite each other's rich presence.
-- A client that disconnects before the saferoom-exit charge keeps its burn card; skull totem points and duffel-bag
-  rewards use the verified forwarding path but weren't awarded in tests.
+- A client that disconnects before the saferoom-exit charge keeps its burn card. Skull totem points and duffel-bag
+  rewards reach the client (verified, client-rewards.md §6b), but a remote player's duffel roll can't see what they
+  own, so they may get a product they already have (a no-op).
 
 Next:
 1. Real multi-machine session on the new build (Windows client): netguard, rewards, burn cards, 5 players.
 2. In-game UX for host/join (no ini/CLI); two-account test of Steam P2P (plan in docs/investigations/steam-p2p.md).
-3. #8 lineup.

@@ -28,6 +28,8 @@ void cmd_flashlight(const char *arg, Out *o);
 int testing_cmd(const char *verb, char *rest, Out *o); // testing.c (dev builds): test commands; 1 if handled
 int teamsize_init(void);
 int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled (also chat /teamsize)
+int lineup_init(void);                                   // lineup.c: 5th+ hero in the character lineups (#8)
+int lineup_cmd(const char *verb, char *rest, Out *o);    // dev builds: `lineup [off dx dy | fov deg | apply]`
 void teamsize_tick(float dt);
 int slotguard_init(void);
 int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled

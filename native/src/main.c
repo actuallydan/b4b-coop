@@ -119,6 +119,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     rewardguard_init();
     burncards_init();
     teamsize_init();
+    lineup_init();
     slotguard_init();
     chat_init();
     admin_init();
