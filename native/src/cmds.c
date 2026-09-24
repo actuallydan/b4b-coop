@@ -239,7 +239,7 @@ static void load_config(void) {
 void cmds_auto_join_backoff(double seconds) {
     if (!auto_join[0] || auto_next >= auto_clock + seconds - 1) return;
     auto_next = auto_clock + seconds;
-    LOG("auto: host is full, next join attempt in %.0fs", seconds);
+    LOG("auto: the host refused the join, next attempt in %.0fs", seconds);
 }
 
 // ---- join / host / leave entry points (chat commands, Steam invites, future in-game UI) ----
