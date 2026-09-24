@@ -441,7 +441,89 @@ static void cmd_callp(char *rest, Out *o) {
     out_printf(o, "\n");
 }
 
+// tp volumes                    list FlashlightVolume actors in this world (index, location, bEnableFlashlight)
+// tp <slot> <x> <y> <z>         host: teleport the hero of hero-team slot <slot> (K2_SetActorLocation, teleport)
+// tp <slot> volume <n>          ... to the centre of FlashlightVolume <n> (unattended flashlight-volume tests)
+static int actor_loc(UObject *a, float v[3]) {
+    UObject *root = a ? ue_get_ptr(a, "RootComponent") : NULL;
+    int32_t rl = root ? ue_prop_offset(root, "RelativeLocation") : -1;
+    if (rl < 0) return -1;
+    memcpy(v, (char *)root + rl, 12);
+    return 0;
+}
+
+static UObject *nth_volume(int want, Out *o) {
+    UClass *c = ue_find_class("FlashlightVolume"), *lc = ue_find_class("Level");
+    int32_t n = ue_num_objects(), k = 0;
+    char b[256];
+    for (int32_t i = 0; c && lc && i < n; i++) {
+        UObject *x = ue_object_at(i);
+        if (!x || (U_FLAGS(x) & 0x10) || !ue_is_a(x, c)) continue;
+        if (!U_OUTER(x) || !ue_is_a(U_OUTER(x), lc)) continue;   // placed actors (volumes are in streamed sublevels)
+        if (o) {
+            float v[3] = {0}; actor_loc(x, v);
+            int32_t en = ue_prop_offset(x, "bEnableFlashlight");
+            out_printf(o, "[%d] %s at=(%.0f,%.0f,%.0f) bEnableFlashlight=%d\n", k, ue_obj_name(x, b, sizeof b), v[0], v[1], v[2],
+                       en >= 0 ? *((uint8_t *)x + en) : -1);
+        }
+        if (k++ == want) return x;
+    }
+    return NULL;
+}
+
+static void cmd_tp(char *rest, Out *o) {
+    char *a = rest ? strtok(rest, " ") : NULL, *b = a ? strtok(NULL, " ") : NULL, *c = b ? strtok(NULL, " ") : NULL;
+    char *d = c ? strtok(NULL, " ") : NULL;
+    if (!a || !strcmp(a, "volumes")) { nth_volume(-1, o); return; }
+    float v[3];
+    if (b && !strcmp(b, "volume") && c) {
+        UObject *vol = nth_volume(atoi(c), NULL);
+        if (!vol || actor_loc(vol, v)) { out_printf(o, "no volume %s\n", c); return; }
+    } else if (b && c && d) { v[0] = (float)atof(b); v[1] = (float)atof(c); v[2] = (float)atof(d); }
+    else { out_printf(o, "usage: tp volumes | tp <slot> <x> <y> <z> | tp <slot> volume <n>\n"); return; }
+    UObject *w = ue_world(), *gs = w ? ue_get_ptr(w, "GameState") : NULL;
+    UObject *psm = gs ? ue_get_ptr(gs, "PlayerSlotManager") : NULL;
+    TArray *teams = psm ? (TArray *)((char *)psm + ue_prop_offset(psm, "TeamSlots")) : NULL;
+    TArray *slots = teams && teams->num ? (TArray *)((uint8_t *)teams->data + 8) : NULL;
+    int si = atoi(a);
+    UObject *slot = slots && si >= 0 && si < slots->num ? ((UObject **)slots->data)[si] : NULL;
+    UObject *pawn = slot ? ue_get_ptr(slot, "AssignedPawn") : NULL;
+    UFunction *f = pawn ? ue_find_function(U_CLASS(pawn), "K2_SetActorLocation") : NULL;
+    if (!f) { out_printf(o, "no pawn in slot %d\n", si); return; }
+    static uint8_t p[1024];
+    memset(p, 0, sizeof p);
+    int32_t ol = param_off(f, "NewLocation"), ot = param_off(f, "bTeleport");
+    if (ol < 0 || UFN_PARMSSIZE(f) > sizeof p) { out_printf(o, "bad K2_SetActorLocation\n"); return; }
+    memcpy(p + ol, v, 12);
+    if (ot >= 0) p[ot] = 1;
+    ue_process_event(pawn, f, p);
+    LOG("testing: tp slot %d to (%.0f,%.0f,%.0f)", si, v[0], v[1], v[2]);
+    out_printf(o, "tp: slot %d -> (%.0f,%.0f,%.0f)\n", si, v[0], v[1], v[2]);
+}
+
+// takeover <slot>: host: the human who owns hero slot <slot> but spectates its bot ("Press SPACE to take over")
+// takes the bot over: GobiPlayerController::ServerTakeOverBot(AssignedPawn), run on the server for that player.
+static void cmd_takeover(char *rest, Out *o) {
+    UObject *w = ue_world(), *gs = w ? ue_get_ptr(w, "GameState") : NULL;
+    UObject *psm = gs ? ue_get_ptr(gs, "PlayerSlotManager") : NULL;
+    TArray *teams = psm ? (TArray *)((char *)psm + ue_prop_offset(psm, "TeamSlots")) : NULL;
+    TArray *slots = teams && teams->num ? (TArray *)((uint8_t *)teams->data + 8) : NULL;
+    int si = rest ? atoi(rest) : -1;
+    UObject *slot = slots && si >= 0 && si < slots->num ? ((UObject **)slots->data)[si] : NULL;
+    UObject *ps = slot ? ue_get_ptr(slot, "OwningPlayer") : NULL, *pc = ps ? ue_get_ptr(ps, "Owner") : NULL;
+    UObject *pawn = slot ? ue_get_ptr(slot, "AssignedPawn") : NULL;
+    UFunction *f = pc ? ue_find_function(U_CLASS(pc), "ServerTakeOverBot") : NULL;
+    int32_t op = f ? param_off(f, "TargetPawn") : -1;
+    if (!pawn || op < 0) { out_printf(o, "slot %d: no owner PlayerController / pawn\n", si); return; }
+    uint8_t p[32] = {0};
+    *(UObject **)(p + op) = pawn;
+    ue_process_event(pc, f, p);
+    out_printf(o, "takeover: ServerTakeOverBot for slot %d\n", si);
+}
+
 int testing_cmd(const char *verb, char *rest, Out *o) {
+    if (!strcmp(verb, "tp")) { cmd_tp(rest, o); return 1; }
+    if (!strcmp(verb, "takeover")) { cmd_takeover(rest, o); return 1; }
     (void)rest;
     if (!strcmp(verb, "signin")) { signin_step(o); return 1; }
     if (!strcmp(verb, "mission")) { cmd_mission(rest, o); return 1; }

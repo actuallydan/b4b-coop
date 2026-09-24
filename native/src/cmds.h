@@ -28,3 +28,7 @@ int testing_cmd(const char *verb, char *rest, Out *o); // 1 if handled
 int teamsize_init(void);
 int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
 void teamsize_tick(float dt);
+int slotguard_init(void);
+int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
+void slotguard_tick(float dt);
+void cmds_auto_join_backoff(double seconds);  // client: the host rejected us as full
