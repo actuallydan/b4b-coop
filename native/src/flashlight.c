@@ -122,8 +122,29 @@ static void restore_auto(UObject *comp) {
     orig_set(comp, vis, sh);
 }
 
-// flashlight [on|off|toggle|auto]
+// flashlight list: every hero light in this world, as this machine sees it (replicated state on clients)
+static void list_lights(Out *o) {
+    if (!cls_hlc) cls_hlc = ue_find_class("HeroLightComponent");
+    UObject *pc = ue_local_pc(), *mine = pc ? ue_get_ptr(pc, "Pawn") : NULL;
+    int32_t n = ue_num_objects(), hits = 0;
+    char b[256], b2[256];
+    for (int32_t i = 0; cls_hlc && i < n; i++) {
+        UObject *c = ue_object_at(i);
+        if (!c || (U_FLAGS(c) & 0x30) || !ue_is_a(c, cls_hlc) || !U_OUTER(c) || (U_FLAGS(U_OUTER(c)) & 0x30)) continue;   // skip CDOs and templates
+        UObject *hero = U_OUTER(c);
+        UObject *ps = ue_get_ptr(hero, "PlayerState"), *owner = ps ? ue_get_ptr(ps, "Owner") : NULL;
+        out_printf(o, "%s%s light=%s role=%s manual=%s volume_requests=%d dark_card=%d owner=%s\n",
+                   ue_obj_name(hero, b, sizeof b), hero == mine ? " (mine)" : "", HLC_VISIBLE(c) ? "on" : "off",
+                   is_authority(c) ? "authority" : "proxy", manual_find(c) ? "yes" : "no", HLC_REQUESTS(c)->num,
+                   HLC_DARKCARD(c), owner ? ue_obj_name(owner, b2, sizeof b2) : "-");
+        hits++;
+    }
+    out_printf(o, "%d hero light(s)\n", hits);
+}
+
+// flashlight [on|off|toggle|auto|status|list]
 void cmd_flashlight(const char *arg, Out *o) {
+    if (arg && !strcmp(arg, "list")) { list_lights(o); return; }
     UObject *c = local_light();
     if (!c) { out_printf(o, "no local hero light (not in a level / no pawn)\n"); return; }
     int auth = is_authority(c), vis = HLC_VISIBLE(c);

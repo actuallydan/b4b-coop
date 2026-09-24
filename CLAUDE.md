@@ -17,15 +17,20 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     command, `netguard=` ini keys); docs/investigations/outbound-traffic.md.
   - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log` (`b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
   - `cards.c` host card-ownership override for remote players (interim).
-  - `flashlight.c` manual flashlight toggle (`flashlight` command, ini hotkey); docs/investigations/flashlight.md.
+  - `flashlight.c` manual flashlight toggle (`flashlight` command, `flashlight list`, ini hotkey); verified live.
+    docs/investigations/flashlight.md.
   - `rewards.c` host forwards remote players' dropped rewards (SP, STP, unlocks, consumables) to their clients via the
     game's unused ClientExecute*Command RPCs. Details: `docs/investigations/client-rewards.md`.
   - `burncards.c` host: remote players can play burn cards (quantity trusted), and each charge is keyed to the player
     who played it. Details: `docs/investigations/burn-cards.md`.
   - `testing.c` unattended testing: auto sign-in Offline (`offline=1`), `signin`, `mission [raw] [map] [difficulty]`,
-    `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`.
+    `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`,
+    `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
+  - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
+    a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
+    docs/investigations/slot-guard.md.
   - `cmds.c` commands: `status players host join exec find call peek`; config = `b4bcoop.ini` next to the DLL or
     `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
@@ -61,8 +66,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
 - Profile saves are deferred (~30 s after `ApplyCommandToOfflineData`); wait before `multi-stop.sh` (SIGKILL) or diffing.
 - `-Port=` on the command line sets the listen port (UE `FURL` default port); in use → it binds the next one.
 - 5 players: `B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5` (opt-in `teamsize` in `native/src/teamsize.c`). Verified: a
-  full mission and 2 chapter transitions with 5 humans. Without it, a 5th joiner crashes the host in Fort Hope
-  (no free slot → null PlayerSlot deref). Results: `docs/investigations/five-players.md` §5.
+  full mission and 2 chapter transitions with 5 humans. Without it, a 5th joiner is refused with "Server full."
+  (`slotguard.c`; before that it crashed the host). Results: `docs/investigations/five-players.md` §5,
+  `docs/investigations/slot-guard.md`.
 
 ## Gotchas
 - UE4SS does not work on this game (obfuscated engine) — don't go back to it.
