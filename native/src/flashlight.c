@@ -171,9 +171,7 @@ void flashlight_tick(float dt) {
 
 // b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; 0 disables), flashlight_sticky=1
 static void load_config(void) {
-    extern char g_module_dir[];
-    char path[600]; snprintf(path, sizeof path, "%sb4bcoop.ini", g_module_dir);
-    FILE *f = fopen(path, "r");
+    FILE *f = fopen(cmds_config_path(), "r");
     if (!f) return;
     char line[300];
     while (fgets(line, sizeof line, f)) {

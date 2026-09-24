@@ -5,7 +5,8 @@ set -euo pipefail
 steam="$HOME/.local/share/Steam"
 game="${B4B_DIR:-$steam/steamapps/common/Back 4 Blood}"
 proton="${PROTON:-$steam/steamapps/common/Proton - Experimental/proton}"
-export STEAM_COMPAT_DATA_PATH="$steam/steamapps/compatdata/924970"
+# B4B_PREFIX: alternate compatdata dir (isolated test prefixes, see launch/multi.sh)
+export STEAM_COMPAT_DATA_PATH="${B4B_PREFIX:-$steam/steamapps/compatdata/924970}"
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="$steam"
 export SteamAppId=924970 SteamGameId=924970
 export WINEDLLOVERRIDES="dwmapi=n,b${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
