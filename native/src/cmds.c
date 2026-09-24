@@ -141,7 +141,8 @@ static void cmd_players(Out *o) {
 //   host=1            -> whenever we're offline & standalone in Fort Hope, reopen it as a listen server
 //   join=1.2.3.4[:p]  -> whenever we're offline & standalone in Fort Hope, join that host (retry every 20s)
 static int auto_host;
-int cmds_auto_host(void) { return auto_host; }
+// Only the first instance on a machine auto-hosts (a second local copy shares the same ini when testing).
+int cmds_auto_host(void) { extern int g_agent_port; return auto_host && g_agent_port == 47112; }
 static char auto_join[256];
 static double auto_clock, auto_next;
 
@@ -165,7 +166,7 @@ static void load_config(void) {
 
 static void auto_tick(float dt) {
     auto_clock += dt;
-    if ((!auto_host && !auto_join[0]) || auto_clock < auto_next) return;
+    if ((!cmds_auto_host() && !auto_join[0]) || auto_clock < auto_next) return;
     auto_next = auto_clock + 2;
     UObject *w = ue_world();
     if (!w || ue_get_ptr(w, "NetDriver")) return;             // already hosting or connected
@@ -174,7 +175,7 @@ static void auto_tick(float dt) {
     if (!ue_local_pc()) return;                                // still loading
     static Out scratch;
     out_reset(&scratch);
-    if (auto_host) { LOG("auto: hosting"); cmd_host(&scratch); auto_next = auto_clock + 30; }
+    if (cmds_auto_host()) { LOG("auto: hosting"); cmd_host(&scratch); auto_next = auto_clock + 30; }
     else { LOG("auto: joining %s", auto_join); cmd_join(auto_join, &scratch); auto_next = auto_clock + 20; }
 }
 

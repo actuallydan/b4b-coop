@@ -11,6 +11,7 @@
 #include "cmds.h"
 
 #define PORT 47112
+int g_agent_port;   // 0 until the command server binds; PORT for the first game instance on this machine
 
 typedef void (*TickFn)(void *engine, float dt, uint8_t idle);
 static TickFn orig_tick;
@@ -58,6 +59,7 @@ static DWORD WINAPI server_thread(LPVOID _) {
         if (!bind(s, (struct sockaddr *)&a, sizeof a)) break;
     }
     if (port == PORT + 4 || listen(s, 4)) { LOG("server: bind/listen failed %d", WSAGetLastError()); return 1; }
+    g_agent_port = port;
     LOG("server: listening on 127.0.0.1:%d", port);
     static Out reply;
     for (;;) {
