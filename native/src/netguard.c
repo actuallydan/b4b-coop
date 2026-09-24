@@ -8,8 +8,9 @@
 //                    not come from an allowed lookup fails with WSAENETUNREACH. UDP is never touched (game traffic).
 //   EOS              EOS_Platform_Create (hooked when EOSSDK-Win64-Shipping.dll maps) -> SetNetworkStatus(Disabled)
 //
-// Installed from DllMain: dwmapi.dll is a static import of Back4Blood.exe, so this runs during loader init, before
-// the exe's entry point and before any game thread exists. Details: docs/investigations/outbound-traffic.md.
+// Installed from DllMain: the agent DLL (X3DAudio1_7.dll, or legacy dwmapi.dll) is a static import of Back4Blood.exe,
+// so this runs during loader init, before the exe's entry point and before any game thread exists.
+// Details: docs/investigations/outbound-traffic.md.
 //
 // b4bcoop.ini keys: netguard=block|log|off (default block), netguard_eos=0|1 (default 1),
 //                   netguard_allow=host[,*.suffix,1.2.3.4...] (repeatable)

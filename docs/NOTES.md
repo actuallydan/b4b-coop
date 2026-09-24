@@ -10,7 +10,9 @@ retail, so client-hosted listen servers are a shipped code path. Steam, IP, and 
 
 ## Launching
 - `launch/run.sh` runs `Gobi/Binaries/Win64/Back4Blood.exe` directly under Proton (no EAC bootstrapper).
-  Or Steam launch options: `WINEDLLOVERRIDES="dwmapi=n,b" %command%`.
+  Or a plain Steam launch: the agent is `X3DAudio1_7.dll` (Wine's builtin is prefer-native, so the copy in the game
+  dir loads without overrides). Legacy `dwmapi.dll`: launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`.
+  Launch chain, EAC and the Windows redirect: docs/investigations/launch.md.
 - A game started by Wine is reparented to systemd, so `/proc/<pid>/mem` is unreadable under yama ptrace_scope=1.
   Use `launch/probed.sh` (Windows Python in the same prefix, ReadProcessMemory) + `tools/probe.py '<code>'`.
 

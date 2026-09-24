@@ -118,11 +118,32 @@ static DWORD WINAPI init_thread(LPVOID _) {
     return 0;
 }
 
+extern const wchar_t b4b_proxy_name[];   // native/proxy/<name>.c: the system DLL this build replaces
+
+// The agent ships under two names (X3DAudio1_7.dll, legacy dwmapi.dll, docs/investigations/launch.md); only one copy
+// per process may run it, the other stays a plain proxy. A dwmapi.dll from our own directory wins: it may be an
+// older build that doesn't know this rule. Runs under the loader lock, but all static imports are mapped by now.
+static int agent_is_elsewhere(HINSTANCE inst) {
+    wchar_t mx[64];
+    wsprintfW(mx, L"Local\\b4bcoop-agent-%lu", GetCurrentProcessId());
+    HANDLE h = CreateMutexW(NULL, FALSE, mx);
+    if (h && GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(h); return 1; }
+    HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+    if (dwm && dwm != (HMODULE)inst) {
+        wchar_t a[MAX_PATH], b[MAX_PATH];
+        GetModuleFileNameW(inst, a, MAX_PATH); GetModuleFileNameW(dwm, b, MAX_PATH);
+        wchar_t *sa = wcsrchr(a, L'\\'), *sb = wcsrchr(b, L'\\');
+        if (sa && sb && sa - a == sb - b && !_wcsnicmp(a, b, sa - a)) return 1;   // same directory
+    }
+    return 0;   // the mutex handle stays open for the process lifetime
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
+        if (agent_is_elsewhere(inst)) return TRUE;
         log_init(inst);
-        LOG("b4bcoop loaded");
+        LOG("b4bcoop loaded as %ls", b4b_proxy_name);
         netguard_init();   // before any game code runs: hooks name resolution / TCP connect / EOS (netguard.c)
         CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
     }

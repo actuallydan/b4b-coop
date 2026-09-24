@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launch B4B under Proton directly (no EAC bootstrapper), with UE4SS's dwmapi proxy loaded.
+# Launch B4B under Proton directly (no EAC bootstrapper). The agent (X3DAudio1_7.dll) needs no DLL override;
+# dwmapi=n,b is for the legacy dwmapi.dll agent.
 # Steam must be running. Extra args are passed to the game.
 set -euo pipefail
 steam="$HOME/.local/share/Steam"
