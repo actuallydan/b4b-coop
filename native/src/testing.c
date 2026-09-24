@@ -549,7 +549,128 @@ static void cmd_takeover(char *rest, Out *o) {
     out_printf(o, "takeover: ServerTakeOverBot for slot %d\n", si);
 }
 
+// ---- rewards that Easy never gives (docs/investigations/client-rewards.md §8) ----
+// stp <N>|off              host: AMissionGameMode::CountSkullTotemPoints returns N (the per-survivor total the game
+//                          otherwise sums from skull totems carried by humans), so the next `endmission 1` runs the
+//                          real RewardSurvivorsForSuccess STP award for every human. Hooked on first use.
+// items [substr]           host: live ItemPickup actors in this world and their item rows (duffel bag = Duffel)
+// giveitem <slot> <pickup> [entry]   host: that pickup's item row into hero slot <slot>'s inventory
+//                          (InventoryComponent::ServerAddItemsOfHandle, the server side of a pickup)
+// duffelreward <slot> <ProductsRowGuid> [delta]      host: the per-player duffel-bag reward issuer (0x141BD7610)
+//                          directly: consumable -> AdjustConsumableQuantity(delta), else UnlockProduct
+#include "MinHook.h"
+#define ADDR_COUNT_STP VA(0x141A08FB0ull)   // int32 AMissionGameMode::CountSkullTotemPoints(this)
+static const uint8_t SIG_COUNT_STP[] = {0x40,0x53,0x48,0x81,0xec,0x00,0x01,0x00,0x00,0x48,0x8b,0x05,0x20,0xe8,0x9e,0x04,
+                                        0x48,0x33,0xc4,0x48,0x89,0x84,0x24,0xd0,0x00,0x00,0x00,0x48,0x8b,0xd9,0xe8,0xbd};
+#define ADDR_DUFFEL_ISSUE VA(0x141BD7610ull)  // void (AGobiPlayerState*, const FDataTableRowHandle* product, int32 delta)
+static const uint8_t SIG_DUFFEL_ISSUE[] = {0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,0x48,0x83,0xec,0x20,0x48,
+                                           0x83,0xb9,0x70,0x07,0x00,0x00,0x00,0x41,0x8b,0xd8,0x48,0x8b,0xf2,0x48,0x8b,0xf9};
+typedef int32_t (*CountStpFn)(UObject *gm);
+static CountStpFn orig_count_stp;
+static int stp_force = -1;
+static int32_t count_stp_detour(UObject *gm) {
+    int32_t n = orig_count_stp(gm);
+    if (stp_force < 0) return n;
+    LOG("testing: CountSkullTotemPoints %d -> %d (stp)", n, stp_force);
+    return stp_force;
+}
+
+static void cmd_stp(char *rest, Out *o) {
+    if (!rest || !*rest) { out_printf(o, "stp: %d (usage: stp <N>|off)\n", stp_force); return; }
+    if (!orig_count_stp) {
+        if (memcmp((void *)ADDR_COUNT_STP, SIG_COUNT_STP, sizeof SIG_COUNT_STP)) { out_printf(o, "stp: signature mismatch\n"); return; }
+        if (MH_CreateHook((void *)ADDR_COUNT_STP, (void *)count_stp_detour, (void **)&orig_count_stp) != MH_OK ||
+            MH_EnableHook((void *)ADDR_COUNT_STP) != MH_OK) { orig_count_stp = NULL; out_printf(o, "stp: hook failed\n"); return; }
+    }
+    stp_force = strcmp(rest, "off") ? atoi(rest) : -1;
+    LOG("testing: stp %d", stp_force);
+    out_printf(o, "stp: CountSkullTotemPoints -> %d\n", stp_force);
+}
+
+static UObject *slot_at(int si) {
+    UObject *w = ue_world(), *gs = w ? ue_get_ptr(w, "GameState") : NULL;
+    UObject *psm = gs ? ue_get_ptr(gs, "PlayerSlotManager") : NULL;
+    TArray *teams = psm ? (TArray *)((char *)psm + ue_prop_offset(psm, "TeamSlots")) : NULL;
+    TArray *slots = teams && teams->num ? (TArray *)((uint8_t *)teams->data + 8) : NULL;
+    return slots && si >= 0 && si < slots->num ? ((UObject **)slots->data)[si] : NULL;
+}
+
+static UObject *nth_pickup(int want, const char *filter, Out *o) {
+    UClass *c = ue_find_class("ItemPickup");
+    int k = 0;
+    char a[160], b[160];
+    for (UObject *p = c ? find_live(c, NULL) : NULL; p; p = find_live(c, p)) {   // any level (streamed sublevels too)
+        int32_t off = ue_prop_offset(p, "ItemRowsAndQuantities");
+        TArray *rows = off >= 0 ? (TArray *)((char *)p + off) : NULL;
+        int match = !filter;
+        for (int i = 0; rows && i < rows->num; i++)
+            if (filter && strstr(ue_name(((RowHandle *)((char *)rows->data + i * 0x48))->row, a, sizeof a), filter)) match = 1;
+        if (!match) continue;
+        if (o) {
+            out_printf(o, "[%d] %s", k, ue_obj_name(p, a, sizeof a));
+            for (int i = 0; rows && i < rows->num; i++) {
+                RowHandle *h = (RowHandle *)((char *)rows->data + i * 0x48);
+                out_printf(o, " {%d: %s %s x%d}", i, h->table ? ue_obj_name(h->table, b, sizeof b) : "null",
+                           ue_name(h->row, a, sizeof a), *(int32_t *)((char *)h + 0x20));
+            }
+            out_printf(o, "\n");
+        }
+        if (k++ == want) return p;
+    }
+    return NULL;
+}
+
+static void cmd_giveitem(char *rest, Out *o) {
+    char *a = rest ? strtok(rest, " ") : NULL, *b = a ? strtok(NULL, " ") : NULL, *c = b ? strtok(NULL, " ") : NULL;
+    if (!b) { out_printf(o, "usage: giveitem <slot> <pickup#> [entry]\n"); return; }
+    UObject *slot = slot_at(atoi(a)), *pawn = slot ? ue_get_ptr(slot, "AssignedPawn") : NULL;
+    UObject *pk = nth_pickup(atoi(b), NULL, NULL);
+    int32_t off = pk ? ue_prop_offset(pk, "ItemRowsAndQuantities") : -1;
+    TArray *rows = off >= 0 ? (TArray *)((char *)pk + off) : NULL;
+    int e = c ? atoi(c) : 0;
+    if (!pawn || !rows || e < 0 || e >= rows->num) { out_printf(o, "no pawn in slot %s / no pickup %s entry %d\n", a, b, e); return; }
+    UFunction *gi = ue_find_function(U_CLASS(pawn), "GetInventoryComponent");
+    uint8_t p0[16] = {0};
+    if (gi) ue_process_event(pawn, gi, p0);
+    UObject *inv = *(UObject **)p0;
+    UFunction *f = inv ? ue_find_function(U_CLASS(inv), "ServerAddItemsOfHandle") : NULL;
+    int32_t oh = f ? param_off(f, "ItemHandle") : -1, on = f ? param_off(f, "NumItems") : -1;
+    if (oh < 0 || on < 0 || UFN_PARMSSIZE(f) > 64) { out_printf(o, "no inventory / ServerAddItemsOfHandle\n"); return; }
+    uint8_t p[64] = {0};
+    RowHandle *src = (RowHandle *)((char *)rows->data + e * 0x48), *h = (RowHandle *)(p + oh);
+    h->table = src->table; h->row = src->row;   // display string left empty
+    *(int32_t *)(p + on) = 1;
+    char nm[160];
+    ue_name(h->row, nm, sizeof nm);
+    LOG("testing: giveitem %s to slot %s", nm, a);
+    ue_process_event(inv, f, p);
+    out_printf(o, "giveitem: ServerAddItemsOfHandle(%s, 1) on slot %s's inventory\n", nm, a);
+}
+
+static void cmd_duffelreward(char *rest, Out *o) {
+    char *a = rest ? strtok(rest, " ") : NULL, *b = a ? strtok(NULL, " ") : NULL, *c = b ? strtok(NULL, " ") : NULL;
+    if (!b) { out_printf(o, "usage: duffelreward <slot> <ProductsRowGuid> [delta]\n"); return; }
+    if (memcmp((void *)ADDR_DUFFEL_ISSUE, SIG_DUFFEL_ISSUE, sizeof SIG_DUFFEL_ISSUE)) { out_printf(o, "signature mismatch\n"); return; }
+    UObject *slot = slot_at(atoi(a)), *ps = slot ? ue_get_ptr(slot, "OwningPlayer") : NULL;
+    UObject *dt = find_named("Products_DT");
+    if (!ps || !dt) { out_printf(o, "no owner in slot %s / no Products_DT\n", a); return; }
+    static wchar_t wrow[64];
+    int k = 0;
+    for (; b[k] && k < 63; k++) wrow[k] = (wchar_t)b[k];
+    wrow[k] = 0;
+    static RowHandle h;
+    memset(&h, 0, sizeof h);
+    h.table = dt; h.row = make_name(wrow);
+    LOG("testing: duffelreward slot %s product %s delta %d", a, b, c ? atoi(c) : 1);
+    ((void (*)(UObject *, const RowHandle *, int32_t))ADDR_DUFFEL_ISSUE)(ps, &h, c ? atoi(c) : 1);
+    out_printf(o, "duffelreward: issued %s (delta %d) to slot %s\n", b, c ? atoi(c) : 1, a);
+}
+
 int testing_cmd(const char *verb, char *rest, Out *o) {
+    if (!strcmp(verb, "stp")) { cmd_stp(rest, o); return 1; }
+    if (!strcmp(verb, "items")) { nth_pickup(-1, rest && *rest ? rest : NULL, o); return 1; }
+    if (!strcmp(verb, "giveitem")) { cmd_giveitem(rest, o); return 1; }
+    if (!strcmp(verb, "duffelreward")) { cmd_duffelreward(rest, o); return 1; }
     if (!strcmp(verb, "tp")) { cmd_tp(rest, o); return 1; }
     if (!strcmp(verb, "takeover")) { cmd_takeover(rest, o); return 1; }
     (void)rest;
