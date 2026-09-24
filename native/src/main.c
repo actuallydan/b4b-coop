@@ -10,6 +10,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "netguard.h"
 
 #define PORT 47112
 int g_agent_port;   // 0 until the command server binds; PORT for the first game instance on this machine
@@ -92,7 +93,8 @@ static DWORD WINAPI init_thread(LPVOID _) {
     while (ue_num_objects() < 1000) Sleep(100);
     InitializeCriticalSection(&job_cs);
     job_done = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (MH_Initialize() != MH_OK ||
+    MH_STATUS mh = MH_Initialize();   // netguard_init may have initialized MinHook already (DllMain)
+    if ((mh != MH_OK && mh != MH_ERROR_ALREADY_INITIALIZED) ||
         MH_CreateHook((void *)ADDR_GAMEENGINETICK, (void *)tick_detour, (void **)&orig_tick) != MH_OK ||
         MH_EnableHook((void *)ADDR_GAMEENGINETICK) != MH_OK) { LOG("init: hook failed"); return 1; }
     LOG("init: tick hooked, %d objects", ue_num_objects());
@@ -113,6 +115,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
         DisableThreadLibraryCalls(inst);
         log_init(inst);
         LOG("b4bcoop loaded");
+        netguard_init();   // before any game code runs: hooks name resolution / TCP connect / EOS (netguard.c)
         CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
     }
     return TRUE;

@@ -7,7 +7,8 @@
 # log Gobi/Binaries/Win64/b4bcoop-test<n>-<winpid>.log. Env: B4B_GAME_PORT (default 7787, not 7777 so test clients
 # can never land in a real session), B4B_STAGGER (s between launches, default 20), B4B_TIMEOUT (s, default 600),
 # B4B_FRESH=1 re-clones the prefixes from the real one (~600 MB each, ~20 s), B4B_BLANK="2 3" gives those
-# instances a fresh offline profile (no decks/unlocks). All copies share one Steam account: same player name and
+# instances a fresh offline profile (no decks/unlocks), B4B_INI_EXTRA="netguard=off;..." appends agent config lines
+# to every instance's b4bcoop.ini. All copies share one Steam account: same player name and
 # same offline.<steamid64> id on the host.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

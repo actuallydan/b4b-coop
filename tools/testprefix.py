@@ -79,6 +79,8 @@ def write_config(dst, host, join):
     lines = ["offline=1"]
     if host: lines.append("host=1")
     if join: lines.append(f"join={join}")
+    # B4B_INI_EXTRA="netguard=off;netguard_eos=0": extra agent config lines for every instance (';'-separated)
+    lines += [l.strip() for l in os.environ.get("B4B_INI_EXTRA", "").split(";") if l.strip()]
     open(os.path.join(dst, "b4bcoop.ini"), "w").write("\n".join(lines) + "\n")
 
 
