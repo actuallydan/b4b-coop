@@ -31,7 +31,12 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.
-  - `cmds.c` commands: `status players host join exec find call peek`; config = `b4bcoop.ini` next to the DLL or
+  - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
+    replies as local chat lines; host notices via ClientTeamMessage with our own type. Test: `type <text>` (real key
+    presses), `chat status`, `popup [close]`. `admin.c` the commands (`/help join host leave players ping kick ban
+    lock bots restart say ...`, same verbs on the CLI) and the host's PreLogin gate (bans in `b4bcoop-bans.txt`,
+    lock). docs/investigations/chat-commands.md.
+  - `cmds.c` commands: `status players host join leave exec find call peek`; `coop_join/coop_host/coop_leave`; config = `b4bcoop.ini` next to the DLL or
     `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
   no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test

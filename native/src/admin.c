@@ -1,0 +1,554 @@
+// Chat commands (chat.c queues them) and the host's admin actions, also available as agent commands.
+// docs/investigations/chat-commands.md.
+//
+// Roles: a command typed on this machine acts on this machine. Admin commands need this machine to be the server
+// (listen host, or standalone for settings like teamsize/bots); on a client they reply "host only" and do nothing.
+// A client's commands never reach the host (chat.c intercepts before anything is sent).
+//
+// Host-side enforcement (hook AGameModeBase::PreLogin override, the function that calls slotguard's ApproveLogin):
+// a banned player id, or any new player while the session is locked, gets a login error before a PlayerController
+// exists. Bans persist in b4bcoop-bans.txt next to the agent config (cmds_config_path()).
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "MinHook.h"
+#include "ue.h"
+#include "log.h"
+#include "cmds.h"
+
+#define ADDR_PRELOGIN  VA(0x1419FE9C0ull)  // void AGobiGameMode::PreLogin(this, const FString& Options, const FString& Address,
+                                           //   const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage); logs "PreLogin Options"
+#define ADDR_RESIZE    VA(0x140BAF260ull)  // TArray<TCHAR>::ResizeForCopy(this, NewMax, PrevMax): GMalloc-backed storage
+#define ADDR_FREE      VA(0x140C823B0ull)  // FMemory::Free
+static const uint8_t SIG_PRELOGIN[] = {0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,
+                                       0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x83,0xec,0x40,0x4c,0x8b,0xf9,0x4c,
+                                       0x8b,0xea,0x48,0x8b,0x89,0xf8,0x02,0x00,0x00};
+static const uint8_t SIG_RESIZE[] = {0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,0x48,0x83,0xec,0x20,0x48,
+                                     0x63,0xda,0x48,0x8b,0xf9};
+static const uint8_t SIG_FREE[] = {0x48,0x85,0xc9,0x74,0x49,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9};
+
+typedef void (*PreLoginFn)(UObject *gm, const FString *opts, const FString *addr, const void *uid, FString *err);
+typedef void (*ResizeFn)(FString *s, int32_t new_max, int32_t prev_max);
+static PreLoginFn orig_prelogin;
+static ResizeFn resize_fn;
+static int alloc_ok;
+
+static int locked;
+static char lock_allow[16][80];   // player keys present when the session was locked (they may rejoin on map change)
+static int n_lock_allow;
+static int bots_mode = -1;         // -1 game default, 0 off, 1 on (host, from the next map)
+static int n_refused;
+
+// ---- small helpers ----
+static void ascii_of(const FString *s, char *buf, size_t n) {
+    size_t k = 0;
+    for (int i = 0; s && s->data && i < s->num && s->data[i] && k + 1 < n; i++)
+        buf[k++] = s->data[i] < 128 ? (char)s->data[i] : '?';
+    buf[k] = 0;
+}
+
+static void fstring_set(FString *s, const char *utf8, wchar_t *storage, int cap) {
+    int n = 0;
+    for (; utf8[n] && n < cap - 1; n++) storage[n] = (wchar_t)(unsigned char)utf8[n];
+    storage[n] = 0;
+    s->data = storage; s->num = n + 1; s->max = cap;
+}
+
+// Replace a game-owned FString's contents (memory from the game's allocator: the engine frees it later).
+static int fstring_assign_game(FString *s, const char *text) {
+    if (!alloc_ok) return -1;
+    int n = (int)strlen(text) + 1;
+    if (s->data) ((void (*)(void *))ADDR_FREE)(s->data);
+    s->data = NULL; s->num = n; s->max = 0;
+    resize_fn(s, n, 0);
+    if (!s->data) { s->num = 0; return -1; }
+    for (int i = 0; i < n; i++) s->data[i] = (wchar_t)(unsigned char)text[i];
+    return 0;
+}
+
+static int is_pc(UObject *o) {
+    static UClass *c;
+    if (!c) c = ue_find_class("PlayerController");
+    return o && c && ue_is_a(o, c);
+}
+
+static UObject *game_state(void) { UObject *w = ue_world(); return w ? ue_get_ptr(w, "GameState") : NULL; }
+
+static int is_client(void) {
+    UObject *w = ue_world(), *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
+    return nd && ue_get_ptr(nd, "ServerConnection");
+}
+
+static void ps_name(UObject *ps, char *buf, size_t n) {
+    int32_t off = ps ? ue_prop_offset(ps, "PlayerNamePrivate") : -1;
+    if (off >= 0) ascii_of((FString *)((char *)ps + off), buf, n); else snprintf(buf, n, "?");
+}
+
+// A bot's player state has no player name; its hero is GobiPlayerState.BotRowHandle. Row handles in this build carry
+// an unreflected display name after the row name ({table, FName row, FString display}); row names are GUIDs.
+static int bot_name(UObject *ps, char *buf, size_t n) {
+    int32_t off = ps ? ue_prop_offset(ps, "BotRowHandle") : -1;
+    UObject *table = off >= 0 ? *(UObject **)((char *)ps + off) : NULL;
+    if (!table) return 0;
+    ascii_of((FString *)((char *)ps + off + 0x10), buf, n);
+    if (!buf[0]) snprintf(buf, n, "bot");
+    return 1;
+}
+
+// Steam id from a FUniqueNetIdRepl {vtable, TSharedPtr<FUniqueNetId> {object, refcount}, ReplicationBytes}: the
+// Steam net id object holds the 64-bit id after its vtable. Accept it only if it looks like an individual Steam id.
+static int uid_str(const void *repl, char *buf, size_t n) {
+    buf[0] = 0;
+    if (!repl) return 0;
+    const uint8_t *obj = *(const uint8_t **)((const char *)repl + 8);
+    if (!obj) return 0;
+    for (int off = 8; off <= 0x18; off += 8) {
+        uint64_t v = *(const uint64_t *)(obj + off);
+        if ((v >> 32) == 0x01100001ull) { snprintf(buf, n, "steam:%llu", (unsigned long long)v); return 1; }
+    }
+    return 0;
+}
+
+// Ban/lock key for a player: its Steam id, else its name.
+static void ps_key(UObject *ps, char *buf, size_t n) {
+    int32_t off = ps ? ue_prop_offset(ps, "UniqueId") : -1;
+    if (off >= 0 && uid_str((char *)ps + off, buf, n)) return;
+    char nm[64]; ps_name(ps, nm, sizeof nm);
+    snprintf(buf, n, "name:%s", nm);
+}
+
+// Player list = GameState.PlayerArray (humans and bots), indices as shown by /players.
+static int player_array(UObject ***arr) {
+    UObject *gs = game_state();
+    int32_t off = gs ? ue_prop_offset(gs, "PlayerArray") : -1;
+    if (off < 0) return 0;
+    TArray *pa = (TArray *)((char *)gs + off);
+    *arr = (UObject **)pa->data;
+    return pa->num;
+}
+
+static int ps_ping_ms(UObject *ps) {
+    int32_t off = ps ? ue_prop_offset(ps, "Ping") : -1;
+    return off >= 0 ? *((uint8_t *)ps + off) * 4 : -1;   // replicated as ms/4
+}
+
+// Find a player by PlayerArray index ("2" or "#2") or name (exact, case-insensitive; else a unique prefix).
+static UObject *find_player(const char *arg, Out *o) {
+    UObject **pa; int n = player_array(&pa);
+    if (!arg || !*arg) { out_printf(o, "which player? (/players)\n"); return NULL; }
+    const char *a = arg[0] == '#' ? arg + 1 : arg;
+    char *end;
+    long idx = strtol(a, &end, 10);
+    if (*a && !*end) {
+        if (idx >= 0 && idx < n) return pa[idx];
+        out_printf(o, "no player #%ld\n", idx);
+        return NULL;
+    }
+    UObject *hit = NULL; int prefix_hits = 0;
+    char nm[64];
+    for (int i = 0; i < n; i++) {
+        ps_name(pa[i], nm, sizeof nm);
+        if (!_stricmp(nm, arg)) return pa[i];
+        if (!_strnicmp(nm, arg, strlen(arg))) { hit = pa[i]; prefix_hits++; }
+    }
+    if (prefix_hits == 1) return hit;
+    out_printf(o, prefix_hits ? "'%s' matches %d players, use the number from /players\n" : "no player '%s'\n", arg, prefix_hits);
+    return NULL;
+}
+
+// ---- bans (b4bcoop-bans.txt: "<key> <name>" per line) ----
+static const char *bans_path(void) {
+    static char path[640];
+    if (!path[0]) {
+        const char *cfg = cmds_config_path();
+        const char *s1 = strrchr(cfg, '\\'), *s2 = strrchr(cfg, '/'), *sep = s1 > s2 ? s1 : s2;
+        int dir = sep ? (int)(sep - cfg + 1) : 0;
+        snprintf(path, sizeof path, "%.*sb4bcoop-bans.txt", dir, cfg);
+    }
+    return path;
+}
+
+typedef struct { char key[80], name[64]; } Ban;
+static Ban bans[64];
+static int n_bans;
+
+static void bans_load(void) {
+    n_bans = 0;
+    FILE *f = fopen(bans_path(), "r");
+    if (!f) return;
+    char line[200];
+    while (n_bans < 64 && fgets(line, sizeof line, f)) {
+        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
+        if (!line[0] || line[0] == '#') continue;
+        char *sp = strchr(line, ' ');
+        if (sp) *sp++ = 0;
+        snprintf(bans[n_bans].key, sizeof bans[0].key, "%s", line);
+        snprintf(bans[n_bans].name, sizeof bans[0].name, "%s", sp ? sp : "");
+        n_bans++;
+    }
+    fclose(f);
+}
+
+static int bans_save(void) {
+    FILE *f = fopen(bans_path(), "w");
+    if (!f) { LOG("admin: cannot write %s", bans_path()); return -1; }
+    fprintf(f, "# b4bcoop bans: <steam:id64 | name:PlayerName> <name>\n");
+    for (int i = 0; i < n_bans; i++) fprintf(f, "%s %s\n", bans[i].key, bans[i].name);
+    fclose(f);
+    return 0;
+}
+
+static int is_banned(const char *key, const char *name) {
+    bans_load();
+    for (int i = 0; i < n_bans; i++) {
+        if (key[0] && !strcmp(bans[i].key, key)) return 1;
+        if (!strncmp(bans[i].key, "name:", 5) && name[0] && !_stricmp(bans[i].key + 5, name)) return 1;
+    }
+    return 0;
+}
+
+// ---- login gate ----
+static void opt_value(const char *opts, const char *key, char *buf, size_t n) {
+    buf[0] = 0;
+    size_t kl = strlen(key);
+    for (const char *p = opts; (p = strchr(p, '?')); p++) {
+        if (_strnicmp(p + 1, key, kl) || p[1 + kl] != '=') continue;
+        const char *v = p + 2 + kl;
+        size_t k = 0;
+        while (v[k] && v[k] != '?' && k + 1 < n) { buf[k] = v[k]; k++; }
+        buf[k] = 0;
+        return;
+    }
+}
+
+static void prelogin_detour(UObject *gm, const FString *opts, const FString *addr, const void *uid, FString *err) {
+    orig_prelogin(gm, opts, addr, uid, err);
+    if (err && err->num > 1) return;   // already refused (e.g. slotguard's "Server full.")
+    char o[1024], name[64], key[80], ip[64];
+    ascii_of(opts, o, sizeof o);
+    ascii_of(addr, ip, sizeof ip);
+    opt_value(o, "Name", name, sizeof name);
+    if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
+    const char *why = NULL;
+    if (is_banned(key, name)) why = "You are banned from this session.";
+    else if (locked) {
+        int ok = 0;
+        for (int i = 0; i < n_lock_allow; i++) if (!strcmp(lock_allow[i], key)) ok = 1;
+        if (!ok) why = "The host locked the session.";
+    }
+    LOG("admin: login %s from %s (%s): %s", name, ip, key, why ? why : "ok");
+    if (!why || !err) return;
+    if (fstring_assign_game(err, why)) { LOG("admin: could not set the login error, allowing"); return; }
+    n_refused++;
+}
+
+// ---- actions ----
+static void players(Out *o) {
+    UObject **pa; int n = player_array(&pa);
+    UObject *me = ue_local_pc(), *my_ps = me ? ue_get_ptr(me, "PlayerState") : NULL;
+    int host = !is_client();
+    if (!n) { out_printf(o, "no players (not in a game)\n"); return; }
+    for (int i = 0; i < n; i++) {
+        char nm[64], key[80];
+        UObject *ps = pa[i], *owner = ue_get_ptr(ps, "Owner");
+        ps_name(ps, nm, sizeof nm);
+        char bn[64];
+        // a client doesn't see other players' controllers: a nameless player state with a bot hero is a bot
+        int is_bot = host ? !is_pc(owner) : (!nm[0] && bot_name(ps, bn, sizeof bn));
+        if (is_bot && !nm[0] && !bot_name(ps, nm, sizeof nm)) snprintf(nm, sizeof nm, "-");
+        out_printf(o, "#%d %s%s%s", i, nm, ps == my_ps ? " (you)" : "", is_bot ? " [bot]" : "");
+        if (host && !is_bot && ps != my_ps) out_printf(o, " %dms", ps_ping_ms(ps));
+        if (host && !is_bot) { ps_key(ps, key, sizeof key); out_printf(o, " %s", key); }
+        out_printf(o, "\n");
+    }
+}
+
+static void ping(Out *o) {
+    if (!is_client()) { out_printf(o, "you are the host (no round trip)\n"); return; }
+    UObject *pc = ue_local_pc(), *ps = pc ? ue_get_ptr(pc, "PlayerState") : NULL;
+    int ms = ps_ping_ms(ps);
+    if (ms < 0) out_printf(o, "ping unknown\n"); else out_printf(o, "ping to host: %d ms\n", ms);
+}
+
+// Send one chat line to one player's client (ClientTeamMessage, sender = our player state). On the host's own
+// controller the RPC runs locally.
+static int send_line_t(UObject *pc, const char *text, int kick) {
+    static UFunction *f;
+    UObject *me = ue_local_pc(), *my_ps = me ? ue_get_ptr(me, "PlayerState") : NULL;
+    if (!f && pc) f = ue_find_function(U_CLASS(pc), "ClientTeamMessage");
+    FField *ps = f ? ue_find_prop(f, "SenderPlayerState") : NULL, *s = f ? ue_find_prop(f, "S") : NULL;
+    FField *t = f ? ue_find_prop(f, "Type") : NULL;
+    if (!ps || !s || !t || !my_ps || UFN_PARMSSIZE(f) > 64) return -1;
+    static wchar_t w[320];
+    uint8_t p[64] = {0};
+    *(UObject **)(p + FP_OFFSET(ps)) = my_ps;
+    fstring_set((FString *)(p + FP_OFFSET(s)), text, w, 320);
+    *(FName *)(p + FP_OFFSET(t)) = chat_notice_type(kick);
+    ue_process_event(pc, f, p);
+    return 0;
+}
+static int send_line(UObject *pc, const char *text) { return send_line_t(pc, text, 0); }
+
+static void say(const char *msg, Out *o) {
+    if (!msg || !*msg) { out_printf(o, "usage: /say <message>\n"); return; }
+    char line[300];
+    snprintf(line, sizeof line, "[host] %s", msg);
+    UObject **pa; int n = player_array(&pa), sent = 0;
+    for (int i = 0; i < n; i++) {
+        UObject *pc = ue_get_ptr(pa[i], "Owner");
+        if (is_pc(pc) && !send_line(pc, line)) sent++;
+    }
+    LOG("admin: say to %d player(s): %s", sent, msg);
+    if (!sent) out_printf(o, "no one to tell\n");
+}
+
+// Kicks are delayed a little so the "you were kicked" line (reliable RPC) leaves before the connection closes.
+typedef struct { UObject *pc; int32_t idx; float in; } Pending;
+static Pending pending[8];
+
+static int kick_ps(UObject *ps, const char *why, Out *o) {
+    UObject *pc = ue_get_ptr(ps, "Owner");
+    char nm[64]; ps_name(ps, nm, sizeof nm);
+    if (!is_pc(pc)) { out_printf(o, "%s is a bot\n", nm); return -1; }
+    if (pc == ue_local_pc()) { out_printf(o, "that's you\n"); return -1; }
+    for (int i = 0; i < 8; i++) {
+        if (pending[i].pc && ue_object_at(pending[i].idx) == pending[i].pc) continue;
+        char line[160];
+        snprintf(line, sizeof line, "You were %s by the host.", why);
+        send_line_t(pc, line, 1);   // the client's agent disconnects on this (the close below may take a timeout to arrive)
+        pending[i].pc = pc; pending[i].idx = U_INDEX(pc); pending[i].in = 0.5f;
+        char key[80]; ps_key(ps, key, sizeof key);
+        for (int k = 0; k < n_lock_allow; k++)
+            if (!strcmp(lock_allow[k], key)) { lock_allow[k][0] = 0; }
+        LOG("admin: %s %s (%s)", why, nm, key);
+        return 0;
+    }
+    out_printf(o, "too many kicks at once\n");
+    return -1;
+}
+
+void admin_tick(float dt) {
+    for (int i = 0; i < 8; i++) {
+        if (!pending[i].pc) continue;
+        if (ue_object_at(pending[i].idx) != pending[i].pc) { pending[i].pc = NULL; continue; }
+        if ((pending[i].in -= dt) > 0) continue;
+        slotguard_kick(pending[i].pc);
+        pending[i].pc = NULL;
+    }
+}
+
+static int need_players(Out *o) {
+    if (!ue_is_listen_server(ue_world())) { out_printf(o, "not hosting a session\n"); return 0; }
+    return 1;
+}
+
+static void kick(const char *arg, Out *o) {
+    if (!need_players(o)) return;
+    UObject *ps = find_player(arg, o);
+    char nm[64];
+    if (ps && !kick_ps(ps, "kicked", o)) { ps_name(ps, nm, sizeof nm); out_printf(o, "kicked %s\n", nm); }
+}
+
+static void ban(const char *arg, Out *o) {
+    if (!need_players(o)) return;
+    UObject *ps = find_player(arg, o);
+    if (!ps) return;
+    char nm[64], key[80];
+    ps_name(ps, nm, sizeof nm);
+    ps_key(ps, key, sizeof key);
+    UObject *pc = ue_get_ptr(ps, "Owner");
+    if (!is_pc(pc) || pc == ue_local_pc()) { out_printf(o, "%s can't be banned\n", nm); return; }
+    bans_load();
+    if (!is_banned(key, nm) && n_bans < 64) {
+        snprintf(bans[n_bans].key, sizeof bans[0].key, "%s", key);
+        snprintf(bans[n_bans].name, sizeof bans[0].name, "%s", nm);
+        n_bans++;
+        if (bans_save()) { out_printf(o, "could not write %s\n", bans_path()); return; }
+    }
+    kick_ps(ps, "banned", o);
+    out_printf(o, "banned %s (%s)\n", nm, key);
+}
+
+static void unban(const char *arg, Out *o) {
+    bans_load();
+    if (!arg || !*arg) { out_printf(o, "usage: /unban <name|steam:id|#n from /bans|all>\n"); return; }
+    int removed = 0;
+    int idx = (arg[0] == '#') ? atoi(arg + 1) : -1;
+    for (int i = 0; i < n_bans; i++) {
+        int hit = !strcmp(arg, "all") || i == idx || !strcmp(bans[i].key, arg) || !_stricmp(bans[i].name, arg);
+        if (!hit) continue;
+        out_printf(o, "unbanned %s (%s)\n", bans[i].name, bans[i].key);
+        bans[i] = bans[--n_bans];
+        i--; removed++;
+        if (idx >= 0) break;
+    }
+    if (!removed) { out_printf(o, "no ban matches '%s' (/bans)\n", arg); return; }
+    bans_save();
+}
+
+static void list_bans(Out *o) {
+    bans_load();
+    if (!n_bans) { out_printf(o, "no bans\n"); return; }
+    for (int i = 0; i < n_bans; i++) out_printf(o, "#%d %s %s\n", i, bans[i].name, bans[i].key);
+}
+
+static void lock(int on, Out *o) {
+    locked = on;
+    n_lock_allow = 0;
+    if (on) {   // everyone here now may come back (clients reconnect when the host changes map)
+        UObject **pa; int n = player_array(&pa);
+        UObject *me = ue_local_pc();
+        for (int i = 0; i < n && n_lock_allow < 16; i++) {
+            UObject *pc = ue_get_ptr(pa[i], "Owner");
+            if (is_pc(pc) && pc != me) ps_key(pa[i], lock_allow[n_lock_allow++], sizeof lock_allow[0]);
+        }
+    }
+    LOG("admin: session %s (%d player(s) may rejoin)", on ? "locked" : "unlocked", n_lock_allow);
+    out_printf(o, on ? "session locked: no new players (current players can still rejoin)\n" : "session unlocked\n");
+}
+
+// bots on|off: whether empty hero slots get bots, from the next map. PlayerSlotManager.bSupportsBots is copied from
+// the game mode's bSupportsBots when the slot manager is created, and TeamSupportsBots() (the bot fill check) reads
+// it; we set both right before InitSlots (teamsize.c's hook calls admin_on_initslots).
+void admin_on_initslots(UObject *psm) {
+    if (bots_mode < 0) return;
+    UObject *w = ue_world(), *gm = w ? ue_get_ptr(w, "AuthorityGameMode") : NULL;
+    int32_t a = ue_prop_offset(psm, "bSupportsBots"), b = gm ? ue_prop_offset(gm, "bSupportsBots") : -1;
+    if (a >= 0) *((uint8_t *)psm + a) = (uint8_t)bots_mode;
+    if (b >= 0) *((uint8_t *)gm + b) = (uint8_t)bots_mode;
+    LOG("admin: bSupportsBots=%d for this map", bots_mode);
+}
+
+static void bots(const char *arg, Out *o) {
+    if (arg && !strcmp(arg, "on")) bots_mode = 1;
+    else if (arg && !strcmp(arg, "off")) bots_mode = 0;
+    else if (arg && !strcmp(arg, "default")) bots_mode = -1;
+    else if (arg && *arg) { out_printf(o, "usage: /bots on|off|default\n"); return; }
+    UObject *gs = game_state(), *psm = gs ? ue_get_ptr(gs, "PlayerSlotManager") : NULL;
+    int32_t off = psm ? ue_prop_offset(psm, "bSupportsBots") : -1;
+    out_printf(o, "bots: %s from the next map (this map: %s)\n", bots_mode < 0 ? "game default" : bots_mode ? "on" : "off",
+               off < 0 ? "?" : *((uint8_t *)psm + off) ? "on" : "off");
+}
+
+// restart: fail the mission the way a team wipe does (MissionGameMode::OnMissionEnd(false)); the game then runs its
+// own retry path. Only when the difficulty's mission-end behavior is a retry, never when it would end the run.
+static void restart(Out *o) {
+    UObject *w = ue_world(), *gm = w ? ue_get_ptr(w, "AuthorityGameMode") : NULL, *gs = game_state();
+    UClass *mc = ue_find_class("MissionGameMode");
+    if (!gm || !mc || !ue_is_a(gm, mc)) { out_printf(o, "not in a mission\n"); return; }
+    UFunction *fb = gs ? ue_find_function(U_CLASS(gs), "GetMissionEndedBehavior") : NULL;
+    FField *rv = fb ? ue_find_prop(fb, "ReturnValue") : NULL;
+    if (!rv) { out_printf(o, "restart: GetMissionEndedBehavior not found\n"); return; }
+    uint8_t pb[16] = {0};
+    ue_process_event(gs, fb, pb);
+    int beh = pb[FP_OFFSET(rv)];
+    static const char *B[] = {"RestartMission", "PreviousCheckpoint", "GameOver"};
+    LOG("admin: restart requested, mission-ended behavior %d", beh);
+    if (beh != 0 && beh != 1) { out_printf(o, "restart refused: failing now would end the run (%s)\n", beh == 2 ? B[2] : "?"); return; }
+    UFunction *f = ue_find_function(U_CLASS(gm), "OnMissionEnd");
+    FField *pbs = f ? ue_find_prop(f, "bSuccess") : NULL, *pc = f ? ue_find_prop(f, "Context") : NULL;
+    if (!pbs || !pc) { out_printf(o, "restart: OnMissionEnd not found\n"); return; }
+    static wchar_t ctx[32];
+    uint8_t p[64] = {0};
+    fstring_set((FString *)(p + FP_OFFSET(pc)), "b4bcoop restart", ctx, 32);
+    ue_process_event(gm, f, p);
+    out_printf(o, "restarting: mission failed on purpose (%s)\n", B[beh]);
+}
+
+// ---- dispatch ----
+static const struct { const char *name; int admin; const char *usage; } CMDS[] = {
+    {"help", 0, "/help"}, {"join", 0, "/join <ip[:port] | steam:<id64>>"}, {"host", 0, "/host"}, {"leave", 0, "/leave"},
+    {"players", 0, "/players"}, {"flashlight", 0, "/flashlight [on|off|auto]"}, {"ping", 0, "/ping"},
+    {"kick", 1, "/kick <name|#>"}, {"ban", 1, "/ban <name|#>"}, {"unban", 1, "/unban <name|steam:id|#n|all>"},
+    {"bans", 1, "/bans"}, {"lock", 1, "/lock"}, {"unlock", 1, "/unlock"}, {"teamsize", 1, "/teamsize N"},
+    {"restart", 1, "/restart"}, {"ready", 1, "/ready [vote]"}, {"bots", 1, "/bots on|off|default"}, {"say", 1, "/say <message>"},
+};
+#define N_CMDS ((int)(sizeof CMDS / sizeof CMDS[0]))
+
+static void help(Out *o) {
+    out_printf(o, "/join <ip[:port]>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n");
+    if (is_client()) { out_printf(o, "(/kick /ban /lock ... are for the host)\n"); return; }
+    out_printf(o, "host: /kick /ban <name|#>  /unban  /bans\n/lock  /unlock  /teamsize N  /bots on|off\n"
+                  "/restart  /ready [vote]  /say <msg>\n//text sends a message starting with /\n");
+}
+
+// Host actions shared by chat and the agent CLI. Returns 1 if handled.
+static int run_admin(const char *verb, char *rest, Out *o) {
+    if (!strcmp(verb, "kick")) kick(rest, o);
+    else if (!strcmp(verb, "ban")) ban(rest, o);
+    else if (!strcmp(verb, "unban")) unban(rest, o);
+    else if (!strcmp(verb, "bans")) list_bans(o);
+    else if (!strcmp(verb, "lock")) lock(1, o);
+    else if (!strcmp(verb, "unlock")) lock(0, o);
+    else if (!strcmp(verb, "bots")) bots(rest, o);
+    else if (!strcmp(verb, "say")) say(rest, o);
+    else if (!strcmp(verb, "restart")) restart(o);
+    else return 0;
+    return 1;
+}
+
+// A chat command typed by the local player (text after '/').
+void admin_slash(char *line, Out *o) {
+    char *verb = strtok(line, " ");
+    char *rest = strtok(NULL, "");
+    while (rest && *rest == ' ') rest++;
+    if (!verb) { help(o); return; }
+    for (char *c = verb; *c; c++) *c = (char)tolower((unsigned char)*c);
+    int i = 0;
+    for (; i < N_CMDS && strcmp(CMDS[i].name, verb); i++) {}
+    if (i == N_CMDS) { out_printf(o, "unknown command /%s (/help)\n", verb); return; }
+    if (CMDS[i].admin && is_client()) { out_printf(o, "/%s: host only (you are a client)\n", verb); return; }
+    LOG("admin: /%s %s", verb, rest ? rest : "");
+    if (!strcmp(verb, "help")) help(o);
+    else if (!strcmp(verb, "players")) players(o);
+    else if (!strcmp(verb, "ping")) ping(o);
+    else if (!strcmp(verb, "flashlight")) cmd_flashlight(rest && *rest ? rest : "toggle", o);
+    else if (!strcmp(verb, "join")) {
+        if (!rest || !*rest) { out_printf(o, "usage: %s\n", CMDS[i].usage); return; }
+        out_printf(o, "joining %s ...\n", rest);
+        coop_join(rest);
+    } else if (!strcmp(verb, "host")) {
+        UObject *w = ue_world();
+        char pkg[256] = "";
+        if (w) ue_world_package(w, pkg, sizeof pkg);
+        if (is_client()) out_printf(o, "you are in someone's session: /leave first\n");
+        else if (ue_is_listen_server(w)) out_printf(o, "already hosting (%d player(s) connected)\n", ue_num_clients(w));
+        else if (!strstr(pkg, "FortHope")) out_printf(o, "go back to Fort Hope first\n");
+        else { out_printf(o, "hosting: others can now /join you\n"); coop_host(); }
+    } else if (!strcmp(verb, "leave")) {
+        if (!is_client()) { out_printf(o, "you are not in someone else's session\n"); return; }
+        out_printf(o, "leaving, back to your own Fort Hope\n");
+        coop_leave();
+    } else if (!strcmp(verb, "teamsize")) {
+        if (!rest || atoi(rest) < 1) { out_printf(o, "usage: /teamsize N (1-8, from the next map)\n"); return; }
+        teamsize_cmd("teamsize", rest, o);
+    } else if (!strcmp(verb, "ready")) {
+        if (!need_players(o)) return;
+        testing_cmd("ready", rest, o);
+    } else run_admin(verb, rest, o);
+}
+
+// Agent CLI: kick ban unban bans lock unlock bots say restart, plus `slash <text>` (run a chat command directly,
+// without the chat box) and `players2` (the /players listing).
+int admin_cmd(const char *verb, char *rest, Out *o) {
+    if (!strcmp(verb, "slash")) { if (rest) admin_slash(rest[0] == '/' ? rest + 1 : rest, o); return 1; }
+    if (!strcmp(verb, "who")) { players(o); return 1; }
+    if (!strcmp(verb, "admin")) {
+        out_printf(o, "admin: locked=%d allow=%d bots=%d refused=%d bans=%d (%s) prelogin=%d alloc=%d\n", locked,
+                   n_lock_allow, bots_mode, n_refused, (bans_load(), n_bans), bans_path(), orig_prelogin != NULL, alloc_ok);
+        return 1;
+    }
+    return run_admin(verb, rest, o);
+}
+
+int admin_init(void) {
+    alloc_ok = !memcmp((void *)ADDR_RESIZE, SIG_RESIZE, sizeof SIG_RESIZE) && !memcmp((void *)ADDR_FREE, SIG_FREE, sizeof SIG_FREE);
+    if (alloc_ok) resize_fn = (ResizeFn)ADDR_RESIZE; else LOG("admin: FString allocator signature mismatch");
+    if (memcmp((void *)ADDR_PRELOGIN, SIG_PRELOGIN, sizeof SIG_PRELOGIN)) LOG("admin: PreLogin signature mismatch");
+    else if (MH_CreateHook((void *)ADDR_PRELOGIN, (void *)prelogin_detour, (void **)&orig_prelogin) != MH_OK ||
+             MH_EnableHook((void *)ADDR_PRELOGIN) != MH_OK) { LOG("admin: PreLogin hook failed"); orig_prelogin = NULL; }
+    bans_load();
+    LOG("admin: login gate %s, %d ban(s) in %s", orig_prelogin ? "on" : "OFF", n_bans, bans_path());
+    return 0;
+}

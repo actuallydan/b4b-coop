@@ -189,6 +189,42 @@ void cmds_auto_join_backoff(double seconds) {
     LOG("auto: host is full, next join attempt in %.0fs", seconds);
 }
 
+// ---- join / host / leave entry points (chat commands, future in-game UI) ----
+// coop_join: "ip[:port]" joins over IP; "steam:<id64>" needs the Steam P2P transport (not in this build).
+void coop_join(const char *target) {
+    static Out scratch;
+    while (target && *target == ' ') target++;
+    if (!target || !*target) return;
+    if (!strncmp(target, "steam:", 6)) {
+        LOG("join: %s: steam: transport not available", target);
+        chat_local("steam: transport not available in this build, use /join <ip[:port]>");
+        return;
+    }
+    out_reset(&scratch);
+    cmd_join(target, &scratch);
+}
+
+// coop_host: host the offline camp we are in (and keep hosting it after missions, like host=1).
+void coop_host(void) {
+    static Out scratch;
+    auto_host = 1;
+    own_config = 1;
+    out_reset(&scratch);
+    cmd_host(&scratch);
+}
+
+// coop_leave (client): drop the connection and go back to our own offline camp; no auto-rejoin afterwards.
+void coop_leave(void) {
+    cmds_auto_join_stop();
+    travel_set_host("");
+    game_exec("disconnect");
+}
+
+void cmds_auto_join_stop(void) {
+    if (auto_join[0]) LOG("auto: join %s stopped", auto_join);
+    auto_join[0] = 0;
+}
+
 static void auto_tick(float dt) {
     auto_clock += dt;
     if ((!cmds_auto_host() && !auto_join[0]) || auto_clock < auto_next) return;
@@ -232,6 +268,8 @@ void cmds_tick(float dt) {
     testing_tick(dt);
     teamsize_tick(dt);
     slotguard_tick(dt);
+    chat_tick(dt);
+    admin_tick(dt);
 }
 
 void cmds_run(char *line, Out *o) {
@@ -250,7 +288,11 @@ void cmds_run(char *line, Out *o) {
         for (int i = 0; i < n; i++) out_printf(o, "%02x%s", p[i], (i % 16 == 15) ? "\n" : " ");
         out_printf(o, "\n");
     }
-    else if (!strcmp(verb, "join") && rest) cmd_join(rest, o);
+    else if (!strcmp(verb, "join") && rest) {
+        if (!strncmp(rest, "steam:", 6)) { coop_join(rest); out_printf(o, "coop_join(%s), see the log\n", rest); }
+        else cmd_join(rest, o);
+    }
+    else if (!strcmp(verb, "leave")) { coop_leave(); out_printf(o, "leaving\n"); }
     else if (!strcmp(verb, "exec") && rest) cmd_exec(rest, o);
     else if (!strcmp(verb, "netguard")) netguard_cmd(rest, o);
     else if (!strcmp(verb, "find") && rest) {
@@ -259,5 +301,6 @@ void cmds_run(char *line, Out *o) {
     } else if (!strcmp(verb, "call") && rest) {
         char *c = strtok(rest, " "), *f = strtok(NULL, " "), *cdo = strtok(NULL, " ");
         if (c && f) cmd_call(c, f, cdo && !strcmp(cdo, "cdo"), o); else out_printf(o, "usage: call <Class> <Func> [cdo]\n");
-    } else if (!testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o) && !slotguard_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
+    } else if (!testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o) && !slotguard_cmd(verb, rest, o) &&
+               !chat_cmd(verb, rest, o) && !admin_cmd(verb, rest, o)) out_printf(o, "unknown command: %s\n", verb);
 }

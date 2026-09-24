@@ -1,5 +1,6 @@
 #pragma once
 #include <stddef.h>
+#include "ue.h"
 
 typedef struct { char buf[256 * 1024]; size_t len; } Out;
 void out_reset(Out *o);
@@ -32,3 +33,22 @@ int slotguard_init(void);
 int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
 void slotguard_tick(float dt);
 void cmds_auto_join_backoff(double seconds);  // client: the host rejected us as full
+void coop_join(const char *target);   // "ip[:port]" or "steam:<id64>" (chat /join, CLI join)
+void coop_host(void);                  // host the current offline camp
+void coop_leave(void);                 // client: disconnect, back to own camp, no auto-rejoin
+int slotguard_kick(UObject *pc);       // host: close a remote player's connection
+int chat_init(void);
+void chat_tick(float dt);
+int chat_cmd(const char *verb, char *rest, Out *o);
+void chat_local(const char *fmt, ...);  // local-only chat line(s)
+#define CHAT_NOTICE_TYPE L"b4bcoop"      // ClientTeamMessage Type of host notices (shown by chat.c on the receiver)
+#define CHAT_KICK_TYPE L"b4bcoopkick"    // ... a notice after which the receiving client leaves (kick/ban)
+FName chat_notice_type(int kick);
+void chat_local_later(const char *text); // show after the next map load (e.g. why a join was refused)
+void chat_on_join_failed(const char *error);  // uelog.c: PendingConnectionFailure on this client
+void cmds_auto_join_stop(void);        // client: no more ini auto-join attempts this session
+int admin_init(void);
+void admin_tick(float dt);
+int admin_cmd(const char *verb, char *rest, Out *o);
+void admin_slash(char *line, Out *o);  // a chat command typed by the local player (without the '/')
+void admin_on_initslots(UObject *psm); // teamsize.c: right before APlayerSlotManager::InitSlots
