@@ -108,6 +108,8 @@ static DWORD WINAPI init_thread(LPVOID _) {
     burncards_init();
     teamsize_init();
     slotguard_init();
+    chat_init();
+    admin_init();
     cmds_init();
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
     return 0;
