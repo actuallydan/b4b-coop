@@ -1,7 +1,8 @@
 # 5-player co-op (issue #1)
 
 Build 14216215. Static analysis of `Back4Blood.exe`, the SDK dump, and host/client logs from 2026-09-23
-(`b4bcoop-2972.log` host, `b4bcoop-776.log` client). Phase 1 only: nothing here has run in the game yet.
+(`b4bcoop-2972.log` host, `b4bcoop-776.log` client). Sections 1–4 are the phase-1 static work; **section 5 has the
+live results (2026-09-24): 5 humans play a mission with `teamsize=5`.**
 
 ## 1. Where the 4 comes from
 
@@ -53,7 +54,7 @@ Build 14216215. Static analysis of `Back4Blood.exe`, the SDK dump, and host/clie
   is 0, which leaves the game alone. Solo play is unchanged unless enabled; with it on, solo gets 4 bots.
 - Commands: `teamsize [N]` (query/set, 0–8), and `slots`, which dumps the slot layout:
   `Config`, `bSupportsBots`, cvar, `GameSession.MaxPlayers`, then per team each slot's hero row, owning and controlling
-  PlayerState (name + controller class), pawn class, and reserved flag.
+  PlayerState (name + controller class), pawn class and location, and reserved flag.
 - Shared-file edits: `main.c` gets one init call, and the agent port range goes from 4 to 8 instances
   (`47112..47119`), because a 5th local instance could not bind before. `cmds.c` gets one tick call and one
   dispatch fallback. `cmds.h` gets the declarations.
@@ -125,3 +126,48 @@ host log for `teamsize:`, `InitSlots with`, `Server full`, `team is currently fu
 
 If step 3 fails on spawn, the next thing to try is hooking `0x141C18750` / the ChoosePlayerStart fallback and cloning
 a PlayerStart with an offset for slot ≥ 4. If the HUD misses a teammate, that is BP-side, so live with it or look at `SetPlayerAt`.
+
+## 5. Live results (2026-09-24, 5 local instances, one Steam account)
+
+**Verdict: with `teamsize=5` five humans play a campaign run.** The Fort Hope host crash is gone, all 5 follow into
+the mission, each gets a hero, 15 loadout cards, a HUD entry, and the party survives two chapter transitions. Without
+`teamsize` the host still crashes (reproduced; cause below). Nothing needed fixing beyond the existing hook.
+
+| Step | Result |
+|---|---|
+| Solo, `teamsize=5` | `slots`: `Config TeamSize=5`, Fort Hope 2×5 (`InitSlots 2 team(s): TeamSize 4 -> 5`). Mission: 5 slots, host + **4 bots**, all spawned, HUD shows 4 bot teammates + self (`solo-4-bots.jpg`). |
+| `multi.sh 5`, `teamsize=5`, Fort Hope | All 4 clients in (`client_conns=4`), 5 heroes at 5 distinct spots, **no host crash**. `GameSession.MaxPlayers` is 16, so "Server full" was never a factor. |
+| `mission Easy` | All 5 in `Evansburgh_B` about 40 s after the command. Host `slots`: 5 human owners, no bot, 5 distinct pawn positions. Clients' `slots` agree (5 replicated slots, same heroes). |
+| Spawns | No `SetWaitingForSpawnLocation … true` and no `Falling back to default PlayerStart` in any map (B, C, D). The safe rooms fit 5; risk item 1 did not happen. The spawn-picker hook (`0x141C18750`) is not needed. |
+| HUD | Party panel in every window: 4 teammates + self (`hud-5-windows.jpg`). Risk item 2 did not happen. Character select also lists all 4 others (`character-select-host.jpg`). |
+| Loadout cards | Host: `GrantLoadoutCardsForSlot` ×5, `granting 15 cards` ×5, no draft. (Same account everywhere, so `cards.c` never had to override ownership.) |
+| Chapter transition | `ready`, `endmission 1`: post-round screen, then seamless travel to `Evansburgh_C` and, after a second round, `Evansburgh_D`. `HandleSeamlessTravelPlayer found previous slot` for all 5. Same heroes in the same slots each time (`reserved=1`). |
+| Post-round lineup | **Shows 4 of 5 heroes** (`postround-lineup.jpg`): the lineup level has 4 target points (risk item 3). Cosmetic, no error. |
+| Leave | SIGKILL of one client in the pre-round: its slot sits unowned until the round starts, then a bot takes the hero over (`BotController`). Host fine. |
+| Baseline, no `teamsize`, `multi.sh 5` | **Host crashes in Fort Hope** as the 5th hero spawns (reproduced). |
+
+**Baseline crash cause.** The 5th player's `RequestSlot` finds no free slot (no "claimed" line follows it). The host
+still spawns a hero for it, and the possession handler at `0x1419FE7D0` reads the player's slot
+(weak ptr at `+0x554` of the object RequestSlot logged, via `0x1426F7D20`) and does `cmp byte [slot+0x2ba], 1` on null: `EXCEPTION_ACCESS_VIOLATION`
+reading `0x2ba` at `0x1419FE875` (minidump; caller chain `0x141C1B1A0` ← `0x141C19A34` ← `0x141C173D0`, the spawn
+manager). Last log lines:
+
+```
+LogGameMode Verbose: RestartPlayerAtPlayerStart <Redacted>
+LogGobiPlayerController Verbose: SetViewTarget for <Redacted> to Hero_BP_C_2147479040 on Server
+LogCrashHandler Log: CrashHandler ReportCrash
+```
+
+So any host crashes when more humans join than it has hero slots, since `GameSession.MaxPlayers` (16) lets them in.
+With `teamsize=5`, a 6th joiner would crash the host the same way. `net.MaxPlayersOverride = N+2` caps joins at 7,
+which is lower than 16 but still above N.
+
+**Not tested:** hot-join into a running mission (5th takes over a bot), rejoin after a leave, a real multi-machine
+session, a failed mission and the return to camp, resuming a 5-slot save with `teamsize=0`, voice, vote-kick.
+
+**Next steps**
+1. Crash guard (applies to vanilla too): reject a login when the hero team has no free human slot (hook
+   `ApproveLogin`, or have `apply_maxplayers` set the cap to the slot count once stale connections are accounted for), or
+   make the 5th+ player a spectator instead of spawning a hero.
+2. Post-round lineup: add a 5th target point/mannequin (`CharacterLineupLayoutManager.PostRoundTargetPoints`), or accept it.
+3. Test hot-join into a running mission, and a real two-machine session with `teamsize=5`.

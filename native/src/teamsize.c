@@ -122,8 +122,12 @@ static void cmd_slots(Out *o) {
             print_ps(o, "owner", ue_get_ptr(s, "OwningPlayer"));
             print_ps(o, "ctrl", ue_get_ptr(s, "ControllingPlayer"));
             UObject *pawn = ue_get_ptr(s, "AssignedPawn");
-            out_printf(o, " pawn=%s reserved=%d\n", pawn ? ue_obj_name(U_CLASS(pawn), b, sizeof b) : "-",
+            out_printf(o, " pawn=%s reserved=%d", pawn ? ue_obj_name(U_CLASS(pawn), b, sizeof b) : "-",
                        res >= 0 ? *((uint8_t *)s + res) : -1);
+            UObject *root = pawn ? ue_get_ptr(pawn, "RootComponent") : NULL;
+            int32_t rl = root ? ue_prop_offset(root, "RelativeLocation") : -1;
+            if (rl >= 0) { float *v = (float *)((char *)root + rl); out_printf(o, " at=(%.0f,%.0f,%.0f)", v[0], v[1], v[2]); }
+            out_printf(o, "\n");
         }
     }
 }
