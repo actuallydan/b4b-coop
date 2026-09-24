@@ -3,7 +3,8 @@
 Build 14216215. Sources: host log `b4bcoop-552.log` (two-machine session 2026-09-23, client `offline.76561198975681908`
 joined at 22:05, mission Evansburgh B ended 22:12:34), same-machine client log `b4bcoop-776.log`, the Windows
 client's `docs/logs/2026-09-23-windows-client/PlayerProfileSettings.json`, the host's profile (read only), and static
-analysis of `Back4Blood.exe`. No live game was used.
+analysis of `Back4Blood.exe`. Sections 1-4 were written from logs and static analysis; the fix was then tested live
+(section 6).
 
 ## 1. Summary
 
@@ -14,7 +15,7 @@ The suspicion is half right. The host computes every player's rewards. Only some
 | Supply points (mission success/failure) | **Lost** | Host executes the command on the client's profile component. That component is not local, so the command is dropped. |
 | Skull totem points | **Lost** | Same path. |
 | Duffel-bag rewards (unlocks, consumables) | **Lost** | Same path (`RewardDuffelBags`). |
-| Burn cards used in the mission | **Not charged** (the client keeps them) | Same path (GCM charges on leaving the start saferoom). |
+| Burn cards | **Cannot be played at all** (static; see §6) | The host checks the remote player's quantity against a profile it does not have. The charge on leaving the saferoom would go through the same dropped path. |
 | Stats (kills, missions completed, …) | **Kept** (native) | Host sends `ClientApplyStatDeltas`; the client reconciles into its own profile on EndPlay/OnLeavingMap. |
 | Starting locations (map unlocks) | **Kept** (native, static evidence only) | Client runs the unlock itself from `GobiPlayerState::OnRep_UnlockedNewMap`. |
 | Achievement rewards (`CompleteAchievement`) | Unknown, probably lost | Server-side tracker; no client RPC exists. |
@@ -157,7 +158,69 @@ redirected save dirs. Before each run, copy both profiles aside and diff them af
    but only if the host would not re-award it every mission.
 10. Post-round screen on the client shows the same N as its profile delta.
 
-## 6. Addresses
+## 6. Live test results (2026-09-24)
+
+Setup: `launch/multi.sh 2` (instance 1 hosts, instance 2 joins; each has its own prefix, so each has its own
+`PlayerProfileSettings`). The two profiles were cloned from the same real profile, so they start almost identical,
+and the host sees both players as `offline.76561198063588550`. Each run: `mission Easy` (new Evansburgh run), `ready`,
+`endmission 1|0` (new agent commands in `testing.c`, below). The profile JSON was diffed after the game's deferred
+save (about 30 s after the reward, see below).
+
+| Run | Host log | Client log | Host SP | Client SP |
+|---|---|---|---|---|
+| Fix, success (Evansburgh B) | `Rewarding … 73` ×2, `rewards: forwarding AdjustSupplyPoints (73) to remote player …` | `[CLIENT RPC] adjusting SP by 73` + `ApplyCommandToOfflineData:AdjustSupplyPoints` | +73 | **+73** |
+| Fix, failure (Evansburgh C) | `adjusting SP by 8` ×2, forwarded once | `[CLIENT RPC] adjusting SP by 8` + Apply | +8 | **+8** |
+| Baseline `B4BCOOP_NO_REWARDS=1`, success | `Rewarding … 73` ×2, 2nd has no Apply | nothing | +73 | **+0** |
+| Fix, success, 2 more runs | same as the first | same | +73, +73 | **+73, +73** |
+| Fix, client disconnects mid-mission, host ends it | `Rewarding … 60` once (host only), no forward, no errors | stats applied on leave, no SP | +60 | +0 |
+
+Totals across all runs: host `supplyPoints.acquired` +360 (73+8+73+73+73+60), client +227 (73+8+0+73+73). Every
+forwarded amount landed once. The kill-switch baseline shows the fix is what makes the difference. The client's
+post-round screen showed 73, the same as its profile delta. It shows the replicated `PostRoundBonusSP`, so it shows 73
+even without the fix.
+
+Also verified:
+- **Stats** (native, unchanged): client `starting profile reconcile` on leaving the map → own
+  `ApplyCommandToOfflineData:AdjustStatValue`; `missionsCompleted_Unsecured` +1 in each profile. The host ran a second
+  reconcile for the remote player's component with no Apply. The host profile got no client stats.
+- **Map unlock** (native): the client ran `Unlocking up to map 'Evansburgh_C'` itself (OnRep). The map was already
+  unlocked in the cloned profile, so this was not a new write.
+- **No other command types**: no `rewards: not forwarded` line in any run. Easy issues no skull totem points (not even
+  to the host), and `[POSTROUND] … Achievements Reward Length 0`. So CompleteAchievement (16) never came up.
+- **Same Steam id**: not a problem. The hook keys on the controller's `Player` (LocalPlayer vs NetConnection), not
+  on the id. The id only shows in logs. The host's copy of the remote PPC's `HydraPublicId` was sometimes empty
+  (`[]: adjusting SP by 73` in the baseline run), so the forward log can print `?` for the id. That is cosmetic.
+- **Deferred save**: `ApplyCommandToOfflineData` updates memory at once, but the `.sav`/`.json` are written up to
+  about 30 s later. Killing an instance (SIGKILL) inside that window loses the change. Wait before `multi-stop.sh`.
+
+Not covered live:
+- **Skull totem points** (type 20): no difficulty/run in this test awarded any.
+- **Duffel bags** (UnlockProduct 6 / AdjustConsumableQuantity 19 via `RewardDuffelBags`): the director rolled
+  `DuffelBag_None`, and `RewardDuffelBags found no collected duffel bags`. It walks a list of picked-up `DuffelBagItem`s,
+  so testing it needs a bag in the map and a client picking it up. The RPC path is the same as SP, only the RPC name
+  differs.
+- **Burn cards**: remote players cannot play them, so there is nothing to charge. `ServerPlayBurnCard` →
+  `GameplayCardManager` `0x141776EA0` needs the card's product quantity > 0 from `0x141BC2A00`
+  (`PPC::GetConsumableQuantity`). Offline, that reads `0x141BC6930` (the LocalPlayer's profile), which is null for a
+  remote PPC, so the play is rejected. This is the same class of bug as the card draft (`cards.c`). It needs its own
+  hook (let remote players' burn-card quantity pass, or ask the client). The same unattended call on the host's own
+  player also logged nothing, so the call itself is not proven. The `played burn card` log is Verbose
+  (not captured), and the handle must be a card row (`BurnCards_DT` `Burn_TeamLife`, see `burncard list`), not a
+  product row.
+
+Agent commands added for unattended runs (`testing.c`):
+- `ready` / `ready vote`: host sets every player ready (`GobiPlayerState::ServerRequestPlayerReady(true)` /
+  `ServerSetReadyForPostRoundVote`), so the match leaves `WaitingForReadyPlayers` without a click.
+- `endmission [1|0]`: `MissionGameMode::OnMissionEnd(bSuccess, "b4bcoop")`, the normal success/failure path
+  (rewards, stats sync, post-round). It only works while `MatchState == InProgress`, so run `ready` first.
+- `burncard list | <card row> [card table]`: `GobiPlayerController::ServerPlayBurnCard` from this instance.
+- `callp <Class> <Func> [args…]`: call with bool/int/byte/enum/float/string params (first live instance).
+
+Recommendation: merge. SP forwarding works for success and failure, exactly once, and it is off with the kill
+switch. The unverified paths (STP, duffel bags) use the same code with a different RPC name. Burn cards need a
+separate fix (a new issue).
+
+## 7. Addresses
 | What | VA |
 |---|---|
 | `PPC::ExecuteCommand` (hook) | `0x141BC4970` |
@@ -169,4 +232,6 @@ redirected save dirs. Before each run, copy both profiles aside and diff them af
 | PPC vtable (impl +0x450, validate +0x448) | `0x1454E66A8` |
 | Stats: network flush / `ClientApplyStatDeltas` send / reconcile | `0x141C24370` / `0x141C24530` / `0x141C24D80` |
 | Starting-location unlock / `OnRep_UnlockedNewMap` | `0x141BCEFE0` / `0x142136240` |
+| `ServerPlayBurnCard_Implementation` / GCM play burn card / PPC consumable quantity | `0x141B9CA60` / `0x141776EA0` / `0x141BC2A00` |
+| `MissionGameMode::OnMissionEnd` (exec thunk; virtual +0xA20) | `0x1421E2E10` |
 | Offsets | PPC owner +0xD8, PPC `HydraPublicId` +0x1A8, `PostRoundBonusSP` +0x7A0, AdjustSP `Delta` +0x8 |

@@ -18,7 +18,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `flashlight.c` manual flashlight toggle (`flashlight` command, ini hotkey); docs/investigations/flashlight.md.
   - `rewards.c` host forwards remote players' dropped rewards (SP, STP, unlocks, consumables) to their clients via the
     game's unused ClientExecute*Command RPCs. Details: `docs/investigations/client-rewards.md`.
-  - `testing.c` unattended testing: auto sign-in Offline (`offline=1`), `signin`, `mission [raw] [map] [difficulty]`.
+  - `testing.c` unattended testing: auto sign-in Offline (`offline=1`), `signin`, `mission [raw] [map] [difficulty]`,
+    `ready [vote]`, `endmission [1|0]`, `burncard`, `callp <Class> <Func> [args]`.
   - `cmds.c` commands: `status players host join exec find call peek`; config = `b4bcoop.ini` next to the DLL or
     `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join offline flashlight_*`).
 - `launch/` — `install.sh` (build+copy DLL; rm before cp — never overwrite a mapped DLL in place), `run.sh` (Proton,
@@ -48,6 +49,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.
+- Ending a mission unattended: `mission Easy`, wait for both heroes, `ready` (match → InProgress), `endmission 1`
+  (success) or `endmission 0` (failure). The post-round screen times out after ~2 min and moves on to the next chapter.
+- Profile saves are deferred (~30 s after `ApplyCommandToOfflineData`); wait before `multi-stop.sh` (SIGKILL) or diffing.
 - `-Port=` on the command line sets the listen port (UE `FURL` default port); in use → it binds the next one.
 - Known: 5 instances → the host crashes in Fort Hope when the 5th hero spawns (4 slots); 4 is the working maximum.
 
@@ -82,6 +86,9 @@ Known issues:
   selected deck, yet the override never fired (host logged `Equipped custom preset 0 to slot 1`). Why ownership
   passed natively there (vs the same-account local test) is not understood yet; client log pending.
   Details: `docs/investigations/card-draft.md`.
+
+- Burn cards: a remote player cannot play them (the host checks the quantity in a profile it doesn't have). Found
+  in the issue #4 live test, not fixed. Details: `docs/investigations/client-rewards.md` §6.
 
 Next:
 0. Read the friend's client log: explain why card ownership passed natively for a different account.
