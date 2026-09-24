@@ -92,6 +92,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     *(volatile uint8_t *)0x1469BD96Dull = 1;  // GLogEnabled-style gate checked before every UE_LOG
     travel_init();
     uelog_init();
+    cards_init();
     cmds_init();
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
     return 0;

@@ -15,3 +15,4 @@ int uelog_init(void);
 void travel_set_host(const char *addr);
 void travel_tick(float dt);
 void travel_on_handshake_failed(void);
+int cards_init(void);
