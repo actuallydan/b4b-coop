@@ -166,8 +166,8 @@ which is lower than 16 but still above N.
 session, a failed mission and the return to camp, resuming a 5-slot save with `teamsize=0`, voice, vote-kick.
 
 **Next steps**
-1. Crash guard (applies to vanilla too): reject a login when the hero team has no free human slot (hook
-   `ApproveLogin`, or have `apply_maxplayers` set the cap to the slot count once stale connections are accounted for), or
-   make the 5th+ player a spectator instead of spawning a hero.
+1. ~~Crash guard~~ Done (#7): `native/src/slotguard.c` refuses the login with "Server full." and never spawns a
+   slotless hero. The "possession handler" above is actually `AHeroGameMode::RestartPlayerAtPlayerStart`. See
+   `slot-guard.md`.
 2. Post-round lineup: add a 5th target point/mannequin (`CharacterLineupLayoutManager.PostRoundTargetPoints`), or accept it.
 3. Test hot-join into a running mission, and a real two-machine session with `teamsize=5`.
