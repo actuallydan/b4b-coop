@@ -180,6 +180,12 @@ def srgb_to_linear(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.05
 def linear_to_srgb(c): return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
 
 
+# hero hair (Master_Hair_M, BLEND_Masked, two-sided, dithered): with its static switch "Enable MultiMask" (all retail
+# hero hair MIs) it samples one RGBA "Hair MultiMask" on UV0 whose A is the strand alpha; colour = RootColor..TipColor
+HAIR_MASTER_RX = re.compile(r"/Master_Hair_M(\.|$)")
+HAIR_ROOT_DARKEN = 0.6
+
+
 class TexTool:
     """Collects texture jobs (compose in Blender, encode with b4bmod texture)."""
     def __init__(self, o):
@@ -191,6 +197,7 @@ class TexTool:
         self.work = o["work"]
         self.jobs = []
         self.done = set()
+        self.hair_mis = []
 
     def retail_png(self, tex_file):
         png = os.path.join(self.work, "retail_" + os.path.basename(tex_file)[:-7] + ".png")
@@ -201,9 +208,10 @@ class TexTool:
                 if r.returncode == 0 and os.path.exists(png): break
         return png if os.path.exists(png) else None
 
-    def compose_set(self, set_info, params, owned):
+    def compose_set(self, set_info, params, owned, master=None, mi=None):
         """params: {param name: texture path} of the slot's MI chain. set_info: manifest set (grid, tiles)."""
         tiles = set_info["tiles"]
+        hair = bool(master and HAIR_MASTER_RX.search(master))
         g = set_info.get("grid", 1)
         base = 1024
         for t in tiles:
@@ -214,14 +222,20 @@ class TexTool:
         for param, tex in params.items():
             if tex in self.done or not tex.startswith(owned): continue
             role = role_of(param)
+            if hair and param.lower() == "hair multimask": role = "hairmm"
             if role is None: continue
             f = upkg.game_path_to_file(tex, self.src)
             if not f or not os.path.exists(f): continue
             out = os.path.join(self.work, os.path.basename(f)[:-7] + ".png")
-            self.jobs.append({"out": out, "size": size if role in ("basecolor", "normal", "pbr") else 256,
+            self.jobs.append({"out": out, "size": size if role in ("basecolor", "normal", "pbr", "hairmm") else 256,
                               "role": role, "tiles": tiles, "mean_from": self.retail_png(f),
                               "normal_dx": self.normal_dx, "asset": f, "path": tex})
             self.done.add(tex)
+            if role == "hairmm":
+                # Master_Hair_M has no colour texture: the colour is RootColor -> TipColor along the strand (MultiMask).
+                # Take it from the model's hair texture (compose writes its average next to the PNG).
+                if mi and mi.startswith(owned): self.hair_mis.append((mi, out + ".json"))
+                else: log(f"  hair: {mi} is shared with other outfits: its colours stay the game's")
 
     def run(self):
         if not self.jobs: return
@@ -235,6 +249,17 @@ class TexTool:
                 sys.stderr.write(r.stdout + r.stderr); die(f"texture encoding failed for {j['path']}")
             log(f"  {j['path'].split('/')[-1].split('.')[0]}: {j['role']} {j['size']}x{j['size']}")
         self.jobs = []
+        for mi, stats in self.hair_mis:
+            c = json.load(open(stats))["color_linear"]
+            root = ",".join(f"{x * HAIR_ROOT_DARKEN:.4f}" for x in c) + ",1"
+            tip = ",".join(f"{x:.4f}" for x in c) + ",1"
+            r = subprocess.run([sys.executable, self.b4bmod, "mi", mi.split(".")[0], "set", "RootColor", root,
+                                "set", "TipColor", tip, "-o", self.moddir, "--src", self.src],
+                               capture_output=True, text=True)
+            if r.returncode:
+                sys.stderr.write(r.stdout + r.stderr); die(f"hair material {mi}: setting its colours failed")
+            log(f"  {mi.split('.')[-1]}: hair colour root {root} tip {tip} (linear)")
+        self.hair_mis = []
 
 
 def png_size(p):
@@ -255,7 +280,7 @@ def textures_for(manifest, mesh_file, tt, static=False):
             log(f"  texture set {set_name}: no slot of that name in {os.path.basename(mesh_file)}"); continue
         mi, params, master = slots[set_name]
         log(f"texture set {set_name} ({mi.split('.')[-1]}): tiles {[t['material'] for t in info['tiles']]}")
-        tt.compose_set(info, params, owned)
+        tt.compose_set(info, params, owned, master, mi)
     tt.run()
 
 

@@ -16,6 +16,9 @@
                                           your PNG -> the game's texture (same format, full mip chain)
   mi <asset> [list]                       material instance parameters
   mi <asset> set <param> <value> [set <param> <value>...] [parent <path>] -o <moddir>
+  rename <asset> </Game/new/Path/Name> -o <moddir> [--ref </Game/old>=</Game/new>]...
+                                          a copy of an asset as a NEW package (adds, replaces nothing); --ref points
+                                          its references at other renamed copies (MI -> textures, mesh -> MIs)
   mesh info <asset>                       materials (slots), LODs, bones of a skeletal mesh
   mesh export <asset> <out.glb> [--lod N] the game's mesh with its skeleton, to open in Blender
   mesh import <template asset> <model.fbx|.glb|.gltf> -o <moddir> [--lods N] [--material NAME=SLOT]...
@@ -472,7 +475,7 @@ def extract_refs(a):
 
 def cmd_dotnet(cmd, a):
     """info/tree/export/texture/mi/...: the .NET tool, after extracting the assets it names."""
-    for x in a:
+    for x in (a[:1] if cmd == "rename" else a):   # rename: the new path is not in the game
         if x.startswith(("/Game/", "/Engine/")):
             ensure(x, folder=(cmd == "tree"))
             if cmd != "info":
@@ -740,7 +743,7 @@ def main(argv):
         return python_tool(os.path.join(KIT, "addon.py"), ["pack"] + rest)
     if cmd == "pak":   # advanced: plain mod pak for the dev build's modpaks= (no addoninfo)
         return python_tool(os.path.join(KIT, "b4bpak.py"), ["pack"] + rest)
-    if cmd in ("info", "tree", "export", "texture", "mi", "deps", "props", "texcheck"):
+    if cmd in ("info", "tree", "export", "texture", "mi", "deps", "props", "texcheck", "rename"):
         return cmd_dotnet(cmd, rest)
     die(f"unknown command {cmd!r} (b4bmod help)", 2)
 
