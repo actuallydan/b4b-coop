@@ -169,12 +169,24 @@ def loopback(addr):
     return ip.is_loopback
 
 
+def steam_native(line):
+    """A socket of a Proton game that Wine's wineserver does not co-hold was not made through Wine's ws2_32 (every
+    Windows module's socket is a wineserver object, so wineserver keeps an fd of it): it is native Linux code in the
+    game process, and the only native networking code there is Steam's own client library (steamclient.so, loaded by
+    Proton's lsteamclient). Its relay pings (27 UDP sockets on 0.0.0.0 that stay open, whenever Steam initialises or
+    refreshes relay network access; dev `steamnet ping 0` triggers them) are Steam's, outside our loopback promise and
+    outside netguard (docs/investigations/steam-p2p.md "Loopback binding")."""
+    return "wineserver" not in line and '"Back4Blood.exe"' in line
+
+
 class SocketSampler(threading.Thread):
-    """ss -tunapH every 3 s; any socket of a test-prefix process with a public peer is a finding, and so is (host_ip=0,
-    the default) any UDP socket or TCP listener of theirs that is not bound to loopback."""
+    """ss -tunapH every second; any socket of a test-prefix process with a public peer is a finding, and so is (host_ip=0,
+    the default) any UDP socket or TCP listener of theirs that is not bound to loopback. Sockets of Steam's native
+    client library (steam_native) are listed apart (.steam) and are no finding."""
     def __init__(self):
         super().__init__(daemon=True)
         self.stop_ev, self.samples, self.public, self.seen, self.exposed = threading.Event(), 0, [], set(), []
+        self.steam = []   # (key, line): Steam's own (native steamclient.so) sockets off loopback or with a public peer
 
     def run(self):
         f = open(os.path.join(OUT, "ss-samples.txt"), "a")
@@ -192,16 +204,21 @@ class SocketSampler(threading.Thread):
                     cols = line.split()
                     if len(cols) < 6: continue
                     key = (cols[0], cols[4], cols[5])
+                    native = steam_native(line)
                     if key not in self.seen:
                         self.seen.add(key)
-                        f.write(f"{datetime.datetime.now():%H:%M:%S} {line}\n"); f.flush()
+                        f.write(f"{datetime.datetime.now():%H:%M:%S} {'[steam native] ' if native else ''}{line}\n"); f.flush()
+                    # reachable from the network: a UDP socket or TCP listener not bound to loopback (host_ip=0)
+                    exposed = (cols[0] == "udp" or cols[1] == "LISTEN") and not loopback(cols[4])
+                    if native:
+                        if (exposed or public(cols[5])) and key not in [k for k, _ in self.steam]:
+                            self.steam.append((key, line))
+                        continue
                     if public(cols[5]) and key not in [k for k, _ in self.public]:
                         self.public.append((key, line))
-                    # reachable from the network: a UDP socket or TCP listener not bound to loopback (host_ip=0)
-                    if (cols[0] == "udp" or cols[1] == "LISTEN") and not loopback(cols[4]) \
-                            and key not in [k for k, _ in self.exposed]:
+                    if exposed and key not in [k for k, _ in self.exposed]:
                         self.exposed.append((key, line))
-            self.stop_ev.wait(3)
+            self.stop_ev.wait(1)
         f.close()
 
 
@@ -462,6 +479,8 @@ def duo(args):
         c = Check("duo", "nothing reachable from the network (game UDP on 127.0.0.1, ss)")
         c.done(sampler.samples > 0 and not sampler.exposed,
                f"{len(sampler.seen)} distinct sockets"
+               + (f", {len(sampler.steam)} of Steam's native client off loopback (not ours, ss-samples.txt)"
+                  if sampler.steam else "")
                + (": " + " | ".join(l for _, l in sampler.exposed[:3]) if sampler.exposed else ""))
 
 

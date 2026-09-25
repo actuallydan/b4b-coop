@@ -104,6 +104,31 @@ port N instead of all interfaces`; `steamnet` shows `loopback binds=N`. Steam P2
 prompt. Binds from other modules are left alone: on Windows `steamclient64.dll` runs in the game process and binds
 its own UDP sockets for Steam's networking. Verified live 2026-09-24: `ss -ulnp` shows the host at
 `127.0.0.1:7787` and the client at `127.0.0.1:<ephemeral>`; `host_ip=1` gives `0.0.0.0` again.
+
+**Steam's own relay-ping sockets (2026-09-25, not ours).** `tools/e2e.py`'s ss check failed now and then (4 of ~20
+runs since 0.3.0) on ~27 UDP sockets on `0.0.0.0:<random>` of one game process, appearing at any phase (host before
+sign-in, client mid-mission; once the same second in a game on each lane, i.e. pushed by the Steam client) and then
+staying open (still all 27 five minutes later). Evidence they are Steam's, not the game's:
+- ss: none of them is co-held by `wineserver`. Every socket a Windows module makes (game exe, EOS, Wwise, Windows
+  steamclient64) is a wineserver object, so wineserver keeps an fd of it; these are native Linux sockets. All 85
+  off-loopback sockets in every post-0.3.0 sample are of that kind; every wineserver-held game UDP socket is on
+  127.0.0.1.
+- An `LD_PRELOAD` tracer (socket/bind/connect with `dladdr` backtraces) in the game process: 27 × `socket(v4, UDP)`
+  + `bind(0.0.0.0:0)`, every frame in `~/.local/share/Steam/linux64/steamclient.so` (Proton's lsteamclient loads the
+  native Steam client library into the game process; its only other native libs there are Vulkan layers).
+- Reproduced on demand: dev `steamnet ping 0` = `ISteamNetworkingUtils004::CheckPingDataUpToDate(0)` (new relay
+  ping measurement). Before: relay network 0 (not initialised), POPs 0. Right after: the same 27 sockets, then
+  `relay network 100 ... POPs=35: OK. Relays: 25 valid ...`. It is Steam Datagram Relay pinging its relay POPs, which
+  Steam does whenever relay access is initialised or refreshed (by the game, by Steam, by Steam P2P use). A Steam P2P
+  join between two local copies did not trigger it (session `relay=0`).
+Verdict: outside our promise (the game's own UDP sockets), like Steam's networking in any Steam game; on Windows the
+same code is steamclient64.dll, whose binds the hook already leaves alone. Loopback-binding them would cut Steam off
+from its relays, which Steam P2P joins rely on. The e2e check now reports these as
+"Steam's native client" (ss line without wineserver) and fails only on sockets made through Wine's ws2_32, sampled
+every second instead of every 3 s (so short-lived game sockets are harder to miss). (vtable indices for the v004 thunks were read from Proton's lsteamclient.dll
+symbols: [1] GetRelayNetworkStatus, [7] CheckPingDataUpToDate, [10] GetPOPCount; [2] is GetLocalPingLocation, which
+takes a 512-byte struct.) Live 2026-09-25, lane 1: `e2e.py --quick` 3 runs, 13/13 each; run 1 with `steamnet ping 0` on
+the host mid-run: "83 distinct sockets, 28 of Steam's native client off loopback", PASS.
 IP joins to another machine are refused in `cmd_join` (and dropped from `join=` / connect strings) with a message
 pointing to Steam Join Game. Our own sockets: the dev command server is 127.0.0.1 only and absent from player builds;
 the Windows launcher opens none.
