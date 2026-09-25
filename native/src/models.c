@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
@@ -136,7 +137,10 @@ static void build_catalogue(void) {
             if (!r) continue;
             Hero *h = &heroes[n_heroes];
             memset(h, 0, sizeof *h);
-            ue_name(CD_SLUG(r), h->slug, sizeof h->slug);
+            // slugs are hero_1..hero_12: name the survivor after its table (Holly_Customization_DT -> holly)
+            if (CD_CUSTTABLE(r)) ue_obj_name(CD_CUSTTABLE(r), h->slug, sizeof h->slug); else ue_name(CD_SLUG(r), h->slug, sizeof h->slug);
+            char *us = strstr(h->slug, "_Customization");
+            if (us) *us = 0;
             for (char *c = h->slug; *c; c++) *c = (char)tolower((unsigned char)*c);
             h->deftable = t; h->defrow = *(FName *)e; h->custtable = CD_CUSTTABLE(r); h->defskin = *CD_DEFSKIN(r);
             h->defskin.display.data = NULL; h->defskin.display.num = h->defskin.display.max = 0;
@@ -160,12 +164,14 @@ static void build_catalogue(void) {
             n_heroes++;
         }
     }
-    // duplicate friendly names (material-only variants share a mesh): suffix _2, _3 ...
+    // colour variants reuse a mesh with other materials: same name, so number them in table order (_v2, _v3 ...)
+    static int dupn[MAX_ENTRIES];
     for (int i = 0; i < n_cat; i++) {
-        int dup = 1;
-        for (int j = 0; j < i; j++) if (!strcmp(cat[i].name, cat[j].name)) dup++;
-        if (dup > 1) { size_t l = strlen(cat[i].name); snprintf(cat[i].name + (l > 40 ? 40 : l), 8, "_%d", dup); }
+        dupn[i] = 1;
+        for (int j = 0; j < i; j++) if (!strcmp(cat[i].name, cat[j].name)) dupn[i]++;
     }
+    for (int i = 0; i < n_cat; i++)
+        if (dupn[i] > 1) { size_t l = strlen(cat[i].name); snprintf(cat[i].name + (l > 40 ? 40 : l), 8, "_v%d", dupn[i]); }
     LOG("models: catalogue %d heroes, %d customization rows", n_heroes, n_cat);
 }
 static void need_catalogue(void) { if (!n_cat) build_catalogue(); }
@@ -261,14 +267,22 @@ static int want_hero(Want *w, int hi) {
     return 0;
 }
 
-// cur + picks. A head/torso/legs pick clears the outfit (an outfit overrides the pieces).
-static void compose(const CustSet *cur, const Want *w, CustSet *out) {
+// cur + picks. A head/torso/legs pick clears the outfit (the game shows the outfit when LastEquipSlot is Outfit, the
+// pieces otherwise, and needs all three pieces then). A piece the set lacks is taken from the hero's first row for
+// that slot (hero: index into heroes[], -1 unknown).
+static void compose(const CustSet *cur, const Want *w, int hero, CustSet *out) {
     memset(out, 0, sizeof *out);
     for (int k = 0; k < 4; k++) { out->slot[k].table = cur->slot[k].table; out->slot[k].row = cur->slot[k].row; }
     out->last = cur->last;
     int pieces = 0;
     for (int k = 0; k < 4; k++) if (w->has[k]) { out->slot[k].table = w->pick[k].table; out->slot[k].row = w->pick[k].row; out->last = (uint8_t)k; pieces |= k != SLOT_OUTFIT; }
-    if (pieces && !w->has[SLOT_OUTFIT]) { out->slot[SLOT_OUTFIT].table = NULL; out->slot[SLOT_OUTFIT].row.idx = out->slot[SLOT_OUTFIT].row.num = 0; }
+    if (!pieces || w->has[SLOT_OUTFIT]) return;
+    out->slot[SLOT_OUTFIT].table = NULL; out->slot[SLOT_OUTFIT].row.idx = out->slot[SLOT_OUTFIT].row.num = 0;
+    for (int k = 0; k < 3; k++) {
+        if (out->slot[k].table && dt_row(out->slot[k].table, out->slot[k].row)) continue;
+        for (int i = hero >= 0 ? heroes[hero].first : 0; hero >= 0 && i < heroes[hero].first + heroes[hero].count; i++)
+            if (cat[i].slot == k) { out->slot[k].table = cat[i].table; out->slot[k].row = cat[i].row; break; }
+    }
 }
 static int matches(const CustSet *cur, const Want *w) {
     int pieces = 0;
@@ -320,7 +334,7 @@ static int default_set(UObject *slot, CustSet *out) {   // a bot's look: its her
     CustSet *cur = slot_set(slot);
     if (hi < 0 || !cur || want_hero(&w, hi)) return -1;
     CustSet clean = {0};
-    compose(&clean, &w, out);
+    compose(&clean, &w, hi, out);
     return 0;
 }
 
@@ -329,6 +343,29 @@ static int is_bot_slot(UObject *slot) {
     if (!pcc) pcc = ue_find_class("PlayerController");
     UObject *ps = slot_owner(slot), *owner = ps ? ue_get_ptr(ps, "Owner") : NULL;
     return !ps || !owner || !pcc || !ue_is_a(owner, pcc);
+}
+
+// The game's own look per slot (host): the last set without another survivor's rows, seen before we changed it or
+// accepted from the player. Put back while the campaign run is saved (runrefresh_detour).
+static struct { UObject *slot; int32_t idx; CustSet set; } cleans[16];
+static void note_clean(UObject *slot, const CustSet *set) {
+    if (!slot || !set || set_foreign(set, slot_hero(slot))) return;
+    int free_i = -1;
+    for (int i = 0; i < 16; i++) {
+        int live = cleans[i].slot && ue_object_at(cleans[i].idx) == cleans[i].slot;
+        if (live && cleans[i].slot == slot) { free_i = i; break; }
+        if (!live && free_i < 0) free_i = i;
+    }
+    if (free_i < 0) return;
+    cleans[free_i].slot = slot; cleans[free_i].idx = U_INDEX(slot);
+    memset(&cleans[free_i].set, 0, sizeof cleans[free_i].set);
+    for (int k = 0; k < 4; k++) { cleans[free_i].set.slot[k].table = set->slot[k].table; cleans[free_i].set.slot[k].row = set->slot[k].row; }
+    cleans[free_i].set.last = set->last;
+}
+static int clean_of(UObject *slot, CustSet *out) {
+    for (int i = 0; i < 16; i++)
+        if (cleans[i].slot == slot && ue_object_at(cleans[i].idx) == slot) { *out = cleans[i].set; return 0; }
+    return default_set(slot, out);
 }
 
 // Hero-team slots (PlayerSlotManager.TeamSlots[team 0].Slots), in slot order.
@@ -355,9 +392,10 @@ static UObject *want_slot(const Want *w) {
     if (off < 0) return NULL;
     TArray *pa = (TArray *)((char *)gs + off);
     char k[80];
+    UObject *mine = my_ps();
     for (int i = 0; i < pa->num; i++) {
         UObject *ps = ((UObject **)pa->data)[i];
-        if (!ps) continue;
+        if (!ps || ps == mine) continue;   // the host's own look is `me` (local copies share one Steam id)
         admin_ps_key(ps, k, sizeof k);
         if (!strcmp(k, w->key)) return ps_slot(ps);
     }
@@ -365,12 +403,20 @@ static UObject *want_slot(const Want *w) {
 }
 
 // ---- tick: keep wishes applied ----
+// A slot we can dress: it has a pawn, a chosen hero, and a complete look from the game (an outfit or all 3 pieces).
+static int ready_slot(UObject *slot) {
+    CustSet *cur = slot_set(slot);
+    if (!cur || !slot_pawn(slot) || slot_hero(slot) < 0) return 0;
+    return cur->slot[SLOT_OUTFIT].table || (cur->slot[SLOT_HEAD].table && cur->slot[SLOT_TORSO].table && cur->slot[SLOT_LEGS].table);
+}
 static void tick_me(float dt) {
     if (!me.on) return;
     UObject *ps = my_ps(), *slot = ps_slot(ps);
     CustSet *cur = slot_set(slot);
-    if (!cur || !slot_pawn(slot)) return;   // loading, dead, spectating: the slot keeps the set, retry later
-    if (U_INDEX(slot) != me.slot_idx) { me.slot_idx = U_INDEX(slot); me.tries = 0; me.gave_up = 0; me.wait = 0; }
+    // loading, character select (no hero yet: the game sends our profile look once one is picked), dead: later
+    if (!ready_slot(slot)) return;
+    int32_t key = U_INDEX(slot) * 64 + slot_hero(slot);
+    if (key != me.slot_idx) { me.slot_idx = key; me.tries = 0; me.gave_up = 0; me.wait = 3; }   // let the game's own sends settle
     if (matches(cur, &me)) { me.tries = 0; return; }
     if (me.gave_up || (me.wait -= dt) > 0) return;
     if (me.tries >= 3) {
@@ -379,7 +425,8 @@ static void tick_me(float dt) {
         return;
     }
     CustSet s;
-    compose(cur, &me, &s);
+    if (!is_client()) note_clean(slot, cur);
+    compose(cur, &me, slot_hero(slot), &s);
     if (send_select(ps, &s)) return;
     me.tries++; me.wait = 4;
     LOG("models: sent %s (try %d)", me.label, me.tries);
@@ -392,16 +439,18 @@ static void tick_others(float dt) {
         if (!w->on) continue;
         UObject *slot = want_slot(w);
         CustSet *cur = slot_set(slot);
-        if (!cur || !slot_pawn(slot)) continue;
+        if (!ready_slot(slot)) continue;
         if (!strncmp(w->key, "slot:", 5) && !is_bot_slot(slot)) {   // a human took over this bot: their own choice now
             LOG("models: %s taken over by a player, dropping the forced model", w->key);
             w->on = 0;
             continue;
         }
-        if (U_INDEX(slot) != w->slot_idx) { w->slot_idx = U_INDEX(slot); w->wait = 0; }
+        int32_t key = U_INDEX(slot) * 64 + slot_hero(slot);
+        if (key != w->slot_idx) { w->slot_idx = key; w->wait = 3; }
         if (matches(cur, w) || (w->wait -= dt) > 0) continue;
         CustSet s;
-        compose(cur, w, &s);
+        note_clean(slot, cur);
+        compose(cur, w, slot_hero(slot), &s);
         if (!host_write(slot, &s)) LOG("models: applied %s to %s", w->label, w->key);
         w->wait = 2;
     }
@@ -449,7 +498,43 @@ static void selectset_detour(UObject *ps, const CustSet *set) {
         for (int k = 0; k < 4; k++) handle_str(&set->slot[k], b[k], sizeof b[k]);
         LOG("models: %s selects head=%s torso=%s legs=%s outfit=%s", n, b[0], b[1], b[2], b[3]);
     }
+    if (set && slot && ps != my_ps()) note_clean(slot, set);
     orig_selectset(ps, set);
+}
+
+// FCampaignRunData::RefreshFromGameState(this, GameState, bool, bool) (host; logs "Refreshing campaign run from game
+// state"): copies every slot's hero, CurrentCustomizationSet, respawn snapshot ... into the run the host's profile
+// saves. For the duration of the call, slots wearing another survivor's rows get their own look back, so no swapped
+// look is saved (fields written directly, no OnRep: nothing is shown or replicated in between).
+#define ADDR_RUNREFRESH VA(0x1416E84D0ull)
+static const uint8_t SIG_RUNREFRESH[] = {0x44,0x88,0x4c,0x24,0x20,0x44,0x88,0x44,0x24,0x18,0x48,0x89,0x54,0x24,0x10,0x55,
+                                         0x41,0x54,0x41,0x57,0x48,0x8d,0x6c,0x24,0xb9};
+typedef uint64_t (*RunRefreshFn)(void *run, void *gs, uint64_t a, uint64_t b);
+static RunRefreshFn orig_runrefresh;
+static void swap_fields(CustSet *cur, CustSet *other) {   // (table, row) x4 + last only; display strings stay put
+    for (int k = 0; k < 4; k++) {
+        RowHandle t = cur->slot[k];
+        cur->slot[k].table = other->slot[k].table; cur->slot[k].row = other->slot[k].row;
+        other->slot[k].table = t.table; other->slot[k].row = t.row;
+    }
+    uint8_t l = cur->last; cur->last = other->last; other->last = l;
+}
+static uint64_t runrefresh_detour(void *run, void *gs, uint64_t a, uint64_t b) {
+    UObject **s; int n = hero_slots(&s), k = 0;
+    struct { CustSet *cur; CustSet other; } swapped[16];
+    if (n_cat) {
+        for (int i = 0; i < n && k < 16; i++) {
+            CustSet *cur = slot_set(s[i]);
+            if (!cur || !set_foreign(cur, slot_hero(s[i])) || clean_of(s[i], &swapped[k].other)) continue;
+            swapped[k].cur = cur;
+            swap_fields(cur, &swapped[k].other);
+            k++;
+        }
+    }
+    uint64_t r = orig_runrefresh(run, gs, a, b);
+    for (int i = 0; i < k; i++) swap_fields(swapped[i].cur, &swapped[i].other);
+    if (k) LOG("models: campaign run saved with %d survivor(s) in their own look", k);
+    return r;
 }
 
 // Undo every look with another survivor's rows (host, /models off).
@@ -497,17 +582,31 @@ static void list(const char *cat_arg, Out *o) {
         if (k) out_printf(o, "%s\n", line);
         return;
     }
+    static const int order[4] = {SLOT_OUTFIT, SLOT_HEAD, SLOT_TORSO, SLOT_LEGS};
+    static const char *group[4] = {"outfits", "heads", "torsos", "legs"};
     for (int h = 0; h < n_heroes; h++) {
         if (hi >= 0 && h != hi) continue;
-        char line[200]; size_t k = 0;
-        k = snprintf(line, sizeof line, "%s:", heroes[h].slug);
-        for (int i = heroes[h].first; i < heroes[h].first + heroes[h].count; i++) {
-            const char *nm = cat[i].name;
-            if (!strncmp(nm, heroes[h].slug, strlen(heroes[h].slug)) && nm[strlen(heroes[h].slug)] == '_') nm += strlen(heroes[h].slug) + 1;
-            if (k + strlen(nm) + 12 > 90) { out_printf(o, "%s\n", line); k = snprintf(line, sizeof line, " "); }
-            k += snprintf(line + k, sizeof line - k, " %s%s", nm, cat[i].slot == SLOT_OUTFIT ? "" : cat[i].slot == SLOT_HEAD ? "(h)" : cat[i].slot == SLOT_TORSO ? "(t)" : "(l)");
+        if (hi < 0) out_printf(o, "%s:\n", heroes[h].slug);
+        size_t sl = strlen(heroes[h].slug);
+        for (int g = 0; g < 4; g++) {
+            // this group's names, sorted, without the "<hero>_" prefix
+            const char *nm[96]; int n = 0;
+            for (int i = heroes[h].first; i < heroes[h].first + heroes[h].count && n < 96; i++) {
+                if (cat[i].slot != order[g]) continue;
+                const char *x = cat[i].name;
+                if (!strncmp(x, heroes[h].slug, sl) && x[sl] == '_') x += sl + 1;
+                int j = n++;
+                for (; j > 0 && strcmp(nm[j - 1], x) > 0; j--) nm[j] = nm[j - 1];
+                nm[j] = x;
+            }
+            if (!n) continue;
+            char line[200]; size_t k = snprintf(line, sizeof line, " %s:", group[g]);
+            for (int i = 0; i < n; i++) {
+                if (k + strlen(nm[i]) + 2 > 90) { out_printf(o, "%s\n", line); k = snprintf(line, sizeof line, "   "); }
+                k += snprintf(line + k, sizeof line - k, " %s", nm[i]);
+            }
+            out_printf(o, "%s\n", line);
         }
-        out_printf(o, "%s\n", line);
     }
     if (hi >= 0) out_printf(o, "use it as /model %s_<name>\n", heroes[hi].slug);
 }
@@ -556,6 +655,7 @@ static void model_other(const char *who, const char *what, Out *o) {
     if (!slot) { out_printf(o, "that player has no survivor yet\n"); return; }
     char key[80], nm[64];
     admin_ps_name(ps, nm, sizeof nm);
+    if (is_bot_slot(slot) && slot_hero(slot) >= 0) snprintf(nm, sizeof nm, "%s (bot)", heroes[slot_hero(slot)].slug);
     if (is_bot_slot(slot)) {
         UObject **s; int n = hero_slots(&s), idx = -1;
         for (int i = 0; i < n; i++) if (s[i] == slot) idx = i;
@@ -622,6 +722,17 @@ void models_slash(const char *verb, char *rest, Out *o) {
     Want nw = {0};
     char label[48];
     if (resolve(a, &nw, label, sizeof label)) { out_printf(o, "no model '%s' (/model list)\n", a); return; }
+    // pieces add up (/model holly_head_03 then /model walker_legs_01); an outfit or a whole survivor replaces the wish
+    if (me.on && !nw.has[SLOT_OUTFIT] && !me.has[SLOT_OUTFIT]) {
+        for (int k = 0; k < 3; k++) if (nw.has[k]) { me.pick[k] = nw.pick[k]; me.has[k] = 1; }
+        size_t l = strlen(me.label);
+        if (l + strlen(label) + 2 < sizeof me.label) snprintf(me.label + l, sizeof me.label - l, "+%s", label);
+        me.tries = 0; me.gave_up = 0; me.wait = 0;
+        out_printf(o, "you now look like %s (/model reset to undo)\n", me.label);
+        LOG("models: /model %s", me.label);
+        tick_acc = 1;
+        return;
+    }
     me = nw;
     me.on = 1;
     snprintf(me.label, sizeof me.label, "%s", label);
@@ -748,7 +859,7 @@ int models_cmd(const char *verb, char *rest, Out *o) {
         Want w = {0}; char label[48];
         CustSet *cur = slot_set(slot);
         if (!cur || resolve(a2, &w, label, sizeof label)) { out_printf(o, "no hero/slot/entry\n"); return 1; }
-        CustSet s; compose(cur, &w, &s);
+        CustSet s; compose(cur, &w, slot_hero(slot), &s);
         out_printf(o, "host_write %s: %d\n", label, host_write(slot, &s));
         return 1;
     }
@@ -757,8 +868,39 @@ int models_cmd(const char *verb, char *rest, Out *o) {
         Want w = {0}; char label[48];
         CustSet *cur = slot_set(slot);
         if (!cur || resolve(a1, &w, label, sizeof label)) { out_printf(o, "no slot/entry\n"); return 1; }
-        CustSet s; compose(cur, &w, &s);
+        CustSet s; compose(cur, &w, slot_hero(slot), &s);
         out_printf(o, "ServerSelectCustomizationSet %s: %d\n", label, send_select(ps, &s));
+        return 1;
+    }
+    if ((!strcmp(sub, "look") || !strcmp(sub, "bring")) && a1) {   // test views: face hero #, or (host) put it in front of us
+        UObject *h = nth_hero(atoi(a1)), *pc = ue_local_pc(), *me_pawn = pc ? ue_get_ptr(pc, "Pawn") : NULL;
+        UFunction *gl = fn_of(h, "K2_GetActorLocation"), *gr = fn_of(pc, "GetControlRotation");
+        if (!h || !me_pawn || !gl || !gr) { out_printf(o, "no hero/pawn\n"); return 1; }
+        uint8_t p[256] = {0};
+        float hl[3], ml[3], rot[3];
+        ue_process_event(h, gl, p); memcpy(hl, p + parm_off(gl, "ReturnValue"), 12);
+        memset(p, 0, sizeof p); ue_process_event(me_pawn, gl, p); memcpy(ml, p + parm_off(gl, "ReturnValue"), 12);
+        memset(p, 0, sizeof p); ue_process_event(pc, gr, p); memcpy(rot, p + parm_off(gr, "ReturnValue"), 12);
+        float dist = a2 ? (float)atof(a2) : 300.f;
+        if (!strcmp(sub, "bring")) {
+            float yaw = rot[1] * 3.14159265f / 180.f;
+            float to[3] = {ml[0] + dist * cosf(yaw), ml[1] + dist * sinf(yaw), ml[2]};
+            float face[3] = {0, rot[1] + 180.f, 0};
+            UFunction *f = fn_of(h, "K2_SetActorLocationAndRotation");
+            memset(p, 0, sizeof p);
+            memcpy(p + parm_off(f, "NewLocation"), to, 12);
+            memcpy(p + parm_off(f, "NewRotation"), face, 12);
+            if (parm_off(f, "bTeleport") >= 0) p[parm_off(f, "bTeleport")] = 1;
+            ue_process_event(h, f, p);
+            out_printf(o, "hero %s at %.0f %.0f %.0f\n", a1, to[0], to[1], to[2]);
+        } else {
+            float r[3] = {-5.f, atan2f(hl[1] - ml[1], hl[0] - ml[0]) * 180.f / 3.14159265f, 0};
+            UFunction *f = fn_of(pc, "SetControlRotation");
+            memset(p, 0, sizeof p);
+            memcpy(p + parm_off(f, "NewRotation"), r, 12);
+            ue_process_event(pc, f, p);
+            out_printf(o, "looking at hero %s (yaw %.0f)\n", a1, r[1]);
+        }
         return 1;
     }
     if (!strcmp(sub, "reinit")) {
@@ -801,6 +943,7 @@ int models_cmd(const char *verb, char *rest, Out *o) {
     }
     if (!strcmp(sub, "reg")) {   // asset registry: every asset of a class (default SkeletalMesh), not loaded
         UObject *ar = ue_find_first_of("AssetRegistryImpl");
+        if (!ar) { UClass *c = ue_find_class("AssetRegistryImpl"); ar = c ? UC_CDO(c) : NULL; }
         UClass *ic = ue_find_class("AssetRegistry");
         UFunction *f = ic ? ue_find_function(ic, "GetAssetsByClass") : NULL;
         int32_t pc = parm_off(f, "ClassName"), pa = parm_off(f, "OutAssetData"), ps = parm_off(f, "bSearchSubClasses");
@@ -824,7 +967,13 @@ int models_cmd(const char *verb, char *rest, Out *o) {
 }
 #endif  // !B4B_RELEASE
 
+static void hook(uintptr_t at, const uint8_t *sig, size_t n, void *detour, void **orig, const char *what) {
+    if (memcmp((void *)at, sig, n)) { LOG("models: %s signature mismatch", what); return; }
+    if (MH_CreateHook((void *)at, detour, orig) != MH_OK || MH_EnableHook((void *)at) != MH_OK) { LOG("models: %s hook failed", what); *orig = NULL; }
+}
+
 int models_init(void) {
+    hook(ADDR_RUNREFRESH, SIG_RUNREFRESH, sizeof SIG_RUNREFRESH, (void *)runrefresh_detour, (void **)&orig_runrefresh, "campaign run save");
     if (memcmp((void *)ADDR_SELECTSET, SIG_SELECTSET, sizeof SIG_SELECTSET)) { LOG("models: SelectCustomizationSet signature mismatch, no host lock"); return -1; }
     if (MH_CreateHook((void *)ADDR_SELECTSET, (void *)selectset_detour, (void **)&orig_selectset) != MH_OK ||
         MH_EnableHook((void *)ADDR_SELECTSET) != MH_OK) { LOG("models: hook failed, no host lock"); orig_selectset = NULL; return -1; }
