@@ -24,6 +24,7 @@
 //  - size/freecam/slomo/freeze: the engine's own UCheatManager (ChangeSize, ToggleDebugCamera, Slomo, PlayersOnly are
 //    intact), constructed for the host's PlayerController with StaticConstructObject_Internal and stored in
 //    PlayerController.CheatManager.
+//  - thirdperson: the hero's own PlayerViewComponent switched to its third-person camera (details at tp_sync).
 //  - world: GameDirector.TriggerHordeOnDirector / ForcePacingPhaseOnDirector / GobiSpawnAIFromClass (statics),
 //    LifeStateComponent.Kill on ridden, MissionGameMode.OnMissionEnd (win/lose, as dev `endmission`).
 #include <windows.h>
@@ -644,6 +645,98 @@ static void cmd_freecam(Out *o) {
                           : "/freecam: the camera didn't switch\n");
 }
 
+// ---- third person (#25) ----
+// The hero's PlayerViewComponent owns both camera setups (Third/FirstPersonViewConfig: camera, spring arm and mesh
+// tags). Which one is active comes from its requested-view byte (+0x200: 1 first person, 2 third person, 3 orbit),
+// written only by OnOwnerTagChange (0x141C26C40: from the owner's gameplay tags vs ThirdPersonTags /
+// ThirdPersonOrbitTags) and applied by UpdateView(this, bool bForce) (0x141C27250), which swaps camera, meshes and
+// broadcasts OnViewChanged (weapons, flashlight, audio, anim follow). /thirdperson writes the byte and calls UpdateView
+// itself: no gameplay tag is added (tags carry gameplay meaning), nothing is replicated (every machine picks the view
+// of its own hero locally; others always see the 3P body), so it only changes the local player's own camera.
+// While aiming (ADSComponent.bIsHoldingADS on one of the hero's weapons) the view goes back to first person.
+#define ADDR_PVC_UPDATE VA(0x141C27250ull)
+static const uint8_t SIG_PVC_UPDATE[] = {0x48,0x8b,0xc4,0x57,0x41,0x54,0x48,0x83,0xec,0x68,0x48,0x83,0xb9,0xf8,0x01,0x00,
+                                         0x00,0x00,0x44,0x0f,0xb6,0xe2};
+typedef void (*PvcUpdateFn)(UObject *pvc, uint8_t force);
+#define PVC_WANT(p)    (*((uint8_t *)(p) + 0x200))   // requested view (1 FP, 2 TP, 3 orbit)
+// +0x201 = view UpdateView applied last, +0x215 = IsThirdPerson() (docs/investigations/third-person.md)
+#define COMP_OWNER(c)  (*(UObject **)((char *)(c) + 0xD8))   // UActorComponent::OwnerPrivate (unreflected)
+static int tp_on;                  // /thirdperson on (local hero)
+static uint8_t tp_written;         // the view byte we last wrote (0 = none)
+static UObject *tp_pawn, *tp_pvc;  // cached for the current local hero
+static int32_t tp_pawni = -1, tp_pvci = -1;
+static Ref tp_ads[16];             // the hero's ADSComponents (one per weapon), refreshed every second
+static int n_tp_ads;
+static float tp_ads_age;
+
+static UObject *local_hero(void) {
+    UObject *pc = host_pc(), *p = pc ? ue_get_ptr(pc, "Pawn") : NULL;
+    return is_a(p, "HeroCharacter") ? p : NULL;
+}
+static UObject *view_comp(UObject *pawn) {
+    if (!pawn) return NULL;
+    if (pawn == tp_pawn && alive(tp_pawn, tp_pawni) && (!tp_pvc || alive(tp_pvc, tp_pvci))) return tp_pvc;   // scan once per hero
+    UClass *c = cls("PlayerViewComponent");
+    tp_pawn = pawn; tp_pawni = U_INDEX(pawn); tp_pvc = NULL; tp_pvci = -1; tp_ads_age = 99.f;
+    for (int32_t i = 0, n = ue_num_objects(); c && i < n; i++) {
+        UObject *x = ue_object_at(i);
+        if (x && !(U_FLAGS(x) & LIVE_FLAGS) && ue_is_a(x, c) && COMP_OWNER(x) == pawn) { tp_pvc = x; tp_pvci = i; break; }
+    }
+    return tp_pvc;
+}
+static void ads_refresh(UObject *pawn) {
+    UClass *c = cls("ADSComponent");
+    n_tp_ads = 0;
+    for (int32_t i = 0, n = ue_num_objects(); c && pawn && i < n && n_tp_ads < 16; i++) {
+        UObject *x = ue_object_at(i);
+        if (!x || (U_FLAGS(x) & LIVE_FLAGS) || !ue_is_a(x, c)) continue;
+        UObject *w = COMP_OWNER(x);
+        if (w && (w == pawn || ue_get_ptr(w, "Owner") == pawn)) { tp_ads[n_tp_ads].c = x; tp_ads[n_tp_ads++].i = i; }
+    }
+}
+static int hero_ads(void) {
+    static int32_t off = -2;
+    for (int i = 0; i < n_tp_ads; i++) {
+        if (!alive(tp_ads[i].c, tp_ads[i].i)) continue;
+        if (off == -2) off = ue_prop_offset(tp_ads[i].c, "bIsHoldingADS");
+        if (off >= 0 && *((uint8_t *)tp_ads[i].c + off)) return 1;
+    }
+    return 0;
+}
+static int view_set(UObject *pvc, uint8_t want) {
+    if (!pvc) return 0;
+    if (memcmp((void *)ADDR_PVC_UPDATE, SIG_PVC_UPDATE, sizeof SIG_PVC_UPDATE)) { LOG("cheats: UpdateView signature mismatch"); return 0; }
+    PVC_WANT(pvc) = want;
+    ((PvcUpdateFn)ADDR_PVC_UPDATE)(pvc, 1);
+    return 1;
+}
+// every tick while on: third person, first person while aiming; a view the game itself asked for (a tag-driven 2 we
+// didn't write, orbit) is left alone
+static void tp_sync(float dt) {
+    UObject *pawn = local_hero(), *pvc = view_comp(pawn);
+    if (!pvc) return;
+    if ((tp_ads_age += dt) > 1.f) { tp_ads_age = 0; ads_refresh(pawn); }
+    uint8_t cur = PVC_WANT(pvc), want = hero_ads() ? 1 : 2;
+    if (cur == want || cur == 3 || (cur == 2 && tp_written != 2)) return;
+    if (view_set(pvc, want)) tp_written = want;
+}
+static void tp_forget(void) { tp_written = 0; tp_pawn = tp_pvc = NULL; tp_pawni = tp_pvci = -1; n_tp_ads = 0; }
+static void tp_off(void) {
+    UObject *pvc = view_comp(local_hero());
+    if (pvc && tp_written == 2 && PVC_WANT(pvc) == 2) view_set(pvc, 1);
+    tp_on = 0;
+    tp_forget();
+}
+static void cmd_thirdperson(char *rest, Out *o) {
+    int en = !rest ? !tp_on : !_stricmp(rest, "on") ? 1 : !_stricmp(rest, "off") ? 0 : -1;
+    if (en < 0) { out_printf(o, "usage: /thirdperson [on|off]\n"); return; }
+    if (!en) { tp_off(); out_printf(o, "first person\n"); return; }
+    if (!view_comp(local_hero())) { out_printf(o, "/thirdperson: you have no hero right now\n"); return; }
+    tp_on = 1;
+    tp_sync(0);
+    out_printf(o, "third person: only your view; aiming switches to first person. /thirdperson again to go back\n");
+}
+
 static void cmd_slomo(char *rest, Out *o) {
     char *end = NULL;
     float f = rest ? strtof(rest, &end) : 0;
@@ -1049,6 +1142,8 @@ static void all_effects_off(int world_alive) {
         if (size_now != 1.f && ps_pawn(host_ps())) { float one = 1.f; cm_call(host_pc(), "ChangeSize", &one); }
         if (is_a(ue_local_pc(), "DebugCameraController")) cm_call(ue_local_pc(), "ToggleDebugCamera", NULL);
     }
+    if (world_alive) tp_off();
+    else tp_forget();   // the next chapter's hero goes third person again (tp_sync); camp turns it off with the cheats
     n_gods = 0; n_ammo = 0;
     ammo_inf = frozen = freecam = 0;
     slomo = size_now = 1.f;
@@ -1104,16 +1199,17 @@ static void set_on(int en, Out *o) {
 }
 
 static const char *const VERBS[] = {"cheats", "god", "heal", "revive", "ammo", "copper", "card", "fly", "noclip", "walk",
-    "tp", "freecam", "size", "horde", "director", "spawn", "killall", "freeze", "slomo", "win", "lose", "unlockall", "supply"};
+    "tp", "freecam", "thirdperson", "size", "horde", "director", "spawn", "killall", "freeze", "slomo", "win", "lose", "unlockall", "supply"};
 
 static void help(Out *o) {
     out_printf(o, "cheats (host only, after /cheats on; [p] = player name, #n, me or all):\n"
                   "/god [p] [on|off]  /heal [p]  /revive [p]  /ammo infinite|off  /copper +N [p]  /card <name>|list [p]\n"
-                  "/fly [p]  /noclip  /walk [p]  /tp [p] <p|saferoom|start>  /freecam  /size <x>\n"
+                  "/fly [p]  /noclip  /walk [p]  /tp [p] <p|saferoom|start>  /freecam  /thirdperson  /size <x>\n"
                   "/horde  /director calm|build|peak  /spawn <type> [n]  /killall  /freeze  /slomo <x>  /win  /lose\n"
                   "YOUR save, permanent: /supply +N  /unlockall\n"
                   "state: cheats %s", on ? "ON" : "off");
-    if (on) out_printf(o, ", god %d, ammo %s, speed %.2f%s%s", n_gods, ammo_inf ? "infinite" : "normal", slomo, frozen ? ", frozen" : "", freecam ? ", freecam" : "");
+    if (on) out_printf(o, ", god %d, ammo %s, speed %.2f%s%s%s", n_gods, ammo_inf ? "infinite" : "normal", slomo, frozen ? ", frozen" : "",
+                       freecam ? ", freecam" : "", tp_on ? ", third person" : "");
     out_printf(o, "\n");
 }
 
@@ -1144,6 +1240,7 @@ int cheats_slash(const char *verb, char *rest, Out *o) {
     else if (!strcmp(verb, "fly") || !strcmp(verb, "noclip") || !strcmp(verb, "walk")) cmd_move(verb, rest, o);
     else if (!strcmp(verb, "tp")) cmd_tp(rest, o);
     else if (!strcmp(verb, "freecam")) cmd_freecam(o);
+    else if (!strcmp(verb, "thirdperson")) cmd_thirdperson(rest, o);
     else if (!strcmp(verb, "size")) cmd_size(rest, o);
     else if (!strcmp(verb, "horde")) cmd_horde(o);
     else if (!strcmp(verb, "director")) cmd_director(rest, o);
@@ -1168,6 +1265,30 @@ static void on_world_change(void) {
     world_check = 1;
 }
 
+#ifndef B4B_RELEASE
+// dev: `cheatprobe press <vk|lmb|rmb> <seconds>` holds a key or mouse button on this game's window (window messages;
+// the game ignores posted mouse buttons in play, so fire/ADS are tested through `cheatprobe bind` onto numpad keys)
+static int press_what;   // vk, or -1 lmb, -2 rmb
+static float press_left;
+static void press_input(int what, int down) {
+    HWND w = NULL;
+    while ((w = FindWindowExW(NULL, w, L"UnrealWindow", NULL))) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        if (pid == GetCurrentProcessId() && IsWindowVisible(w)) break;
+    }
+    if (!w) return;
+    RECT r; GetClientRect(w, &r);
+    LPARAM at = MAKELPARAM((r.right - r.left) / 2, (r.bottom - r.top) / 2);
+    if (what == -1) PostMessageW(w, down ? WM_LBUTTONDOWN : WM_LBUTTONUP, down ? MK_LBUTTON : 0, at);
+    else if (what == -2) PostMessageW(w, down ? WM_RBUTTONDOWN : WM_RBUTTONUP, down ? MK_RBUTTON : 0, at);
+    else {
+        UINT sc = MapVirtualKeyW(what, 0);
+        PostMessageW(w, down ? WM_KEYDOWN : WM_KEYUP, what, 1 | (sc << 16) | (down ? 0 : 0xC0000000u));
+    }
+}
+#endif
+
 static int own_window_focused(void) {
     DWORD pid = 0;
     HWND w = GetForegroundWindow();
@@ -1185,6 +1306,7 @@ void cheats_tick(float dt) {
         ue_world_package(w, pkg, sizeof pkg);
         if (!in_mission() || strstr(pkg, "FortHope")) {
             on = 0;
+            tp_on = 0;
             taint_world = NULL;
             LOG("cheats: off (map change out of the mission)");
             snprintf(pending_notice, sizeof pending_notice, "cheats turned off (back in camp)");
@@ -1222,6 +1344,10 @@ void cheats_tick(float dt) {
         }
         if (f8) { static Out tmp; out_reset(&tmp); cmd_freecam(&tmp); LOG("cheats: F8: %s", tmp.buf); }
     }
+    if (on && tp_on) tp_sync(dt);
+#ifndef B4B_RELEASE
+    if (press_left > 0 && (press_left -= dt) <= 0) press_input(press_what, 0);
+#endif
     static float acc;
     if (!on || (acc += dt) < 0.5f) return;
     acc = 0;
@@ -1333,6 +1459,60 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
             int32_t f = ue_prop_offset(a, "bInfiniteReserveAmmo");
             out_printf(o, "%s of %s: clip %d reserve %d infinite %d\n", ue_obj_name(a, b, sizeof b), owner ? ue_obj_name(owner, a2, sizeof a2) : "-",
                        clip, res, f >= 0 ? *((uint8_t *)a + f) : -1);
+        }
+    } else if (what && !strcmp(what, "press") && arg) {   // press <vk|lmb|rmb> [seconds]: hold it (released by the tick)
+        char *secs = strtok(NULL, " ");
+        if (press_left > 0) press_input(press_what, 0);
+        press_what = !strcmp(arg, "lmb") ? -1 : !strcmp(arg, "rmb") ? -2 : (int)strtol(arg, NULL, 0);
+        press_left = secs ? (float)atof(secs) : 0.2f;
+        press_input(press_what, 1);
+        out_printf(o, "holding %s for %.1f s\n", arg, press_left);
+    } else if (what && !strcmp(what, "bind")) {   // bind [<Action> <Key>]: InputSettings action mappings (list / add one)
+        UObject *is = class_cdo("InputSettings");
+        char *key = strtok(NULL, " ");
+        if (!is) { out_printf(o, "no InputSettings\n"); return 1; }
+        int axis = arg && !strcmp(arg, "axis");   // bind axis <Axis> <Key>: an axis mapping, scale 1
+        if (axis) { arg = key; key = strtok(NULL, " "); }
+        if (arg && key) {
+            Call c;
+            if (!call_prep(&c, is, axis ? "AddAxisMapping" : "AddActionMapping")) { out_printf(o, "no Add*Mapping\n"); return 1; }
+            uint8_t *m = carg(&c, "KeyMapping");
+            wchar_t wa[64], wk[64];
+            mbstowcs(wa, arg, 63); wa[63] = 0; mbstowcs(wk, key, 63); wk[63] = 0;
+            ((FNameCtorFn)ADDR_FNAME_CTOR)((FName *)m, wa, 1);
+            ((FNameCtorFn)ADDR_FNAME_CTOR)((FName *)(m + 0x10), wk, 1);
+            if (axis) *(float *)(m + 8) = 1.f;   // FInputAxisKeyMapping {FName AxisName, float Scale, FKey Key}
+            SET(&c, "bForceRebuildKeymaps", uint8_t, 1);
+            call_go(&c);
+            out_printf(o, "added %s -> %s\n", arg, key);
+        }
+        TArray *am = (TArray *)((char *)is + 0x88);
+        for (int j = 0; j < am->num; j++) {
+            uint8_t *e = (uint8_t *)am->data + j * 0x28;
+            out_printf(o, "%s=%s ", ue_name(*(FName *)e, a, sizeof a), ue_name(*(FName *)(e + 0x10), b, sizeof b));
+        }
+        out_printf(o, "\n%d action mapping(s)\n", am->num);
+    } else if (what && !strcmp(what, "view")) {   // view [1|2|3]: the local hero's PlayerViewComponent; a digit sets the view
+        UObject *pawn = local_hero(), *pvc = view_comp(pawn);
+        if (!pvc) { out_printf(o, "no local hero / PlayerViewComponent (pawn %p)\n", (void *)(host_pc() ? ue_get_ptr(host_pc(), "Pawn") : NULL)); return 1; }
+        if (arg && arg[0] >= '1' && arg[0] <= '3') view_set(pvc, (uint8_t)(arg[0] - '0'));
+        ads_refresh(pawn);
+        uint8_t *v = (uint8_t *)pvc;
+        out_printf(o, "pawn %p %s pvc %p want %d applied %d is3p %d supports1p %d  +0x214..0x218: %d %d %d %d %d  ads %d (%d comps)\n",
+                   (void *)pawn, ue_obj_name(U_CLASS(pawn), a, sizeof a), (void *)pvc, v[0x200], v[0x201], v[0x215], v[0x148],
+                   v[0x214], v[0x215], v[0x216], v[0x217], v[0x218], hero_ads(), n_tp_ads);
+        static const struct { const char *label; int off; } tc[] = {{"ThirdPersonTags", 0x188}, {"ThirdPersonOrbitTags", 0x1a8},
+                                                                  {"ThirdPersonOccludedTags", 0x1c8}};
+        UObject *gtc = *(UObject **)(v + 0x228);
+        for (int k = 0; k < 4; k++) {
+            TArray *t = k < 3 ? (TArray *)(v + tc[k].off) : gtc ? (TArray *)((char *)gtc + 0x130) : NULL;
+            out_printf(o, "%s:", k < 3 ? tc[k].label : "owner tags");
+            for (int j = 0; t && j < t->num && j < 64; j++) out_printf(o, " %s", ue_name(((FName *)t->data)[j], b, sizeof b));
+            out_printf(o, "\n");
+        }
+        for (int k = 0; k < 2; k++) {   // camera/spring arm/mesh tags of both configs
+            FName *f = (FName *)(v + (k ? 0x14c : 0xf8));
+            out_printf(o, "%s: camera %s arm %s mesh %s\n", k ? "1P" : "3P", ue_name(f[0], a, sizeof a), ue_name(f[1], b, sizeof b), ue_name(f[2], a2, sizeof a2));
         }
     } else if (what && !strcmp(what, "cm")) {   // the host PC's CheatManager
         UObject *pc = host_pc();

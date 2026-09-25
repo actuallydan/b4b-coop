@@ -174,6 +174,7 @@ number then.
 | `/tp <player\|saferoom\|start>` | Teleports you to a player, to this map's end saferoom, or back to its start saferoom. Entering the end saferoom with the whole team can end the chapter, as walking in would. | `/tp saferoom`, `/tp Mellon` |
 | `/tp <player\|all> <player\|me\|saferoom\|start>` | Teleports a player (or everyone) somewhere; each gets their own spot. | `/tp all me`, `/tp #2 start` |
 | `/freecam` | A free-flying camera for your own view only; your hero stays where it is. **Press F8 to come back** (the chat doesn't work while it's on). | `/freecam` |
+| `/thirdperson [on\|off]` | Over-the-shoulder third-person view of your own hero; aiming (right mouse) switches to first person while you hold it. Only your view changes. Stays on into the next chapter; `/thirdperson` again goes back. | `/thirdperson` |
 | `/size <0.25-4>` | Your own hero's size (1 = normal). Only you see it. | `/size 2` |
 
 ### World and director
