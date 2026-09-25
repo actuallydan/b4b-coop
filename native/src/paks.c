@@ -98,7 +98,7 @@ typedef void (*DtorFn)(void *fh, uint32_t flags);
 
 static InitFn orig_init;
 static void *g_pf;              // the FPakPlatformFile
-static int g_ok;                // signatures verified
+static int g_ok;                // signatures verified and all hooks in
 #ifndef B4B_RELEASE
 static char g_modpaks[520];     // ini modpaks=<windows dir> (dev)
 #endif
@@ -235,7 +235,6 @@ void paks_early_init(void) {
         addons_unavailable("unsupported game build");
         return;
     }
-    g_ok = 1;
     MH_STATUS st = MH_Initialize();
     if ((st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED) ||
         MH_CreateHook((void *)ADDR_PAKPF_INIT, (void *)init_detour, (void **)&orig_init) != MH_OK ||
@@ -248,6 +247,7 @@ void paks_early_init(void) {
         addons_unavailable("hook failed");
         return;
     }
+    g_ok = 1;   // only now: an add-on mounted without all three exemptions would be a Fatal
 #ifdef B4B_RELEASE
     LOG("paks: FPakPlatformFile::Initialize hooked (%d add-on(s) to mount)", n);
 #else
