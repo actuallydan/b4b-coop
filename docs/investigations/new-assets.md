@@ -94,3 +94,9 @@ row) is gameplay content (data tables, blueprints) and out of scope for cosmetic
 4. Live: add-on outfit on host and client, both with the add-on; client without it (sees the survivor); map change,
    checkpoint restart, campaign-run save.
 5. Later: weapon skins, customization-screen rows.
+
+## 8. Added outfits: state (WIP, 2026-09-25, branch `models-outfits`)
+Stopped at setup (PC needed): worktree created from `origin/models`, no code written, no live test, no lock taken.
+Next: steps 1-4 of §7 (`b4bmod survivor --as <name>` -> `/Game/b4bcoop/outfits/<name>/`, addoninfo `outfit=` lines,
+addons.c list, models.c rows + `/model list`, decide protocol bump for the new row type), then `multi.sh 2` on lane 1
+(with/without the add-on, chapter transition, campaign save), docs (meshes.md, COMMANDS.md), `e2e.py --quick --no-lock`.
