@@ -67,8 +67,7 @@ int admin_cmd(const char *verb, char *rest, Out *o);
 void admin_slash(char *line, Out *o);  // a chat command typed by the local player (without the '/')
 void admin_on_initslots(UObject *psm); // teamsize.c: right before APlayerSlotManager::InitSlots
 void admin_ready(const char *rest, Out *o); // host: ready every player (chat /ready, dev `ready [vote]`)
-int admin_notice(UObject *pc, const char *text);  // host: one chat notice line to that player's client (0 = sent)
-UObject *admin_find_player(const char *arg, Out *o);  // player state by /players number or name (NULL + reply)
+int admin_notice_to(UObject *pc, const char *text);  // host: one chat notice line to that player's client (0 = sent)
 void admin_ps_key(UObject *ps, char *buf, size_t n);   // steam:<id64> or name:<name>
 void admin_ps_name(UObject *ps, char *buf, size_t n);  // player name, a bot's hero name
 void cmds_set_session_join(const char *targets); // Steam join target(s), comma-separated; overrides host=/join=
@@ -125,3 +124,17 @@ void models_tick(float dt);
 int models_cmd(const char *verb, char *rest, Out *o);  // dev builds: `model`, `models`, `mdl ...`
 void models_slash(const char *verb, char *rest, Out *o); // chat /model, /models
 void models_host_notice(const char *text);               // chat.c: a host notice arrived (client)
+
+// admin.c helpers shared with cheats.c
+int admin_player_array(UObject ***arr);                 // GameState.PlayerArray (humans and bots), /players order
+UObject *admin_find_player(const char *arg, Out *o);    // "#n", name or unique prefix -> PlayerState (NULL + message)
+void admin_display_name(UObject *ps, char *buf, size_t n);   // player name, or a bot's hero name
+int admin_is_client(void);                              // connected to someone else's session
+void admin_notice(const char *fmt, ...);                // "[b4bcoop] <text>" to every player (host notice)
+
+// cheats.c: opt-in host-only sandbox (#14, docs/commands-cheats.md)
+int cheats_slash(const char *verb, char *rest, Out *o); // 1 if verb is a cheat command (handled or refused)
+void cheats_tick(float dt);
+int rewards_execute_local(UObject *ppc, void *cmd);     // rewards.c: a profile command on the host's own profile
+int cheats_tainted(void);                               // cheats were on during this map: rewards.c forwards nothing
+int cheats_cmd(const char *verb, char *rest, Out *o);   // dev builds: `cheat <cmd> ...`, `cheatprobe ...`

@@ -640,7 +640,7 @@ static void selectset_detour(UObject *ps, const CustSet *set) {
             UObject *pc = ue_get_ptr(ps, "Owner");
             static ULONGLONG last_told; static UObject *last_pc;
             if (pc && (pc != last_pc || GetTickCount64() - last_told > 3000)) {
-                admin_notice(pc, REFUSED_NOTICE " (/models).");
+                admin_notice_to(pc, REFUSED_NOTICE " (/models).");
                 last_pc = pc; last_told = GetTickCount64();
             }
             return;
@@ -813,7 +813,7 @@ static void notify_all(const char *text) {
     TArray *pa = (TArray *)((char *)gs + off);
     for (int i = 0; i < pa->num; i++) {
         UObject *ps = ((UObject **)pa->data)[i], *pc = ps ? ue_get_ptr(ps, "Owner") : NULL;
-        if (pc && pc != me_pc && !is_bot_slot(ps_slot(ps))) admin_notice(pc, text);
+        if (pc && pc != me_pc && !is_bot_slot(ps_slot(ps))) admin_notice_to(pc, text);
     }
 }
 

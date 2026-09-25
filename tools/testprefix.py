@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create/refresh an isolated Proton prefix for local test instance N (never touches the real prefix).
 
-    testprefix.py N [--fresh] [--blank] [--host | --join ADDR]   (--host: no join=, i.e. the default: host)
+    testprefix.py N [--fresh] [--blank] [--host | --join ADDR] [--force]   (--host: no join=, i.e. the default: host)
 
 Prefix:  ~/.local/share/b4b-coop/prefixes/test<N>  (cloned from steamapps/compatdata/924970, ~600 MB)
 Config:  <prefix>/b4bcoop.ini  (pass to the agent via B4B_COOP_CONFIG)
@@ -9,6 +9,8 @@ Patches (test copy only): muted, small window, low quality, ui cvars in Engine.i
 --blank: delete the copy's profile save -> the game starts a fresh offline profile (no decks/unlocks), a
 distinguishable identity. The profile's source of truth is the AES-encrypted PlayerProfileSettings.sav; the .json
 next to it is only an export the game overwrites, so editing it (deck names etc.) has no effect.
+Refuses (exit 1) to change a prefix while a game process runs on it (B4B_PREFIX in /proc/<pid>/environ, as
+launch/multi-stop.sh matches), unless --force. Change prefixes only while holding launch/gamelock.sh.
 """
 import os, re, shutil, subprocess, sys
 
@@ -86,11 +88,29 @@ def write_config(dst, n, join):
     open(os.path.join(dst, "b4bcoop.ini"), "w").write("\n".join(lines) + "\n")
 
 
+def users(dst):
+    """PIDs of processes running on this prefix (B4B_PREFIX=<dst> in their environment, set by launch/instance.sh)."""
+    want = ("B4B_PREFIX=" + dst.rstrip("/")).encode()
+    pids = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit(): continue
+        try:
+            env = open(f"/proc/{d}/environ", "rb").read().split(b"\0")
+        except OSError:
+            continue
+        if want in env: pids.append(int(d))
+    return pids
+
+
 def main():
     args = sys.argv[1:]
     if not args or not args[0].isdigit(): sys.exit(__doc__)
     n = int(args[0])
     dst = os.path.join(ROOT, f"test{n}")
+    busy = users(dst)
+    if busy and "--force" not in args:
+        sys.exit(f"testprefix.py: test{n} is in use by running process(es) {' '.join(map(str, busy[:8]))}: refusing to "
+                 f"change it (stop them with launch/multi-stop.sh {n}, hold launch/gamelock.sh, or pass --force)")
     if "--fresh" in args or not os.path.isdir(os.path.join(dst, "pfx")):
         shutil.rmtree(dst, ignore_errors=True)
         clone(dst)

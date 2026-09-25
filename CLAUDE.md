@@ -74,6 +74,11 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     bodies as a made-up row `b4bcoop.npc.<name>` put on by every b4bcoop machine; host `/model <player>`,
     `/models off` (hook on the RPC implementation), campaign-run save keeps own looks. Dev `mdl ...`.
     docs/investigations/model-swap.md, player page docs/commands-models.md.
+  - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
+    /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
+    own save `/supply /unlockall`); off again back in camp; every cheat touching others is a host notice; a map with
+    cheats on sends remote players no rewards (rewards.c), stats or achievements. Dev `cheat <cmd>`, `cheatprobe`.
+    Player reference: the Cheats section of `docs/COMMANDS.md`. Host-side only, no protocol bump.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
@@ -139,6 +144,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   `B4B_TIMEOUT`, `B4B_FRESH=1` (re-clone), `B4B_BLANK="2 3"` (fresh offline profile for those instances),
   `B4B_INI_EXTRA="netguard=off;netguard_eos=0"` (extra `b4bcoop.ini` lines for every instance), `B4B_INI_EXTRA<n>`
   (instance n only), `B4B_PORT_BASE` (agent ports; 47120 when another game with the agent holds 47112).
+- **Test prefixes are shared between sessions: change them (`testprefix.py`, `B4B_FRESH`, `B4B_BLANK`, editing their
+  `b4bcoop.ini` or saves) only while holding `launch/gamelock.sh`.** `testprefix.py` refuses to touch a prefix a game
+  process is running on (`B4B_PREFIX` in /proc/<pid>/environ) unless `--force`.
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.
@@ -163,6 +171,12 @@ sampler). `--full` adds a vanilla
 `multi.sh 5` (5th refused "Server full.", host survives) and a `teamsize=5` round (5 follow, SP forwarded to all 4
 clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
 screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
+
+## Branches
+- `main`: shippable. Releases are tagged from here.
+- `models`: ALL model/content-mod work (epic #23: spikes #16-#18, Tier 0 #19, add-on system #20-#22). Agents branch
+  from `models` and merge back into `models`; nothing model-related lands on `main` until the epic is DONE. Never
+  commit game assets, extracted files or paks (copyright); extracted content lives under `~/.local/share/b4b-coop/`.
 
 ## Gotchas
 - UE4SS does not work on this game (obfuscated engine) — don't go back to it.
