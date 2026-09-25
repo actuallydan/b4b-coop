@@ -186,6 +186,7 @@ int models_cmd(const char *verb, char *rest, Out *o);  // dev builds: `model`, `
 void models_slash(const char *verb, char *rest, Out *o); // chat /model, /models
 void models_host_notice(const char *text);               // chat.c: a host notice arrived (client)
 int models_locked(void);                                 // host: /models off
+int models_off(void);                                    // host: /models off; client: as the host's notices said
 UObject *models_load_asset(const char *path);            // LoadAsset_Blocking of an object path, NULL if it failed
 int models_hero_pawns(UObject **out, int max);           // pawns of the hero-team slots, slot order
 // weaponlooks.c: added weapon looks (/model <weapon look>, docs/investigations/new-assets.md §9)

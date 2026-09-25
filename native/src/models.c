@@ -713,6 +713,7 @@ void models_host_notice(const char *text) {
     if (!strncmp(text, "[host] model swaps are on", 25)) { host_off = 0; refusal[0] = 0; }
     wlooks_host_notice(text);
 }
+int models_off(void) { return is_client() ? host_off == 1 : locked; }
 
 // ---- host: lock ----
 typedef void (*SelectSetFn)(UObject *ps, const CustSet *set);
