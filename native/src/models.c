@@ -639,7 +639,7 @@ static void selectset_detour(UObject *ps, const CustSet *set) {
             LOG("models: refused a look from %s: %s", n, why);
             UObject *pc = ue_get_ptr(ps, "Owner");
             static ULONGLONG last_told; static UObject *last_pc;
-            if (pc && (pc != last_pc || GetTickCount64() - last_told > 10000)) {
+            if (pc && (pc != last_pc || GetTickCount64() - last_told > 3000)) {
                 admin_notice(pc, REFUSED_NOTICE " (/models).");
                 last_pc = pc; last_told = GetTickCount64();
             }
