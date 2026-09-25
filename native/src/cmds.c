@@ -321,7 +321,7 @@ static int ini_stat(FILETIME *mt, DWORD *sz) {
 // the modules that can take a key while the game runs: 1 = applied
 static int ini_apply_live(const char *key, const char *val) {
     return thirdperson_live(key, val) || flashlight_live(key, val) || joinpolicy_live(key, val) ||
-           presence_live(key, val) || teamsize_live(key, val);
+           presence_live(key, val) || teamsize_live(key, val) || overlay_live(key, val);
 }
 static void ini_snapshot(void) {
     ini_read_all(&ini_last);
@@ -692,6 +692,7 @@ void cmds_tick(float dt) {
     cheats_tick(dt);
     thirdperson_tick(dt);
     models_tick(dt);
+    overlay_tick(dt);
     cmds_ini_poll(dt);
 }
 
