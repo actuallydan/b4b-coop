@@ -1,8 +1,8 @@
-vendor/
-.venv/
+/vendor
+/.venv
 __pycache__/
 native/out/
-sdk/
+/sdk
 *.log
 dist/
 .claude/
