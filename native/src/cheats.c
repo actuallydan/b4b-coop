@@ -4,7 +4,7 @@
 //  - Every cheat is a chat command run by admin.c's dispatcher (`/god`, `/fly`, ...). Nothing works until the host types
 //    `/cheats on`; `/cheats off` or the next map change that lands in Fort Hope (camp) or the menus turns them off.
 //  - Host only: the machine must be the server (listen host or standalone). A client's `/cheat ...` never leaves its
-//    machine (chat.c) and gets "host only".
+//    machine (chat.c) and gets "host only". admin.c enforces it from VERBS' permissions (CMD_HOST / CMD_CHEAT).
 //  - Transparent: enabling/disabling, and every cheat that touches another player or the whole session, is announced to
 //    every player with admin.c's host notice (ClientTeamMessage, our own type; the same path as /say).
 //  - No client save is ever written: cheats act on the live session, or on the HOST's own offline profile (`/supply`,
@@ -24,7 +24,6 @@
 //  - size/freecam/slomo/freeze: the engine's own UCheatManager (ChangeSize, ToggleDebugCamera, Slomo, PlayersOnly are
 //    intact), constructed for the host's PlayerController with StaticConstructObject_Internal and stored in
 //    PlayerController.CheatManager.
-//  - thirdperson: the hero's own PlayerViewComponent switched to its third-person camera (details at tp_sync).
 //  - world: GameDirector.TriggerHordeOnDirector / ForcePacingPhaseOnDirector / GobiSpawnAIFromClass (statics),
 //    LifeStateComponent.Kill on ridden, MissionGameMode.OnMissionEnd (win/lose, as dev `endmission`).
 #include <windows.h>
@@ -645,98 +644,6 @@ static void cmd_freecam(Out *o) {
                           : "/freecam: the camera didn't switch\n");
 }
 
-// ---- third person (#25) ----
-// The hero's PlayerViewComponent owns both camera setups (Third/FirstPersonViewConfig: camera, spring arm and mesh
-// tags). Which one is active comes from its requested-view byte (+0x200: 1 first person, 2 third person, 3 orbit),
-// written only by OnOwnerTagChange (0x141C26C40: from the owner's gameplay tags vs ThirdPersonTags /
-// ThirdPersonOrbitTags) and applied by UpdateView(this, bool bForce) (0x141C27250), which swaps camera, meshes and
-// broadcasts OnViewChanged (weapons, flashlight, audio, anim follow). /thirdperson writes the byte and calls UpdateView
-// itself: no gameplay tag is added (tags carry gameplay meaning), nothing is replicated (every machine picks the view
-// of its own hero locally; others always see the 3P body), so it only changes the local player's own camera.
-// While aiming (ADSComponent.bIsHoldingADS on one of the hero's weapons) the view goes back to first person.
-#define ADDR_PVC_UPDATE VA(0x141C27250ull)
-static const uint8_t SIG_PVC_UPDATE[] = {0x48,0x8b,0xc4,0x57,0x41,0x54,0x48,0x83,0xec,0x68,0x48,0x83,0xb9,0xf8,0x01,0x00,
-                                         0x00,0x00,0x44,0x0f,0xb6,0xe2};
-typedef void (*PvcUpdateFn)(UObject *pvc, uint8_t force);
-#define PVC_WANT(p)    (*((uint8_t *)(p) + 0x200))   // requested view (1 FP, 2 TP, 3 orbit)
-// +0x201 = view UpdateView applied last, +0x215 = IsThirdPerson() (docs/investigations/third-person.md)
-#define COMP_OWNER(c)  (*(UObject **)((char *)(c) + 0xD8))   // UActorComponent::OwnerPrivate (unreflected)
-static int tp_on;                  // /thirdperson on (local hero)
-static uint8_t tp_written;         // the view byte we last wrote (0 = none)
-static UObject *tp_pawn, *tp_pvc;  // cached for the current local hero
-static int32_t tp_pawni = -1, tp_pvci = -1;
-static Ref tp_ads[16];             // the hero's ADSComponents (one per weapon), refreshed every second
-static int n_tp_ads;
-static float tp_ads_age;
-
-static UObject *local_hero(void) {
-    UObject *pc = host_pc(), *p = pc ? ue_get_ptr(pc, "Pawn") : NULL;
-    return is_a(p, "HeroCharacter") ? p : NULL;
-}
-static UObject *view_comp(UObject *pawn) {
-    if (!pawn) return NULL;
-    if (pawn == tp_pawn && alive(tp_pawn, tp_pawni) && (!tp_pvc || alive(tp_pvc, tp_pvci))) return tp_pvc;   // scan once per hero
-    UClass *c = cls("PlayerViewComponent");
-    tp_pawn = pawn; tp_pawni = U_INDEX(pawn); tp_pvc = NULL; tp_pvci = -1; tp_ads_age = 99.f;
-    for (int32_t i = 0, n = ue_num_objects(); c && i < n; i++) {
-        UObject *x = ue_object_at(i);
-        if (x && !(U_FLAGS(x) & LIVE_FLAGS) && ue_is_a(x, c) && COMP_OWNER(x) == pawn) { tp_pvc = x; tp_pvci = i; break; }
-    }
-    return tp_pvc;
-}
-static void ads_refresh(UObject *pawn) {
-    UClass *c = cls("ADSComponent");
-    n_tp_ads = 0;
-    for (int32_t i = 0, n = ue_num_objects(); c && pawn && i < n && n_tp_ads < 16; i++) {
-        UObject *x = ue_object_at(i);
-        if (!x || (U_FLAGS(x) & LIVE_FLAGS) || !ue_is_a(x, c)) continue;
-        UObject *w = COMP_OWNER(x);
-        if (w && (w == pawn || ue_get_ptr(w, "Owner") == pawn)) { tp_ads[n_tp_ads].c = x; tp_ads[n_tp_ads++].i = i; }
-    }
-}
-static int hero_ads(void) {
-    static int32_t off = -2;
-    for (int i = 0; i < n_tp_ads; i++) {
-        if (!alive(tp_ads[i].c, tp_ads[i].i)) continue;
-        if (off == -2) off = ue_prop_offset(tp_ads[i].c, "bIsHoldingADS");
-        if (off >= 0 && *((uint8_t *)tp_ads[i].c + off)) return 1;
-    }
-    return 0;
-}
-static int view_set(UObject *pvc, uint8_t want) {
-    if (!pvc) return 0;
-    if (memcmp((void *)ADDR_PVC_UPDATE, SIG_PVC_UPDATE, sizeof SIG_PVC_UPDATE)) { LOG("cheats: UpdateView signature mismatch"); return 0; }
-    PVC_WANT(pvc) = want;
-    ((PvcUpdateFn)ADDR_PVC_UPDATE)(pvc, 1);
-    return 1;
-}
-// every tick while on: third person, first person while aiming; a view the game itself asked for (a tag-driven 2 we
-// didn't write, orbit) is left alone
-static void tp_sync(float dt) {
-    UObject *pawn = local_hero(), *pvc = view_comp(pawn);
-    if (!pvc) return;
-    if ((tp_ads_age += dt) > 1.f) { tp_ads_age = 0; ads_refresh(pawn); }
-    uint8_t cur = PVC_WANT(pvc), want = hero_ads() ? 1 : 2;
-    if (cur == want || cur == 3 || (cur == 2 && tp_written != 2)) return;
-    if (view_set(pvc, want)) tp_written = want;
-}
-static void tp_forget(void) { tp_written = 0; tp_pawn = tp_pvc = NULL; tp_pawni = tp_pvci = -1; n_tp_ads = 0; }
-static void tp_off(void) {
-    UObject *pvc = view_comp(local_hero());
-    if (pvc && tp_written == 2 && PVC_WANT(pvc) == 2) view_set(pvc, 1);
-    tp_on = 0;
-    tp_forget();
-}
-static void cmd_thirdperson(char *rest, Out *o) {
-    int en = !rest ? !tp_on : !_stricmp(rest, "on") ? 1 : !_stricmp(rest, "off") ? 0 : -1;
-    if (en < 0) { out_printf(o, "usage: /thirdperson [on|off]\n"); return; }
-    if (!en) { tp_off(); out_printf(o, "first person\n"); return; }
-    if (!view_comp(local_hero())) { out_printf(o, "/thirdperson: you have no hero right now\n"); return; }
-    tp_on = 1;
-    tp_sync(0);
-    out_printf(o, "third person: only your view; aiming switches to first person. /thirdperson again to go back\n");
-}
-
 static void cmd_slomo(char *rest, Out *o) {
     char *end = NULL;
     float f = rest ? strtof(rest, &end) : 0;
@@ -1142,8 +1049,6 @@ static void all_effects_off(int world_alive) {
         if (size_now != 1.f && ps_pawn(host_ps())) { float one = 1.f; cm_call(host_pc(), "ChangeSize", &one); }
         if (is_a(ue_local_pc(), "DebugCameraController")) cm_call(ue_local_pc(), "ToggleDebugCamera", NULL);
     }
-    if (world_alive) tp_off();
-    else tp_forget();   // the next chapter's hero goes third person again (tp_sync); camp turns it off with the cheats
     n_gods = 0; n_ammo = 0;
     ammo_inf = frozen = freecam = 0;
     slomo = size_now = 1.f;
@@ -1198,26 +1103,34 @@ static void set_on(int en, Out *o) {
     notice(en ? "host enabled cheats (this map's rewards aren't sent to other players' saves)" : "host disabled cheats");
 }
 
-static const char *const VERBS[] = {"cheats", "god", "heal", "revive", "ammo", "copper", "card", "fly", "noclip", "walk",
-    "tp", "freecam", "thirdperson", "size", "horde", "director", "spawn", "killall", "freeze", "slomo", "win", "lose", "unlockall", "supply"};
+// Chat verbs and who may run them (admin.c checks the permission before cheats_slash runs): /cheats is the host's,
+// every other one also needs cheats on.
+static const struct { const char *name; int perm; } VERBS[] = {{"cheats", CMD_HOST}, {"god", CMD_CHEAT},
+    {"heal", CMD_CHEAT}, {"revive", CMD_CHEAT}, {"ammo", CMD_CHEAT}, {"copper", CMD_CHEAT}, {"card", CMD_CHEAT},
+    {"fly", CMD_CHEAT}, {"noclip", CMD_CHEAT}, {"walk", CMD_CHEAT}, {"tp", CMD_CHEAT}, {"freecam", CMD_CHEAT},
+    {"size", CMD_CHEAT}, {"horde", CMD_CHEAT}, {"director", CMD_CHEAT}, {"spawn", CMD_CHEAT}, {"killall", CMD_CHEAT},
+    {"freeze", CMD_CHEAT}, {"slomo", CMD_CHEAT}, {"win", CMD_CHEAT}, {"lose", CMD_CHEAT}, {"unlockall", CMD_CHEAT},
+    {"supply", CMD_CHEAT}};
+
+int cheats_perm(const char *verb) {
+    for (int i = 0; i < (int)(sizeof VERBS / sizeof VERBS[0]); i++) if (!strcmp(VERBS[i].name, verb)) return VERBS[i].perm;
+    return -1;
+}
+int cheats_enabled(void) { return on; }
 
 static void help(Out *o) {
     out_printf(o, "cheats (host only, after /cheats on; [p] = player name, #n, me or all):\n"
                   "/god [p] [on|off]  /heal [p]  /revive [p]  /ammo infinite|off  /copper +N [p]  /card <name>|list [p]\n"
-                  "/fly [p]  /noclip  /walk [p]  /tp [p] <p|saferoom|start>  /freecam  /thirdperson  /size <x>\n"
+                  "/fly [p]  /noclip  /walk [p]  /tp [p] <p|saferoom|start>  /freecam  /size <x>\n"
                   "/horde  /director calm|build|peak  /spawn <type> [n]  /killall  /freeze  /slomo <x>  /win  /lose\n"
                   "YOUR save, permanent: /supply +N  /unlockall\n"
                   "state: cheats %s", on ? "ON" : "off");
-    if (on) out_printf(o, ", god %d, ammo %s, speed %.2f%s%s%s", n_gods, ammo_inf ? "infinite" : "normal", slomo, frozen ? ", frozen" : "",
-                       freecam ? ", freecam" : "", tp_on ? ", third person" : "");
+    if (on) out_printf(o, ", god %d, ammo %s, speed %.2f%s%s", n_gods, ammo_inf ? "infinite" : "normal", slomo, frozen ? ", frozen" : "", freecam ? ", freecam" : "");
     out_printf(o, "\n");
 }
 
-int cheats_slash(const char *verb, char *rest, Out *o) {
-    int i = 0;
-    for (; i < (int)(sizeof VERBS / sizeof VERBS[0]) && strcmp(VERBS[i], verb); i++) {}
-    if (i == (int)(sizeof VERBS / sizeof VERBS[0])) return 0;
-    if (admin_is_client()) { out_printf(o, "/%s: host only (you are a client)\n", verb); return 1; }
+// a verb from VERBS whose permission admin.c already checked
+void cheats_slash(const char *verb, char *rest, Out *o) {
     while (rest && *rest == ' ') rest++;
     if (rest && !*rest) rest = NULL;
     if (rest) { char *e = rest + strlen(rest); while (e > rest && e[-1] == ' ') *--e = 0; }
@@ -1227,10 +1140,9 @@ int cheats_slash(const char *verb, char *rest, Out *o) {
         else if (!_stricmp(rest, "on")) set_on(1, o);
         else if (!_stricmp(rest, "off")) set_on(0, o);
         else out_printf(o, "usage: /cheats on|off|help\n");
-        return 1;
+        return;
     }
-    if (!on) { out_printf(o, "/%s: cheats are off (the host types /cheats on first)\n", verb); return 1; }
-    if (!ue_world() || !game_state() || !host_pc()) { out_printf(o, "/%s: not now (loading)\n", verb); return 1; }
+    if (!ue_world() || !game_state() || !host_pc()) { out_printf(o, "/%s: not now (loading)\n", verb); return; }
     if (!strcmp(verb, "god")) cmd_god(rest, o);
     else if (!strcmp(verb, "heal")) cmd_heal(rest, o);
     else if (!strcmp(verb, "revive")) cmd_revive(rest, o);
@@ -1240,7 +1152,6 @@ int cheats_slash(const char *verb, char *rest, Out *o) {
     else if (!strcmp(verb, "fly") || !strcmp(verb, "noclip") || !strcmp(verb, "walk")) cmd_move(verb, rest, o);
     else if (!strcmp(verb, "tp")) cmd_tp(rest, o);
     else if (!strcmp(verb, "freecam")) cmd_freecam(o);
-    else if (!strcmp(verb, "thirdperson")) cmd_thirdperson(rest, o);
     else if (!strcmp(verb, "size")) cmd_size(rest, o);
     else if (!strcmp(verb, "horde")) cmd_horde(o);
     else if (!strcmp(verb, "director")) cmd_director(rest, o);
@@ -1251,7 +1162,6 @@ int cheats_slash(const char *verb, char *rest, Out *o) {
     else if (!strcmp(verb, "win") || !strcmp(verb, "lose")) cmd_endmission(!strcmp(verb, "win"), o);
     else if (!strcmp(verb, "supply")) cmd_supply(rest, o);
     else if (!strcmp(verb, "unlockall")) cmd_unlockall(rest, o);
-    return 1;
 }
 
 // Map change: per-map effects end with the map (their actors are gone); back in camp or the menus turns cheats off.
@@ -1267,10 +1177,25 @@ static void on_world_change(void) {
 
 #ifndef B4B_RELEASE
 // dev: `cheatprobe press <vk|lmb|rmb> <seconds>` holds a key or mouse button on this game's window (window messages;
-// the game ignores posted mouse buttons in play, so fire/ADS are tested through `cheatprobe bind` onto numpad keys)
-static int press_what;   // vk, or -1 lmb, -2 rmb
+// the game ignores posted mouse buttons in play; `cheatprobe input ...` sends them through SendInput instead, which
+// works for fire/ADS when the window is raised, e.g. wmctrl -a)
+static int press_what, press_si;   // vk, or -1 lmb, -2 rmb; press_si: SendInput (this prefix's own wineserver queue)
 static float press_left;
 static void press_input(int what, int down) {
+    if (press_si) {   // "hardware" input: goes through the same path as real devices (the game ignores posted mouse buttons)
+        INPUT in = {0};
+        if (what < 0) {
+            in.type = INPUT_MOUSE;
+            in.mi.dwFlags = what == -1 ? (down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP) : (down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP);
+        } else {
+            in.type = INPUT_KEYBOARD;
+            in.ki.wVk = (WORD)what;
+            in.ki.wScan = (WORD)MapVirtualKeyW(what, 0);
+            in.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+        }
+        SendInput(1, &in, sizeof in);
+        return;
+    }
     HWND w = NULL;
     while ((w = FindWindowExW(NULL, w, L"UnrealWindow", NULL))) {
         DWORD pid = 0;
@@ -1306,7 +1231,6 @@ void cheats_tick(float dt) {
         ue_world_package(w, pkg, sizeof pkg);
         if (!in_mission() || strstr(pkg, "FortHope")) {
             on = 0;
-            tp_on = 0;
             taint_world = NULL;
             LOG("cheats: off (map change out of the mission)");
             snprintf(pending_notice, sizeof pending_notice, "cheats turned off (back in camp)");
@@ -1344,7 +1268,6 @@ void cheats_tick(float dt) {
         }
         if (f8) { static Out tmp; out_reset(&tmp); cmd_freecam(&tmp); LOG("cheats: F8: %s", tmp.buf); }
     }
-    if (on && tp_on) tp_sync(dt);
 #ifndef B4B_RELEASE
     if (press_left > 0 && (press_left -= dt) <= 0) press_input(press_what, 0);
 #endif
@@ -1359,14 +1282,18 @@ void cheats_tick(float dt) {
 }
 
 #ifndef B4B_RELEASE
-// Dev CLI: `cheat <command line>` = the host typing /<command line> (e.g. `cheat god all`); `cheatprobe ...` finds
+// Dev CLI: `cheat <command line>` = the host typing /<command line> (e.g. `cheat god all`; admin.c's dispatcher, so
+// the same permission checks); `cheatprobe ...` finds
 // class paths, card names and saferooms for testing.
 int cheats_cmd(const char *verb, char *rest, Out *o) {
     if (!strcmp(verb, "cheat")) {
         if (!rest || !*rest) { help(o); return 1; }
-        char *v = strtok(rest, " "), *r = strtok(NULL, "");
-        if (v[0] == '/') v++;
-        if (!cheats_slash(v, r, o)) out_printf(o, "not a cheat command: %s\n", v);
+        if (rest[0] == '/') rest++;
+        char verb1[32];
+        size_t k = strcspn(rest, " ");
+        snprintf(verb1, sizeof verb1, "%.*s", (int)k, rest);
+        if (cheats_perm(verb1) < 0) { out_printf(o, "not a cheat command: %s\n", verb1); return 1; }
+        admin_slash(rest, o);
         return 1;
     }
     if (strcmp(verb, "cheatprobe")) return 0;
@@ -1460,9 +1387,10 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
             out_printf(o, "%s of %s: clip %d reserve %d infinite %d\n", ue_obj_name(a, b, sizeof b), owner ? ue_obj_name(owner, a2, sizeof a2) : "-",
                        clip, res, f >= 0 ? *((uint8_t *)a + f) : -1);
         }
-    } else if (what && !strcmp(what, "press") && arg) {   // press <vk|lmb|rmb> [seconds]: hold it (released by the tick)
-        char *secs = strtok(NULL, " ");
-        if (press_left > 0) press_input(press_what, 0);
+    } else if (what && (!strcmp(what, "press") || !strcmp(what, "input")) && arg) {   // press|input <vk|lmb|rmb> [seconds]:
+        char *secs = strtok(NULL, " ");                                                // hold it (released by the tick);
+        if (press_left > 0) press_input(press_what, 0);                                // input = SendInput
+        press_si = !strcmp(what, "input");
         press_what = !strcmp(arg, "lmb") ? -1 : !strcmp(arg, "rmb") ? -2 : (int)strtol(arg, NULL, 0);
         press_left = secs ? (float)atof(secs) : 0.2f;
         press_input(press_what, 1);
@@ -1492,28 +1420,6 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
             out_printf(o, "%s=%s ", ue_name(*(FName *)e, a, sizeof a), ue_name(*(FName *)(e + 0x10), b, sizeof b));
         }
         out_printf(o, "\n%d action mapping(s)\n", am->num);
-    } else if (what && !strcmp(what, "view")) {   // view [1|2|3]: the local hero's PlayerViewComponent; a digit sets the view
-        UObject *pawn = local_hero(), *pvc = view_comp(pawn);
-        if (!pvc) { out_printf(o, "no local hero / PlayerViewComponent (pawn %p)\n", (void *)(host_pc() ? ue_get_ptr(host_pc(), "Pawn") : NULL)); return 1; }
-        if (arg && arg[0] >= '1' && arg[0] <= '3') view_set(pvc, (uint8_t)(arg[0] - '0'));
-        ads_refresh(pawn);
-        uint8_t *v = (uint8_t *)pvc;
-        out_printf(o, "pawn %p %s pvc %p want %d applied %d is3p %d supports1p %d  +0x214..0x218: %d %d %d %d %d  ads %d (%d comps)\n",
-                   (void *)pawn, ue_obj_name(U_CLASS(pawn), a, sizeof a), (void *)pvc, v[0x200], v[0x201], v[0x215], v[0x148],
-                   v[0x214], v[0x215], v[0x216], v[0x217], v[0x218], hero_ads(), n_tp_ads);
-        static const struct { const char *label; int off; } tc[] = {{"ThirdPersonTags", 0x188}, {"ThirdPersonOrbitTags", 0x1a8},
-                                                                  {"ThirdPersonOccludedTags", 0x1c8}};
-        UObject *gtc = *(UObject **)(v + 0x228);
-        for (int k = 0; k < 4; k++) {
-            TArray *t = k < 3 ? (TArray *)(v + tc[k].off) : gtc ? (TArray *)((char *)gtc + 0x130) : NULL;
-            out_printf(o, "%s:", k < 3 ? tc[k].label : "owner tags");
-            for (int j = 0; t && j < t->num && j < 64; j++) out_printf(o, " %s", ue_name(((FName *)t->data)[j], b, sizeof b));
-            out_printf(o, "\n");
-        }
-        for (int k = 0; k < 2; k++) {   // camera/spring arm/mesh tags of both configs
-            FName *f = (FName *)(v + (k ? 0x14c : 0xf8));
-            out_printf(o, "%s: camera %s arm %s mesh %s\n", k ? "1P" : "3P", ue_name(f[0], a, sizeof a), ue_name(f[1], b, sizeof b), ue_name(f[2], a2, sizeof a2));
-        }
     } else if (what && !strcmp(what, "cm")) {   // the host PC's CheatManager
         UObject *pc = host_pc();
         out_printf(o, "pc %p cheatmanager %p class %p\n", (void *)pc, (void *)(pc ? ue_get_ptr(pc, "CheatManager") : NULL),

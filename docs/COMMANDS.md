@@ -29,6 +29,7 @@ Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](
 | `/players` | Lists everyone in the game, with numbers | `/players` |
 | `/ping` | Your ping to the host | `/ping` |
 | `/flashlight` | Turns your flashlight on or off | `/flashlight`, `/flashlight on` |
+| `/thirdperson` | Over-the-shoulder camera for your own hero | `/thirdperson`, `/thirdperson off` |
 | `/join steam:<id>` | Joins a friend by their Steam ID | `/join steam:7656119XXXXXXXXXX` |
 | `/leave` | Leaves the host's game, back to your own Fort Hope | `/leave` |
 | `/host` | Starts hosting your Fort Hope (only needed with `host=0`) | `/host` |
@@ -46,6 +47,17 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 - Your manual choice sticks: walking into a dark or bright area no longer switches it for you, until the next map.
 - `/flashlight auto` (host only) hands your light back to the game's automatic switching right away. On a client
   it replies `auto: host only (a client's override lasts until the next map)`.
+
+**`/thirdperson`**: no word = toggle. Also `on`, `off`, `status`.
+- A third-person camera behind your own hero. **Aiming** (right mouse) switches to first person while you hold it,
+  and back when you let go.
+- Only your own view changes: the other players see nothing different, and nothing is sent to them. Host and clients
+  can each use it; cheats aren't needed.
+- It stays on until you type `/thirdperson` again: into the next chapter, back in Fort Hope, and in someone else's
+  game. It isn't saved: after restarting the game you start in first person.
+- Moments where the game itself switches to a view from behind (healing, being grabbed or pounced, ...) are left to
+  the game.
+- There is no third-person crosshair: the normal centre-of-screen one is used.
 
 **`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope.
 - `<id>` is the host's 17-digit Steam ID. The host finds it in Steam: click your account name at the top right →
@@ -174,7 +186,6 @@ number then.
 | `/tp <player\|saferoom\|start>` | Teleports you to a player, to this map's end saferoom, or back to its start saferoom. Entering the end saferoom with the whole team can end the chapter, as walking in would. | `/tp saferoom`, `/tp Mellon` |
 | `/tp <player\|all> <player\|me\|saferoom\|start>` | Teleports a player (or everyone) somewhere; each gets their own spot. | `/tp all me`, `/tp #2 start` |
 | `/freecam` | A free-flying camera for your own view only; your hero stays where it is. **Press F8 to come back** (the chat doesn't work while it's on). | `/freecam` |
-| `/thirdperson [on\|off]` | Over-the-shoulder third-person view of your own hero; aiming (right mouse) switches to first person while you hold it. Only your view changes. Stays on into the next chapter; `/thirdperson` again goes back. | `/thirdperson` |
 | `/size <0.25-4>` | Your own hero's size (1 = normal). Only you see it. | `/size 2` |
 
 ### World and director

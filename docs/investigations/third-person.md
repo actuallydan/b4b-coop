@@ -1,7 +1,8 @@
-# Third-person view cheat (#25)
+# Third-person view (#25)
 
-Spike 2026-09-25, build 14216215, `launch/multi.sh 2` on Proton. Result: **works**, prototyped as `/thirdperson`
-(cheats.c, host-only cheat like the rest of #14). No gameplay tag is added; the view byte is written directly.
+Spike 2026-09-25, build 14216215, `launch/multi.sh 2` on Proton. Result: **works**. First prototyped as a host-only
+cheat; now a personal chat command for everyone: `/thirdperson` (`native/src/thirdperson.c`, permission
+`CMD_ANYONE`, no `/cheats on`). No gameplay tag is added; the view byte is written directly.
 
 ## How the hero's view is chosen
 `PlayerViewComponent` (on `Hero_BP_C`, found as the live component whose `OwnerPrivate` (+0xD8) is the pawn):
@@ -34,43 +35,54 @@ Spike 2026-09-25, build 14216215, `launch/multi.sh 2` on Proton. Result: **works
   at yaw -87 both views report `GetCameraRotation` (0, -87, 0); 3P camera at (11257, 466, 765) vs 1P (11268, 251, 765)
   = 215 units behind, slightly to the side.
 
-## Implementation (`native/src/cheats.c`, "third person")
-- `/thirdperson [on|off]`: write +0x200 = 2 and call UpdateView(pvc, 1) (signature-checked, 22 bytes).
+## Implementation (`native/src/thirdperson.c`)
+- `/thirdperson [on|off|status]` (no word = toggle): write +0x200 = 2 and call UpdateView(pvc, 1) (signature-checked,
+  22 bytes).
 - Every tick while on: ADS = any of the hero's `ADSComponent`s (owner weapon's Owner == hero, refreshed every 1 s)
   with `bIsHoldingADS` → want 1, else 2. A 2 the game wrote itself (tag-driven, e.g. healing, pounced) or orbit (3) is
   left alone; when the game drops back to 1 we write 2 again.
-- Off: `/thirdperson` again, `/cheats off` (restores 1P), camp (cheats off). A map change inside the mission keeps it
-  on: the next chapter's new hero is switched by the tick.
+- Lifetime: on until `/thirdperson` again or the game quits (not saved). A new local hero (next chapter, camp, another
+  host's session, bot take-over) is found by the tick and switched; `/cheats off` and camp don't touch it.
 - Local only: nothing is replicated (`RepViewData` only carries an orbit rotation), every machine picks its own hero's
-  view; others always see the 3P body. No protocol change.
+  view; others always see the 3P body. No protocol change (CLAUDE.md "Versioning": neither side needs anything from
+  the other).
+- Permission: admin.c's dispatcher checks every chat command's `CMD_ANYONE` / `CMD_HOST` / `CMD_CHEAT` (cmds.h)
+  before its handler; cheats.c's verbs report theirs through `cheats_perm()`.
 
-## Verified live
+## Verified live (spike, as a host-only cheat)
 - Camp and mission: host `want 2 applied 2 is3p 1`, camera behind the hero (screenshots). Client's view of the host
   hero unchanged.
 - Move: W held 2 s in 3P moved the hero (11268,251 → 10749,170).
 - ADS flip: `HeroADSKeyboard` bound to NumPad1 (dev `cheatprobe bind`), held 3 s: `want 1 ... ads 1` (iron sights on
   screen), released: back to `want 2 ... ads 0`.
 - Flashlight in 3P: `flashlight on` on host and client, `light=on`, beam visible on the wall from the client's 3P view.
-- Client: `cheatprobe view 2` on the client works the same (local camera only; the host sees nothing different).
+- Client: `cheatprobe view 2` (now `thirdperson view 2`) on the client works the same (local camera only; the host sees nothing different).
   `/thirdperson` on a client answers "host only" (cheat convention).
 - Chat path: `type "/cheats on"`, `type "/thirdperson"` on the host. `endmission 1` → next chapter (1-3): new pawn in
   3P by itself (`cheats ON ... third person`); `/cheats off` → `want 1 applied 1`.
 
+## Verified live, as a personal command (2026-09-25, `multi.sh 2`)
+- Client typed `/thirdperson` in chat (`type`), cheats off: client `want 2 applied 2 is3p 1`, camera behind its hero
+  (screenshot); host `want 1`. Host typed it too: both 3P. Client `/god`, `/cheats on` → "host only"; host `/god`
+  without cheats → "cheats are off".
+- Camp → mission (character select, ready) → both heroes 3P by themselves; `endmission 1` → 1-3: both new pawns 3P.
+- ADS flip on host and client: right mouse via `cheatprobe input rmb 3` (SendInput, window raised with wmctrl) →
+  `want 1 ... ads 1`, released → `want 2`. (Posted messages and a NumPad1 `HeroADSKeyboard` binding didn't aim.)
+- **Fire and reload in 3P**: host `input lmb 1` → SMG clip 32 → 16, impacts around the screen centre (a bot and the
+  floor in front); `input 0x52` (R) → 32. Client: pistol 15 → 14, R → 15. The view stays 3P (`want 2`).
+- Client `/thirdperson off` (typed) → `want 1 applied 1`; host still 3P.
+
 ## Not verified
-- **Shooting / reload in 3P.** The test harness can't press fire: posted `WM_LBUTTONDOWN` is ignored in play (Slate
-  uses the real cursor position; the game window never has the real cursor), and fire is the axis `PrimaryAbility`
-  (LeftMouseButton, from `PlayerSettingsGame.sav`); an extra axis mapping to NumPad2 via
-  `InputSettings.AddAxisMapping` did not fire (1P either), unlike the ADS action mapping. Reload needs a non-full clip.
-  Nothing in the switch touches input (no tags, no input locks; movement and ADS input still work), so this is
-  expected to work but needs a 30 s hand test: aim at a wall in 3P, fire, check the impacts land at screen centre
-  (the 3P camera is 215 units behind; the game has no 3P reticle, so the crosshair is the 1P one).
+- Precise aim: whether hits land exactly under the crosshair at range (the 3P camera is 215 units behind and a little
+  to the side; the game has no 3P reticle, the 1P one is used). Needs a hand test at a wall.
 - Incap / pounced / healing while on (the game's own 3P tags): logic leaves those views alone; not exercised.
 
 ## Dev tools added (dev builds)
-`cheatprobe view [1|2|3]` (dump the component, tag lists, owner tags, ADS; a digit sets the view),
-`cheatprobe press <vk|lmb|rmb> [s]` (hold a key via window messages), `cheatprobe bind [axis] [<Name> <Key>]` (list /
-add input mappings; not saved).
+`thirdperson view [1|2|3]` (dump the component, tag lists, owner tags, each ADS component; a digit sets the view),
+`thirdperson [on|off|status]` (the chat command), `cheatprobe press <vk|lmb|rmb> [s]` (hold a key via window
+messages), `cheatprobe input <vk|lmb|rmb> [s]` (the same through SendInput: the prefix's own wineserver input queue,
+works for mouse buttons when the window is raised; this is how fire/ADS are tested), `cheatprobe bind [axis] [<Name>
+<Key>]` (list / add input mappings; not saved).
 
 ## Open
-- Personal option instead of a cheat? It is purely local and would work on clients as is; kept host-only per #14's
-  rules. Making it a player setting (ini/`/thirdperson` for everyone) is a one-line change in `cheats_slash`.
+- A hotkey (like `flashlight_key`) or an ini default could follow if players want it.

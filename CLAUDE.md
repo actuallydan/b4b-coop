@@ -63,13 +63,18 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     on the dev CLI) and the host's PreLogin gate (join policy first, then the b4bcoop protocol (`?b4bcoop=` login
     option; mismatch → "Host runs b4bcoop X (protocol N); you have Y (protocol M). Everyone needs the same version."
     on both sides), then bans in `b4bcoop-bans.txt`, lock). B4B's PreLogin gets the options as a parsed TArray of
-    {FString key, value} (`options_str`), not one FString.
-    docs/investigations/chat-commands.md.
+    {FString key, value} (`options_str`), not one FString. Every chat command has a permission (`cmds.h`: `CMD_ANYONE`
+    own game only / `CMD_HOST` / `CMD_CHEAT` host + cheats on; admin.c `CMDS`, cheats.c `VERBS` via `cheats_perm()`),
+    checked once in `admin_slash` before any handler. docs/investigations/chat-commands.md.
   - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
-    /card /fly /noclip /walk /tp /freecam /thirdperson /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
+    /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
     own save `/supply /unlockall`); off again back in camp; every cheat touching others is a host notice; a map with
     cheats on sends remote players no rewards (rewards.c), stats or achievements. Dev `cheat <cmd>`, `cheatprobe`.
     Player reference: the Cheats section of `docs/COMMANDS.md`. Host-side only, no protocol bump.
+  - `thirdperson.c` `/thirdperson` (CMD_ANYONE, host and clients, no cheats): the local hero's own over-the-shoulder
+    camera (PlayerViewComponent +0x200 + UpdateView), first person while aiming, game's own 3P moments left alone; on
+    until toggled off (all maps, sessions; not saved). Local only, no protocol bump. Dev `thirdperson view [1|2|3]`.
+    docs/investigations/third-person.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
