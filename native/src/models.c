@@ -1358,14 +1358,18 @@ static void models_panel(void) {
 
     ov_heading("Host");
     ov_begin_perm(CMD_HOST);
-    int on = !locked;
+    int on = client ? host_off != 1 : !locked;   // a client shows what the host's notices said
     if (ov_checkbox("Model swaps allowed##models", &on)) ov_run(on ? "models on" : "models off");
     ov_tooltip("Off (/models off): every swapped look goes back to normal; nobody can wear another survivor's outfit, an "
                "NPC body, an add-on outfit or a weapon look. A player's own survivor's outfits stay allowed.");
-    int none = !strcmp(addons_policy_name(), "none");
-    ov_text_dim("Players' add-on outfits and weapon looks: %s (add-on policy %s, Add-ons tab).", none ? "refused" : "allowed",
-                addons_policy_name());
-    if (n_refused) ov_text_dim("Looks refused this session: %d.", n_refused);
+    if (client) ov_text_dim("%s", host_off < 0 ? "The host's setting is shown once it announces a change or refuses a look."
+                                               : "As the host last announced.");
+    else {
+        int none = !strcmp(addons_policy_name(), "none");
+        ov_text_dim("Players' add-on outfits and weapon looks: %s (add-on policy %s, Add-ons tab).", none ? "refused" : "allowed",
+                    addons_policy_name());
+        if (n_refused) ov_text_dim("Looks refused this session: %d.", n_refused);
+    }
     if (ov_button("Status in the log (/models)")) ov_run("models");
     ov_end_perm();
 }

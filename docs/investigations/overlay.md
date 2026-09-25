@@ -21,7 +21,8 @@ command has a control (checklist below); the chat commands stay.
 
 ## Panel registry (overlay.h)
 - `overlay_add_panel(name, order, draw)` from a module's init; a tab per panel, sorted by order (Session 10, Players 20,
-  Camera 30, Flashlight 40, Cheats 50, Add-ons 70 (addons.c, models branch), Settings 90, Help 100; Models 60 next).
+  Camera 30, Flashlight 40, Cheats 50, Models 60 (models.c, models branch), Add-ons 70 (addons.c, models branch), Settings 90,
+  Help 100).
 - Widgets: `ov_text/_dim/_warn`, `ov_heading`, `ov_button`, `ov_button_confirm` (second click within 3 s),
   `ov_checkbox`, `ov_radio`, `ov_selectable` (list row), `ov_slider(_int)` + `ov_edit_done`, `ov_input_text/int`, `ov_combo`, `ov_key`, tables,
   `ov_tooltip`, `ov_copy`.
@@ -69,6 +70,10 @@ command has a control (checklist below); the chat commands stay.
 | `/addons [list]`, `/addons info <#>` (anyone) | Add-ons: table in load order (on, #, title + state / "not loaded: why", kind), conflicts; click a row = details (author, description, content class + first gameplay file, id Copy, outfits it adds, its conflicts, `/addons info` button); folder path Copy; "Load add-ons" (`addons`, restart) |
 | `/addons on\|off <#>` (anyone) | Add-ons: the row's checkbox (runs `/addons on\|off <file>`); beyond the chat: Up/Down (load order, `addons_move`), banner while `addonlist.txt` differs from what is mounted; hand edits of the file are re-read |
 | `/addons players`, `/addons policy` (host) | Add-ons: policy radios (`addons_policy`, saved + live via `addons_live`), players' summaries table, `/addons players` button; greyed on a client |
+| `/model`, `/model list [<survivor>\|npc\|outfits\|weapons]` (anyone) | Models: "Your look" (now, your pick, host refusal), `/model` button; lists Survivors (header per survivor: whole survivor + outfits/heads/torsos/legs) / NPC bodies (grouped) / Add-on outfits (by add-on), search box; Weapon looks per weapon type with the add-on |
+| `/model <name>`, `/model reset` (anyone) | Models: click a name (runs `/model <name>`), Use per weapon look, Reset my look; beyond the chat: Reset per weapon type (`wlooks_reset_code`) |
+| `/model <player> <name>\|reset` (host) | Models: "Change the look of" combo (then click a look), Everyone's look table: Change / Reset per row (greyed on a client) |
+| `/models [on\|off]` (host) | Models: "Model swaps allowed" checkbox (client: greyed, shows the host's last announced state), `/models` button, add-on policy line |
 | ini keys | Settings: text size, overlay/flashlight/third-person keys; Camera: `thirdperson*`; Flashlight: sticky; Session: `presence`, `allow_joins`, `allow_steamids` |
 
 Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID Copy.
