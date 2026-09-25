@@ -6,32 +6,41 @@ Unofficial private co-op for **Back 4 Blood**: play the game's offline mode toge
 > Unofficial and unaffiliated. For playing a game you own with friends in offline mode. It never touches the
 > official online services. Use at your own risk. See [Safety & disclaimer](#safety--disclaimer).
 
-All chat commands and options: [docs/COMMANDS.md](docs/COMMANDS.md).
 
 ## Install
-Same steps on Windows, Linux and Steam Deck. **Everyone who plays together installs it, and everyone needs the same
+> Upgrading from an older b4bcoop? Do step 3 of [Uninstall](#uninstall) first.
+
+**Everyone who plays together installs it, and everyone needs the same
 version.**
 
-1. Download the latest `b4bcoop-<version>.zip` from [Releases](../../releases).
-2. Open the game folder: in Steam, right-click **Back 4 Blood** → **Manage** → **Browse local files**. A folder opens
-   that contains `Back4Blood.exe` and a folder named `Gobi`. (Usually `C:\Program Files (x86)\Steam\steamapps\common\Back 4 Blood`
-   on Windows, `~/.local/share/Steam/steamapps/common/Back 4 Blood` on Linux and Steam Deck.) On Steam Deck, do this
-   in Desktop Mode.
-3. Extract **everything** from the zip into that folder. The zip has the same layout as the game folder, so its `Gobi`
-   folder merges into the game's `Gobi` folder (say yes if asked to merge). No game file is replaced. You get:
+1. Download the latest version of the .zip file from [Releases](../../releases).
+    - Should appear as `b4bcoop-<version>.zip`
+2. Open the game folder: 
+    1. in Steam, right-click **Back 4 Blood** 
+    1. Click **Manage**
+    1. Click **Browse local files**. 
+    1. A folder should open that contains `Back4Blood.exe` and a folder named `Gobi`. 
+        1. On Windows this is usually `C:\Program Files (x86)\Steam\steamapps\common\Back 4 Blood` 
+        1. On Linux/Steam Deck: `~/.local/share/Steam/steamapps/common/Back 4 Blood`
+
+3. Extract **everything** from the zip into that folder. 
+    1. The zip has the same layout as the game folder, so its `Gobi`
+   folder merges into the game's `Gobi` folder. No game file is replaced. You get:
    ```
    Back 4 Blood\xinput1_3.dll                          (next to Back4Blood.exe)
    Back 4 Blood\b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt
    Back 4 Blood\Gobi\Binaries\Win64\X3DAudio1_7.dll     (the mod)
    Back 4 Blood\Gobi\Binaries\Win64\b4bcoop.ini         (settings, optional)
    ```
-4. That's all: no launch options, no scripts. (Coming from an older b4bcoop? Do step 3 of [Remove](#remove) first.)
+4. say **Yes** if asked to merge   
+
+*That's all: no launch options, no scripts to run manually.*
 
 ## Play
 1. Press **Play** in Steam. Steam itself must be online: joins go through Steam.
-2. At the title screen, sign in and choose **Offline**.
+2. At the Back 4 Blood title screen, sign in and choose **Offline**.
 3. In Fort Hope you are **hosting automatically**: your Steam friends see **Join Game** on you in their Steam friends
-   list. Nothing to set up, no ports to open.
+   list.
 4. Start missions from the war table as usual. Everyone in your game follows you in.
 
 **Join a friend:** in the Steam friends list, right-click your friend while they are in Back 4 Blood → **Join Game**,
@@ -52,10 +61,20 @@ it on. Every option, with defaults and examples: [docs/COMMANDS.md](docs/COMMAND
 - `host_ip=1`: **advanced**, only if you know you need it: host and join by IP address instead of through Steam. Needs
   port forwarding (UDP 7777) and triggers the Windows Firewall prompt. Everyone in the game needs it.
 
-## Remove
+All chat commands and options: [docs/COMMANDS.md](docs/COMMANDS.md).
+
+## Uninstall
 Delete these files from the game folder (Steam → right-click Back 4 Blood → Manage → Browse local files):
-1. Next to `Back4Blood.exe`: `xinput1_3.dll`, `b4bcoop-README.txt`, `b4bcoop-COMMANDS.txt`, `b4bcoop-LICENSE.txt`.
-2. In `Gobi\Binaries\Win64`: `X3DAudio1_7.dll`, `b4bcoop.ini`, all `b4bcoop-*.log` files, and `b4bcoop-bans.txt`
+1. Next to `Back4Blood.exe`: 
+    - `xinput1_3.dll`
+    - `b4bcoop-README.txt`
+    - `b4bcoop-COMMANDS.txt`
+    - `b4bcoop-LICENSE.txt`.
+2. In `Gobi\Binaries\Win64`:
+    - `X3DAudio1_7.dll`
+    - `b4bcoop.ini`
+    - all `b4bcoop-*.log` files
+    - and `b4bcoop-bans.txt`
    (only there if you banned someone).
 3. Left over from older versions, if present, in `Gobi\Binaries\Win64`: `dwmapi.dll`, `Play B4B co-op.cmd`,
    `steam_appid.txt`. On Linux also remove the launch option `WINEDLLOVERRIDES="dwmapi=n,b" %command%`
@@ -80,13 +99,21 @@ progress stays either way.
   right → Account details), and you type `/join steam:<that number>` in the game's chat while in your own Fort Hope.
 
 ## Status
-Working: hosting, joining through Steam (no port forwarding), following into missions and across chapters, taking
-over bot slots, your own deck, **your own rewards** (supply points etc. land in your profile), **burn cards** for
-everyone, **no third-party network traffic** in offline co-op, a **manual flashlight toggle** (L), optional
-**5-player** sessions (`teamsize=5` on the host), and a clean "Server full." instead of a host crash when too many
+
+The mod works notionally. Development is in progress and it still requires rigorous testing.
+
+Hosting, joining through Steam (no port forwarding required), following into missions and across chapters, taking over bot slots, using your own deck, **your own rewards** (supply points etc. land in your profile), **burn cards** for everyone.
+
+The game has almost the entire retail experience with **no third-party network traffic**.
+
+So far we've implemented:
+- a **manual flashlight toggle** (L), optional
+- **5-player+** sessions (`teamsize=5` on the host), and a clean "Server full." instead of a host crash when too many
 join. Steam joins between two real accounts are verified; clicking Join Game in Steam's own friends list is new in
-this version and not yet tested between two accounts. Verified on Linux (Proton); Windows see Troubleshooting.
-Supports the current Steam build only; the mod checks the build and does nothing on a mismatch.
+this version and not yet tested between two accounts.
+
+- Verified on Linux (Proton) and Windows (see Troubleshooting).
+- Supports the current Steam build only; the mod checks the build and does nothing on a mismatch presently.
 
 ## Safety & disclaimer
 - **Unofficial.** Not made, endorsed or supported by Turtle Rock Studios or Warner Bros. Games.
