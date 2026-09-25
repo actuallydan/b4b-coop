@@ -600,7 +600,7 @@ void admin_ready(const char *rest, Out *o) {
 static const struct { const char *name; int perm; const char *usage; } CMDS[] = {
     {"help", CMD_ANYONE, "/help"}, {"join", CMD_ANYONE, "/join steam:<id64> (or <ip[:port]> with host_ip=1)"},
     {"host", CMD_ANYONE, "/host"}, {"leave", CMD_ANYONE, "/leave"}, {"players", CMD_ANYONE, "/players"},
-    {"flashlight", CMD_ANYONE, "/flashlight [on|off|auto]"}, {"thirdperson", CMD_ANYONE, "/thirdperson [on|off]"},
+    {"flashlight", CMD_ANYONE, "/flashlight [on|off|auto]"}, {"thirdperson", CMD_ANYONE, "/thirdperson [on|off|distance|side|height|fov|reset]"},
     {"ping", CMD_ANYONE, "/ping"},
     {"kick", CMD_HOST, "/kick <name|#>"}, {"ban", CMD_HOST, "/ban <name|#>"}, {"unban", CMD_HOST, "/unban <name|steam:id|#n|all>"},
     {"bans", CMD_HOST, "/bans"}, {"lock", CMD_HOST, "/lock"}, {"unlock", CMD_HOST, "/unlock"}, {"teamsize", CMD_HOST, "/teamsize N"},
