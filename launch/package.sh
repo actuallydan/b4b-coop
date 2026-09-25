@@ -5,7 +5,7 @@
 #   xinput1_3.dll                         Windows: lets a normal Steam "Play" skip the EAC bootstrapper
 #   Gobi/Binaries/Win64/X3DAudio1_7.dll   the mod (Windows and Linux/Steam Deck, no launch options)
 #   Gobi/Binaries/Win64/b4bcoop.ini       settings (all optional: no ini = host by default, Steam joins only)
-#   b4bcoop-README.txt, b4bcoop-LICENSE.txt
+#   b4bcoop-README.txt, b4bcoop-COMMANDS.txt (docs/COMMANDS.md, CRLF), b4bcoop-LICENSE.txt
 # Plus dist/SHA256SUMS. The zip is reproducible. CI runs this on a v* tag (.github/workflows/release.yml).
 # b4bcoop-README.txt mirrors README.md's Install / Play / Options / Remove / Troubleshooting sections: keep them in sync.
 set -euo pipefail
@@ -20,6 +20,7 @@ rm -rf "$out" "$dist/b4bcoop-legacy" "$dist"/b4bcoop*.zip; mkdir -p "$out/Gobi/B
 cp "$rel/xinput1_3.dll" "$out/"
 cp "$rel/X3DAudio1_7.dll" "$out/Gobi/Binaries/Win64/"
 cp "$root/LICENSE" "$out/b4bcoop-LICENSE.txt"
+sed 's/$/\r/' "$root/docs/COMMANDS.md" > "$out/b4bcoop-COMMANDS.txt"
 ini="$out/Gobi/Binaries/Win64/b4bcoop.ini"
 cat > "$ini" <<'INI'
 ; b4bcoop settings. Everything here is optional: with no changes you host automatically in offline Fort Hope,
@@ -32,7 +33,7 @@ cat > "$ini" <<'INI'
 ; Host only: allow 5 survivors (default 4).
 ;teamsize=5
 
-; Flashlight toggle key (default L; 0 disables it).
+; Flashlight toggle key (default L; off disables it).
 ;flashlight_key=L
 
 ; Host only: who may join. Default: only your Steam friends. "anyone" also lets in people who aren't.
@@ -60,7 +61,7 @@ INSTALL (Windows, Linux and Steam Deck - the same steps)
 2. Extract EVERYTHING from this zip into that folder. The zip's Gobi folder merges into the game's
    Gobi folder (say yes if asked to merge). No game file is replaced. You get:
      xinput1_3.dll                          next to Back4Blood.exe
-     b4bcoop-README.txt, b4bcoop-LICENSE.txt
+     b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt
      Gobi\Binaries\Win64\X3DAudio1_7.dll    the mod
      Gobi\Binaries\Win64\b4bcoop.ini        settings (optional)
 3. That's all: no launch options, no scripts.
@@ -74,18 +75,20 @@ PLAY
 JOIN A FRIEND: in the Steam friends list, right-click your friend while they are in Back 4 Blood >
 Join Game, or accept their Steam invite. Works with your game closed or running.
 Only the host's Steam friends can join. Type /help in the game's chat for the chat commands.
+All chat commands and options, with examples: b4bcoop-COMMANDS.txt (next to this file).
 
 OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, remove the ';' in front of a line.
   host=0             don't host; your offline game stays private
   teamsize=5         (host) 5 survivors instead of 4
-  flashlight_key=L   the flashlight toggle key (0 turns it off)
+  flashlight_key=L   the flashlight toggle key (off turns it off)
   allow_joins=anyone (host) also let in people who aren't your Steam friends;
                      or allow_steamids=<17-digit Steam ID> for one person
   host_ip=1          ADVANCED: host and join by IP address instead of through Steam. Needs port
                      forwarding (UDP 7777) and triggers the Windows Firewall prompt.
+  More options and details: b4bcoop-COMMANDS.txt.
 
 REMOVE: delete these files from the game folder.
-1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-LICENSE.txt
+1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt
 2. In Gobi\Binaries\Win64: X3DAudio1_7.dll, b4bcoop.ini, all b4bcoop-*.log files, and b4bcoop-bans.txt
    (only there if you banned someone).
 3. Left over from older versions, if present, in Gobi\Binaries\Win64: dwmapi.dll, "Play B4B co-op.cmd",

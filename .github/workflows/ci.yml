@@ -30,7 +30,7 @@ jobs:
       - name: Check the player zip layout and that its DLLs have no dev code
         run: |
           # the zip mirrors the game folder (docs/investigations/launch.md)
-          want="Gobi/Binaries/Win64/X3DAudio1_7.dll Gobi/Binaries/Win64/b4bcoop.ini b4bcoop-LICENSE.txt b4bcoop-README.txt xinput1_3.dll"
+          want="Gobi/Binaries/Win64/X3DAudio1_7.dll Gobi/Binaries/Win64/b4bcoop.ini b4bcoop-COMMANDS.txt b4bcoop-LICENSE.txt b4bcoop-README.txt xinput1_3.dll"
           zip="dist/b4bcoop-$(sed -n 's/^version=//p' VERSION).zip"   # named after VERSION
           got=$(unzip -Z1 "$zip" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
           [ "$got" = "$want" ] || { echo "::error::unexpected zip contents: $got"; exit 1; }
