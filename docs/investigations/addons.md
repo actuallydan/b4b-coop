@@ -183,3 +183,4 @@ the others see vanilla. Code: `native/src/addons_mp.c`, gate in `admin.c` PreLog
   against 7 summaries (none, empty, cosmetic only, gameplay, unlisted `+n`, junk), `/addons players|policy`, a pak
   whose addoninfo claims `content=cosmetic` for a data table (logged, classified gameplay).
 - `tools/e2e.py --quick` checks the summary in the login and `/addons players` on the host.
+- `tools/e2e.py --quick` on this branch's dev build: 13/13 PASS (incl. the new add-ons check).
