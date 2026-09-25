@@ -2,6 +2,8 @@
 """Create/refresh an isolated Proton prefix for local test instance N (never touches the real prefix).
 
     testprefix.py N [--fresh] [--blank] [--host | --join ADDR] [--force]   (--host: no join=, i.e. the default: host)
+    testprefix.py N --golden [--force]    take the golden profile snapshot now (from the current profile)
+    testprefix.py N --restore             put the golden profile back (tools/e2e.py does this before every run)
 
 Prefix:  ~/.local/share/b4b-coop/prefixes/test<N>  (cloned from steamapps/compatdata/924970, ~600 MB)
          B4B_LANE=2: ~/.local/share/b4b-coop/prefixes/lane2/test<N> (same source; tools/lane.py)
@@ -12,14 +14,21 @@ distinguishable identity. The profile's source of truth is the AES-encrypted Pla
 next to it is only an export the game overwrites, so editing it (deck names etc.) has no effect.
 Refuses (exit 1) to change a prefix while a game process runs on it (B4B_PREFIX in /proc/<pid>/environ, as
 launch/multi-stop.sh matches), unless --force. Change prefixes only while holding launch/gamelock.sh.
+Golden profile: <prefix>/profile-golden/ holds a known-good copy of PlayerProfileSettings.sav/.json, taken at clone
+time (or, for an older prefix, the first time it is needed: the current profile if it is healthy, else the real
+prefix's). tools/e2e.py restores it before every run, so a client profile the game wiped to a blank one (sign-in
+"HydraPublicId mismatch", docs/investigations/test-profiles.md) or a half-written save heals itself. --blank keeps it.
 """
-import os, re, shutil, subprocess, sys
+import datetime, json, os, re, shutil, subprocess, sys
 import lane
 
 STEAM = os.path.expanduser("~/.local/share/Steam")
 REAL = os.path.join(STEAM, "steamapps/compatdata/924970")
 ROOT = lane.ROOT
 SAVED = "pfx/drive_c/users/steamuser/AppData/Local/Back4Blood/Steam/Saved"
+SAVES = SAVED + "/SaveGames"
+PROFILE_FILES = ("PlayerProfileSettings.sav", "PlayerProfileSettings.json")
+GOLDEN = "profile-golden"
 
 # Registered cvars in this build (strings next to their registration): skip intro movies/MOTD/tutorials, start
 # sign-in without "press any key". The Online/Offline popup has no cvar; the agent answers it (offline=1).
@@ -79,6 +88,60 @@ def blank_profile(dst):
         if os.path.exists(f): os.remove(f)
 
 
+def profile_health(saves_dir):
+    """(ok, why) for the profile in a SaveGames dir: ok = both files there and the .json export has decks and SP (a
+    profile the game reset is 'publicId offline.<id>', no decks, 0 SP)."""
+    if not all(os.path.exists(os.path.join(saves_dir, f)) for f in PROFILE_FILES): return False, "missing"
+    try:
+        prof = json.load(open(os.path.join(saves_dir, PROFILE_FILES[1])))
+    except (OSError, ValueError) as e:
+        return False, f"unreadable .json ({e.__class__.__name__})"
+    od = prof.get("offlineData", {})
+    decks, sp = len(od.get("decks", [])), od.get("supplyPoints", {}).get("acquired", 0)
+    why = f"publicId {prof.get('publicId') or '-'}, {decks} deck(s), SP {sp}, " \
+          f"{os.path.getsize(os.path.join(saves_dir, PROFILE_FILES[0]))} B"
+    return decks > 0 and sp > 0, why
+
+
+def _copy_profile(src_dir, dst_dir):
+    tmp = dst_dir.rstrip("/") + ".tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    for f in PROFILE_FILES: shutil.copy2(os.path.join(src_dir, f), os.path.join(tmp, f))
+    if os.path.basename(dst_dir.rstrip("/")) == GOLDEN:
+        shutil.rmtree(dst_dir, ignore_errors=True)
+        os.rename(tmp, dst_dir)
+    else:   # the live SaveGames dir: replace the two files only (rename each, never a half-written file)
+        os.makedirs(dst_dir, exist_ok=True)
+        for f in PROFILE_FILES: os.replace(os.path.join(tmp, f), os.path.join(dst_dir, f))
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def snapshot_golden(dst, allow_unhealthy=False):
+    """Golden = the prefix's current profile if healthy, else the real prefix's. Returns a one-line description."""
+    src, note = os.path.join(dst, SAVES), "current profile"
+    ok, why = profile_health(src)
+    if not ok and not allow_unhealthy:
+        src, note = os.path.join(REAL, SAVES), f"real prefix's profile (current one: {why})"
+        ok, why = profile_health(src)
+        if not ok: raise SystemExit(f"testprefix.py: no healthy profile for a golden snapshot ({why})")
+    _copy_profile(src, os.path.join(dst, GOLDEN))
+    return f"golden snapshot from the {note}: {why}"
+
+
+def restore_golden(dst):
+    """Put the golden profile back into the prefix (created first if missing). Returns a one-line description."""
+    g, saves = os.path.join(dst, GOLDEN), os.path.join(dst, SAVES)
+    made = "" if profile_health(g)[0] else snapshot_golden(dst) + "; "
+    was = profile_health(saves)[1]
+    if all(os.path.exists(os.path.join(saves, f)) and open(os.path.join(saves, f), "rb").read()
+           == open(os.path.join(g, f), "rb").read() for f in PROFILE_FILES):
+        return made + f"profile = golden ({was})"
+    _copy_profile(g, saves)
+    t = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(g, PROFILE_FILES[0])))
+    return made + f"restored golden profile of {t:%Y-%m-%d %H:%M} ({profile_health(saves)[1]}); was: {was}"
+
+
 def write_config(dst, n, join):
     # The host needs no host= line: hosting is the default (what a player gets), join= turns it off.
     lines = ["offline=1"]
@@ -117,6 +180,11 @@ def main():
         shutil.rmtree(dst, ignore_errors=True)
         clone(dst)
         patch(dst)
+        if profile_health(os.path.join(dst, SAVES))[0]: snapshot_golden(dst)
+    if "--golden" in args:
+        print(f"test{n}: " + snapshot_golden(dst, allow_unhealthy="--force" in args)); return
+    if "--restore" in args:
+        print(f"test{n}: " + restore_golden(dst)); return
     if "--blank" in args:
         blank_profile(dst)
     join = args[args.index("--join") + 1] if "--join" in args else ""

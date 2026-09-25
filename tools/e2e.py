@@ -15,6 +15,9 @@
 Uses the installed DLL as is (launch/install.sh first). Holds launch/gamelock.sh as "e2e" unless --no-lock (the
 caller already holds it). Everything (logs, agent outputs, profile snapshots and diffs, ss samples, screenshots) goes
 to a timestamped directory, default /tmp/b4b-e2e-<time>. Exit status 1 if any check failed.
+Before each session every prefix it uses gets its golden profile back (tools/testprefix.py --restore; logged as
+"profile testN: ..."), so a profile the game wiped or a run left behind never breaks the next run; the profile checks
+still diff this run's before/after. --keep-profiles skips the restore.
 B4B_LANE=2 runs it on the second live-test lane (launch/lane.sh: Flatpak game copy, its own lock, prefixes, ports and
 window names; artifacts /tmp/b4b-e2e-l2-<time>); both lanes can run at the same time.
 """
@@ -22,11 +25,13 @@ import argparse, datetime, glob, ipaddress, json, os, re, shutil, socket, subpro
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from lane import LANE, GAME, ROOT, PORT_BASE, WIN   # B4B_LANE=2: second live-test lane (tools/lane.py)
+import testprefix
 BIN = os.path.join(GAME, "Gobi/Binaries/Win64")
 PROFILE = "pfx/drive_c/users/steamuser/AppData/Local/Back4Blood/Steam/Saved/SaveGames/PlayerProfileSettings.json"
 MAP_B, MAP_C = "Evansburgh_B", "Evansburgh_C"
 
 OUT = None           # run directory
+KEEP_PROFILES = False  # --keep-profiles: don't restore the golden profiles
 RESULTS = []         # (session, check, ok, seconds, detail)
 T0 = time.time()
 
@@ -255,14 +260,31 @@ def write_diff(before, after, name):
 class Session:
     def __init__(self, name, n, ini_extra="", timeout=420):
         self.name, self.n, self.ini_extra, self.timeout = name, n, ini_extra, timeout
-        self.logs, self.proc, self.start = {}, None, None
+        self.logs, self.proc, self.start, self.prepared = {}, None, None, False
 
-    def launch(self, wait=True):
-        """multi.sh n. wait=True: returns multi.sh's success (host sees n players)."""
+    def prepare(self):
+        """Stop leftover test instances, then restore each prefix's golden profile (once per session)."""
+        if self.prepared: return
+        self.prepared = True
         if subprocess.run([os.path.join(REPO, "launch/multi-stop.sh"), "--list"], capture_output=True, text=True).stdout.strip():
             log("test instances already running: stopping them first")
             sh([os.path.join(REPO, "launch/multi-stop.sh")], timeout=60)
             time.sleep(3)
+        for i in range(1, self.n + 1):
+            dst = os.path.join(ROOT, f"test{i}")
+            if not os.path.isdir(os.path.join(dst, "pfx")):   # a lane's first run: create the prefix now
+                sh([sys.executable, os.path.join(REPO, "tools/testprefix.py"), str(i)], timeout=300)
+            if KEEP_PROFILES:
+                log(f"profile test{i}: kept as is (--keep-profiles): {testprefix.profile_health(os.path.join(dst, testprefix.SAVES))[1]}")
+                continue
+            try:
+                log(f"profile test{i}: {testprefix.restore_golden(dst)}")
+            except SystemExit as e:
+                log(f"profile test{i}: NOT restored: {e}")
+
+    def launch(self, wait=True):
+        """multi.sh n. wait=True: returns multi.sh's success (host sees n players)."""
+        self.prepare()
         self.start = time.time() - 2
         self.logs = {i: GameLog(i, self.start) for i in range(1, self.n + 1)}
         env = {"B4B_INI_EXTRA": self.ini_extra, "B4B_TIMEOUT": str(self.timeout)}
@@ -312,9 +334,7 @@ def pick_card(cards, avoid=()):
 def duo(args):
     """The 2-instance regression: everything in --quick."""
     S = Session("duo", 2)
-    for i in (1, 2):   # a lane's first run: create the prefixes now, so "before" is the cloned profile, not nothing
-        if not os.path.isdir(os.path.join(ROOT, f"test{i}", "pfx")):
-            sh([sys.executable, os.path.join(REPO, "tools/testprefix.py"), str(i)], timeout=300)
+    S.prepare()   # golden profiles back first, so "before" is a known-good profile
     before = {i: load_profile(profile_path(i)) for i in (1, 2)}
     for i in (1, 2):
         if before[i]: shutil.copy(profile_path(i), os.path.join(OUT, f"profile{i}-before.json"))
@@ -552,14 +572,16 @@ def five(args):
 
 
 def main():
-    global OUT
+    global OUT, KEEP_PROFILES
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--quick", action="store_true", help="2-instance regression (default)")
     g.add_argument("--full", action="store_true", help="--quick + slot guard (5 vanilla) + teamsize=5 round")
     ap.add_argument("--no-lock", action="store_true", help="don't take launch/gamelock.sh (caller holds it)")
     ap.add_argument("--out", help="output directory (default /tmp/b4b-e2e-<time>)")
+    ap.add_argument("--keep-profiles", action="store_true", help="don't restore the golden test profiles first")
     a = ap.parse_args()
+    KEEP_PROFILES = a.keep_profiles
     OUT = a.out or f"/tmp/b4b-e2e-{'' if LANE == '1' else 'l' + LANE + '-'}{datetime.datetime.now():%Y%m%d-%H%M%S}"
     os.makedirs(OUT, exist_ok=True)
     lock = os.path.join(REPO, "launch/gamelock.sh")

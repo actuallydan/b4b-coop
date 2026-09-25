@@ -651,7 +651,10 @@ static void auto_tick(float dt) {
     char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
     if (!strstr(pkg, "FortHope")) return;                      // only act from the offline camp
     if (!ue_local_pc()) return;                                // still loading
-    if (session_join[0] && signin_pending()) return;   // Steam join: sign in (Offline) first
+    // Any join: finish the sign-in first. A join's LoadMap during sign-in re-creates the SignInScreen in Online mode;
+    // its profile load then fails "HydraPublicId mismatch" (Local offline.<id> vs the save's online id) and the game
+    // saves a blank profile over the real one (test clients, docs/investigations/test-profiles.md).
+    if (join[0] && (signin_pending() || signin_on_title())) return;
     static Out scratch;
     out_reset(&scratch);
     if (cmds_auto_host()) { LOG("auto: hosting"); cmd_host(&scratch); auto_next = auto_clock + 30; }
