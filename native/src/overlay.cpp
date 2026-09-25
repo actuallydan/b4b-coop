@@ -399,6 +399,12 @@ extern "C" int ov_radio(const char *label, int active) {
     after_item();
     return r || drive_take(label, 1);
 }
+extern "C" int ov_selectable(const char *label, int selected) {
+    LOCKED;
+    int r = ImGui::Selectable(label, selected != 0);
+    after_item();
+    return r || drive_take(label, 1);
+}
 extern "C" int ov_slider(const char *label, float *v, float lo, float hi, const char *fmt) {
     LOCKED;
     int r = ImGui::SliderFloat(label, v, lo, hi, fmt ? fmt : "%.0f", ImGuiSliderFlags_AlwaysClamp);

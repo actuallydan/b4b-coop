@@ -40,6 +40,7 @@ int joinpolicy_live(const char *key, const char *val);
 int presence_live(const char *key, const char *val);
 int teamsize_live(const char *key, const char *val);
 int overlay_live(const char *key, const char *val);
+int addons_live(const char *key, const char *val);
 // overlay.cpp: the `~` power-user window (#26; Dear ImGui over the game's D3D12 swap chain). Panels: overlay.h
 int overlay_init(void);
 void overlay_tick(float dt);
@@ -174,6 +175,7 @@ const char *addons_login_option(void);        // "?b4bcoopaddons=..." appended t
 int addons_login_check(const char *value, const char *name, const char *key, char *err, size_t en);  // host: 1 = refuse
 void addons_login_record(UObject *conn, const char *name, const char *value);  // host: accepted login's summary
 int addons_mp_slash(const char *sub, char *arg, Out *o);  // /addons players|policy; 1 if handled
+void addons_mp_panel(void);                  // ~ window: the Add-ons tab's policy + players section (addons.c draws the tab)
 // models.c: runtime model swaps (#19, docs/investigations/model-swap.md)
 int models_init(void);
 void models_tick(float dt);

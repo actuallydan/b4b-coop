@@ -14,6 +14,8 @@
 //   Each add-on is classified from its files (addonclass.c, #22): cosmetic or gameplay-affecting; the addoninfo's
 //   own `content=` line is only compared. Add-ons stay client-side (each player sees their own); what a joiner runs is
 //   summarized in the login options and checked against the host's addons_policy (addons_mp.c).
+//   `~` window: the Add-ons tab (addons_panel, below): list, on/off (= /addons on|off), load order (Up/Down rewrite
+//   addonlist.txt: A[] keeps the mounted order, ord[] is the order in the file), details, host policy (addons_mp.c).
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +24,7 @@
 #include "log.h"
 #include "cmds.h"
 #include "addonclass.h"
+#include "overlay.h"
 
 #define ADDON_ORDER 1000          // read order of the first add-on; retail paks are 4 (+100 per patch level)
 #define PAK_MAGIC 0x18772u
@@ -36,6 +39,7 @@ typedef struct {
     char name[MAX_PATH];          // same, UTF-8 (addonlist.txt key, chat)
     char title[96], author[64], version[32], category[48], desc[400], hash[41], claim[48];   // claim: addoninfo content=
     int nfiles, present, on, on_at_start, valid, mounted;   // mounted: 1 ok, -1 Mount failed, 0 not mounted
+    int pos0;                     // 1-based place among the present add-ons at game start (0 = not present)
     char why[120];                // why it can't load
     uint32_t order;
     char **keys;                  // normalized file paths (conflict check, freed after the scan)
@@ -51,6 +55,10 @@ typedef struct { int loser, winner, nfiles, mixed; char example[160], mixed_exam
 static Conflict C[MAX_CONFLICTS];
 static int nC;
 static CRITICAL_SECTION cs;       // addonlist.txt writes (chat thread) vs. nothing else after startup; cheap anyway
+// addonlist.txt order: ord[k] = index into A. A[] itself never moves after the scan (conflicts, outfits and the
+// mounted state point into it); a reorder only changes ord[] and the file, applied at the next start.
+static int ord[MAX_ADDONS];
+static FILETIME list_mtime;       // addonlist.txt as last read or written by us (the panel re-reads it when it changes)
 
 // ---- small helpers ----
 static void w2u(const wchar_t *w, char *out, int n) { if (!WideCharToMultiByte(CP_UTF8, 0, w, -1, out, n, NULL, NULL)) out[0] = 0; }
@@ -365,6 +373,14 @@ static void find_conflicts(void) {
 
 // ---- addonlist.txt ----
 static void list_path(wchar_t *out, size_t n) { swprintf(out, n, L"%ls\\" LIST_NAME, dirw); }
+static int list_stat(FILETIME *mt) {
+    wchar_t p[MAX_PATH + 32];
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    list_path(p, MAX_PATH + 32);
+    if (!GetFileAttributesExW(p, GetFileExInfoStandard, &a)) { memset(mt, 0, sizeof *mt); return 0; }
+    *mt = a.ftLastWriteTime;
+    return 1;
+}
 
 static int write_list(void) {
     wchar_t p[MAX_PATH + 32], tmp[MAX_PATH + 40];
@@ -375,14 +391,16 @@ static int write_list(void) {
     fputs("# b4bcoop add-ons: one line per add-on (.pak file in this folder), =1 on, =0 off.\r\n"
           "# Load order is top to bottom: when two add-ons change the same file, the one further down wins.\r\n"
           "# New add-ons are added at the bottom, switched on. Changes apply the next time the game starts.\r\n", f);
-    for (int i = 0; i < nA; i++) fprintf(f, "%s=%d\r\n", A[i].name, A[i].on);
+    for (int k = 0; k < nA; k++) fprintf(f, "%s=%d\r\n", A[ord[k]].name, A[ord[k]].on);
     int ok = !fclose(f) && MoveFileExW(tmp, p, MOVEFILE_REPLACE_EXISTING);
     if (!ok) LOG("addons: can't replace %ls (error %lu)", p, GetLastError());
+    list_stat(&list_mtime);
     return ok;
 }
 
 static Addon *add(const char *name8) {
     if (nA == MAX_ADDONS) return NULL;
+    ord[nA] = nA;
     Addon *a = &A[nA++];
     memset(a, 0, sizeof *a);
     snprintf(a->name, sizeof a->name, "%s", name8);
@@ -412,6 +430,62 @@ static void read_list(void) {
     }
     if (f) fclose(f);
     else list_dirty = 1;
+    list_stat(&list_mtime);
+}
+
+// addonlist.txt was edited while the game runs (not by us): take its on/off and order for the add-ons we know, so
+// the window shows the file and our next write doesn't undo the edit. Lines for unknown files count at the next start.
+static void list_sync(void) {
+    FILETIME mt;
+    if (!nA || !list_stat(&mt) || !CompareFileTime(&mt, &list_mtime)) return;
+    wchar_t p[MAX_PATH + 32];
+    list_path(p, MAX_PATH + 32);
+    FILE *f = _wfopen(p, L"rb");
+    if (!f) return;
+    EnterCriticalSection(&cs);
+    int seen[MAX_ADDONS] = {0}, no[MAX_ADDONS], n = 0;
+    char line[700];
+    while (fgets(line, sizeof line, f)) {
+        char *l = trim(line), *v;
+        if (!*l || *l == '#' || *l == ';' || !(v = strchr(l, '='))) continue;
+        *v++ = 0;
+        l = unquote(l); v = unquote(v);
+        Addon *a = by_name(l);
+        if (!a || seen[a - A]) continue;
+        seen[a - A] = 1;
+        a->on = !(!strcmp(v, "0") || !_stricmp(v, "off") || !_stricmp(v, "false"));
+        no[n++] = (int)(a - A);
+    }
+    fclose(f);
+    for (int k = 0; k < nA; k++) if (!seen[ord[k]]) no[n++] = ord[k];   // not in the file: keep their relative order
+    memcpy(ord, no, sizeof(int) * (size_t)nA);
+    list_mtime = mt;
+    LeaveCriticalSection(&cs);
+    LOG("addons: %s changed outside the game, re-read", LIST_NAME);
+}
+
+// Move an add-on up (-1) or down (+1) in the load order past the next present one; rewrites addonlist.txt.
+// 1 = moved, 0 = already first/last, -1 = write failed (nothing changed).
+static int addons_move(Addon *a, int dir) {
+    EnterCriticalSection(&cs);
+    int k = 0, j;
+    while (k < nA && &A[ord[k]] != a) k++;
+    for (j = k + dir; j >= 0 && j < nA && !A[ord[j]].present; j += dir) {}
+    int r = 0;
+    if (k < nA && j >= 0 && j < nA) {
+        int t = ord[k]; ord[k] = ord[j]; ord[j] = t;
+        r = write_list() ? 1 : -1;
+        if (r < 0) { t = ord[k]; ord[k] = ord[j]; ord[j] = t; }
+    }
+    LeaveCriticalSection(&cs);
+    if (r) LOG("addons: move %s %s -> %s", a->name, dir < 0 ? "up" : "down", r > 0 ? "saved" : "write FAILED");
+    return r;
+}
+
+static int pos_now(const Addon *a) {   // 1-based place among the present add-ons in addonlist.txt order
+    int p = 0;
+    for (int k = 0; k < nA; k++) { if (A[ord[k]].present) p++; if (&A[ord[k]] == a) return p; }
+    return 0;
 }
 
 static void config(void) {
@@ -482,6 +556,7 @@ int addons_scan(void) {
         a->on_at_start = a->on;
         if (!a->present) continue;
         a->order = ADDON_ORDER + pos++;
+        a->pos0 = pos;
         wchar_t full[MAX_PATH * 2];
         swprintf(full, MAX_PATH * 2, L"%ls\\%ls", dirw, a->file);
         if (!is_ascii(a->name) || !is_ascii(dir8)) snprintf(a->why, sizeof a->why, "rename it (and its folder path) to plain letters, digits, - and _");
@@ -541,6 +616,8 @@ void addons_mount(void) {
     }
 }
 
+static void addons_panel(void);   // the ~ window tab, at the end
+
 // init_thread: one chat notice for the player (shown once they are in a map).
 void addons_init(void) {
     int bad = 0, failed = 0;
@@ -560,9 +637,14 @@ void addons_init(void) {
     else if (nC) snprintf(msg, sizeof msg, "%d add-on conflicts. /addons for details", nC);
     else if (bad || failed) snprintf(msg, sizeof msg, "%d add-on(s) could not be loaded. /addons for details", bad + failed);
     if (msg[0]) { LOG("addons: notice: %s", msg); chat_local_later(msg); }
+    overlay_add_panel("Add-ons", 70, addons_panel);
 }
 
 // ---- chat /addons ----
+static int order_changed(void) {   // the present add-ons' order in addonlist.txt differs from the mounted one
+    for (int i = 0; i < nA; i++) if (A[i].present && pos_now(&A[i]) != A[i].pos0) return 1;
+    return 0;
+}
 static const char *state_of(const Addon *a) {
     if (!a->present) return "missing";
     if (a->on != a->on_at_start) return a->on ? "on after restart" : "off after restart";
@@ -582,15 +664,17 @@ static Addon *pick(const char *arg, int *num, Out *o) {   // "#", "3" or a file 
     char want[MAX_PATH];
     snprintf(want, sizeof want, "%s", arg);
     for (char *c = want; *c; c++) *c = (char)tolower((unsigned char)*c);
-    for (int i = 0; i < nA; i++) {
-        if (!A[i].present) continue;
+    int number = arg[strspn(arg, "0123456789")] == 0 ? atoi(arg) : 0;   // "2", not "2_skin.pak"
+    for (int q = 0; q < nA; q++) {
+        Addon *a = &A[ord[q]];
+        if (!a->present) continue;
         k++;
         char base[MAX_PATH], hay[MAX_PATH + 100];
-        snprintf(base, sizeof base, "%.*s", (int)(strlen(A[i].name) - 4), A[i].name);
-        if (atoi(arg) == k || !_stricmp(arg, A[i].name) || !_stricmp(arg, base) || !_stricmp(arg, A[i].title)) { *num = k; return &A[i]; }
-        snprintf(hay, sizeof hay, "%s|%s", A[i].name, A[i].title);
+        snprintf(base, sizeof base, "%.*s", (int)(strlen(a->name) - 4), a->name);
+        if (number == k || !_stricmp(arg, a->name) || !_stricmp(arg, base) || !_stricmp(arg, a->title)) { *num = k; return a; }
+        snprintf(hay, sizeof hay, "%s|%s", a->name, a->title);
         for (char *c = hay; *c; c++) *c = (char)tolower((unsigned char)*c);
-        if (strstr(hay, want)) { nsub++; sub = &A[i]; ksub = k; }
+        if (strstr(hay, want)) { nsub++; sub = a; ksub = k; }
     }
     if (nsub == 1) { *num = ksub; return sub; }
     out_printf(o, nsub ? "\"%s\" matches %d add-ons: use the number (/addons)\n" : "no add-on \"%s\" (/addons)\n", arg, nsub);
@@ -609,12 +693,13 @@ void addons_slash(const char *verb, char *rest, Out *o) {
         if (unavailable[0]) out_printf(o, "add-ons are off: %s\n", unavailable);
         out_printf(o, "%d add-on(s), load order (a later one wins):\n", present);
         int k = 0;
-        for (int i = 0; i < nA; i++) {
-            Addon *a = &A[i];
+        for (int q = 0; q < nA; q++) {
+            Addon *a = &A[ord[q]];
             if (!a->present) continue;
             out_printf(o, "%d. %s%s%s [%s%s] %s\n", ++k, a->title, a->version[0] ? " " : "", a->version, state_of(a),
                        !a->valid ? "" : a->cls.gameplay ? ", gameplay" : ", cosmetic", a->name);
         }
+        if (order_changed()) out_printf(o, "load order changed in " LIST_NAME ": applies after restart\n");
         for (int i = 0; i < nC; i++) {
             if (C[i].nfiles) out_printf(o, "conflict: %s overrides %s (%d file(s))\n", A[C[i].winner].name, A[C[i].loser].name, C[i].nfiles);
             if (C[i].mixed) out_printf(o, "conflict: %s and %s mix parts of one asset: may crash, switch one off\n", A[C[i].loser].name, A[C[i].winner].name);
@@ -657,4 +742,125 @@ void addons_slash(const char *verb, char *rest, Out *o) {
     }
     if (addons_mp_slash(sub, arg, o)) return;
     out_printf(o, "usage: /addons [list]  /addons on|off <#>  /addons info <#>  /addons players  /addons policy [any|cosmetic|none|match]\n");
+}
+
+// ---- ~ window: Add-ons tab (overlay.h; game thread). On/off runs /addons on|off (ov_run), the order buttons
+// addons_move(); both write addonlist.txt, which applies at the next start. Host section: addons_mp_panel(). ----
+static void panel_details(Addon *a) {
+    char b[160];
+    ov_heading("Details");
+    ov_text("%s%s%s", a->title, a->version[0] ? "  v" : "", a->version);
+    if (a->author[0] || a->category[0])
+        ov_text_dim("%s%s%s%s", a->author[0] ? "by " : "", a->author, a->author[0] && a->category[0] ? ", " : "", a->category);
+    if (a->desc[0]) ov_text_dim("%s", a->desc);
+    ov_text("File: %s, %d file(s) inside", a->name, a->nfiles);
+    ov_text("State: %s; load order #%d%s", state_of(a), pos_now(a), pos_now(a) != a->pos0 ? " after restart" : "");
+    if (!a->valid) ov_text_warn("Not loaded: %s", a->why);
+    else {
+        ov_text("Content: %s", addon_class_str(a, b, sizeof b));
+        if (a->cls.gameplay) ov_text_dim("First gameplay file: %s. Hosts with addons_policy=cosmetic (the default) or none refuse "
+                                         "players who run it.", a->cls.reason);
+        int claim_g = !_strnicmp(a->claim, "gameplay", 8), claim_c = !_strnicmp(a->claim, "cosmetic", 8);
+        if ((claim_g || claim_c) && claim_g != a->cls.gameplay)
+            ov_text_dim("Its author labels it %s; the files decide.", a->claim);
+        ov_text("Id: %.8s", a->hash);
+        ov_same_line();
+        if (ov_button("Copy##id")) ov_copy(a->hash);
+        ov_tooltip("The content id (pak index SHA1). The host's /addons players shows the first 8 digits.");
+    }
+    int no = 0;
+    for (int i = 0; i < nOF; i++) {
+        const Outfit *o = &OF[i];
+        if (o->addon != a) continue;
+        if (!no++) ov_text("Outfits it adds (wear one: Models tab or /model <name>):");
+        ov_text_dim("  %s: %s (%s)", o->name, o->title, o->hero);
+    }
+    for (int i = 0; i < nC; i++) {
+        const Conflict *c = &C[i];
+        const Addon *other = &A[c->loser] == a ? &A[c->winner] : &A[c->winner] == a ? &A[c->loser] : NULL;
+        if (!other) continue;
+        if (c->nfiles) ov_text_dim("%s \"%s\" (%d file(s), e.g. %s)", &A[c->winner] == a ? "Overrides" : "Overridden by",
+                                   other->title, c->nfiles, c->example);
+        if (c->mixed) ov_text_warn("Mixes parts of one asset with \"%s\" (e.g. %s): may crash, switch one off.", other->title, c->mixed_example);
+    }
+    if (ov_button("Show in the log (/addons info)")) ov_run("addons info %s", a->name);
+}
+
+static void addons_panel(void) {
+    static ULONGLONG t_sync;
+    static int sel = -1;   // index into A
+    if (GetTickCount64() - t_sync > 1000) { t_sync = GetTickCount64(); list_sync(); }
+    const char *v = cmds_ini_value("addons");
+    int load = !(v && atoi(v) == 0);
+    if (ov_checkbox("Load add-ons##addons", &load)) ov_setting("addons", load ? NULL : "0", 1);
+    ov_tooltip("Off = addons=0 in b4bcoop.ini: no add-on is loaded (troubleshooting). Applies after a restart.");
+    if (load != enabled_cfg) ov_text_warn("Add-ons will be %s after you restart the game.", load ? "loaded" : "off");
+    if (unavailable[0] && enabled_cfg) ov_text_warn("Add-ons are off: %s.", unavailable);
+    int present = 0, nsw = 0;
+    for (int i = 0; i < nA; i++) if (A[i].present) { present++; nsw += A[i].on != A[i].on_at_start; }
+    if (enabled_cfg && (nsw || order_changed()))
+        ov_text_warn("%s differs from what is loaded now (%d switched%s): restart the game to apply.", LIST_NAME, nsw,
+                     order_changed() ? ", load order changed" : "");
+    if (!enabled_cfg) ov_text_dim("Add-ons are off (addons=0).");
+    else if (!present) ov_text_dim("No add-ons. Put add-on .pak files in the folder below and restart the game.");
+    else {
+        ov_text_dim("Load order: top to bottom; when two add-ons change the same file, the one further down wins.");
+        if (ov_table_begin("addons", 5)) {
+            static const char *H[] = {"On", "#", "Add-on", "Kind", "Order"};
+            ov_table_header(H, 5);
+            int k = 0;
+            for (int q = 0; q < nA; q++) {
+                int i = ord[q];
+                Addon *a = &A[i];
+                if (!a->present) continue;
+                k++;
+                char lab[MAX_PATH + 24], kinds[64];
+                ov_push_id(i);
+                ov_table_next();
+                int on = a->on;
+                snprintf(lab, sizeof lab, "##on:%s", a->name);
+                if (ov_checkbox(lab, &on)) ov_run("addons %s %s", on ? "on" : "off", a->name);
+                ov_tooltip("Writes addonlist.txt; applies after a restart (/addons on|off).");
+                ov_table_next(); ov_text("%d", k);
+                ov_table_next();
+                snprintf(lab, sizeof lab, "%s%s%s##sel:%s", a->title, a->version[0] ? " " : "", a->version, a->name);
+                if (ov_selectable(lab, sel == i)) sel = sel == i ? -1 : i;
+                if (!a->valid) ov_text_warn("not loaded: %s", a->why);
+                else ov_text_dim("%s%s", state_of(a), pos_now(a) != a->pos0 ? ", moves after restart" : "");
+                ov_table_next();
+                if (!a->valid) ov_text_dim("-");
+                else if (a->cls.gameplay) ov_text_warn("gameplay");
+                else { ov_text("cosmetic"); if (a->cls.kinds) ov_text_dim("%s", addonclass_kinds(a->cls.kinds, kinds, sizeof kinds)); }
+                ov_table_next();
+                ov_begin_disabled(k == 1, "Already first.");
+                snprintf(lab, sizeof lab, "Up##%s", a->name);
+                if (ov_button(lab) && addons_move(a, -1) < 0) overlay_note("could not write addonlist.txt");
+                ov_end_disabled();
+                ov_same_line();
+                ov_begin_disabled(k == present, "Already last.");
+                snprintf(lab, sizeof lab, "Down##%s", a->name);
+                if (ov_button(lab) && addons_move(a, 1) < 0) overlay_note("could not write addonlist.txt");
+                ov_end_disabled();
+                ov_pop_id();
+            }
+            ov_table_end();
+        }
+        int shown = 0;
+        for (int i = 0; i < nC; i++) {
+            const Conflict *c = &C[i];
+            if (!shown++) ov_heading("Conflicts (as loaded now)");
+            if (c->nfiles) ov_text("\"%s\" overrides \"%s\" (%d file(s))", A[c->winner].title, A[c->loser].title, c->nfiles);
+            if (c->mixed) ov_text_warn("\"%s\" and \"%s\" mix parts of one asset: may crash, switch one off.", A[c->loser].title, A[c->winner].title);
+        }
+        if (sel >= 0 && sel < nA && A[sel].present) panel_details(&A[sel]);
+        else ov_text_dim("Click an add-on for its details.");
+    }
+    ov_heading("Folder");
+    ov_text("%s", dir8);
+    ov_same_line();
+    if (ov_button("Copy##dir")) ov_copy(dir8);
+    ov_text_dim("Install: put the add-on's .pak there (an add-on zip: extract it into the game folder), then restart the "
+                "game. Remove: delete the .pak. addonlist.txt there holds on/off and the load order.");
+    if (ov_button("List in the log (/addons)")) ov_run("addons");
+    addons_mp_panel();
 }
