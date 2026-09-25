@@ -252,7 +252,8 @@ copy the backup over `PlayerProfileSettings.sav`. If the backup can't be made, n
 **Browse local files**). The zip puts it there.
 
 **How to edit:** open it in a text editor (Notepad on Windows, Kate/KWrite on Steam Deck Desktop Mode). Every setting
-is off until you remove the `;` at the start of its line. Save, then restart the game: settings are read at start.
+is off until you remove the `;` at the start of its line. Save: the game picks the change up within about two seconds,
+also while you play, and says so in your chat (`b4bcoop.ini: applied thirdperson_distance`).
 
 ```ini
 ; before: off
@@ -265,6 +266,12 @@ Rules:
 - One setting per line, `name=value`, the name at the very start of the line, lowercase, no space before `=`.
 - A line starting with `;` or `#` is ignored.
 - No `b4bcoop.ini` at all = all defaults.
+- **Applied while the game runs:** `thirdperson`, `thirdperson_key`, `thirdperson_distance`, `thirdperson_side`,
+  `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `flashlight_key`, `flashlight_sticky`,
+  `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map). Only the lines you changed count: an edit
+  doesn't undo what you set with a chat command this session. Deleting or commenting out a line = back to its default.
+- **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
+  `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.
 - **Updating b4bcoop** (extracting a new zip) replaces `b4bcoop.ini` with a fresh one: note your changes first.
   Bans (`b4bcoop-bans.txt`) are kept.
 

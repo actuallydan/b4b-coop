@@ -22,6 +22,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "MinHook.h"
 
 #define ADDR_PVC_UPDATE VA(0x141C27250ull)
 static const uint8_t SIG_PVC_UPDATE[] = {0x48,0x8b,0xc4,0x57,0x41,0x54,0x48,0x83,0xec,0x68,0x48,0x83,0xb9,0xf8,0x01,0x00,
@@ -57,6 +58,53 @@ static float tp_arm_orig[4] = {-1}, tp_fov_orig = -1;               // length, s
 #define ARM_SOCKET(a) ((float *)((char *)(a) + 0x234))
 #define CAM_FOV(c)    ((float *)((char *)(c) + 0x230))
 
+typedef struct { UObject *obj; UFunction *fn; uint8_t p[1024]; } TpCall;
+static void *tc_prep(TpCall *c, UObject *obj, const char *fname) {
+    c->obj = obj;
+    c->fn = obj ? ue_find_function(U_CLASS(obj), fname) : NULL;
+    if (!c->fn || UFN_PARMSSIZE(c->fn) > sizeof c->p) return NULL;
+    memset(c->p, 0, sizeof c->p);
+    return c;
+}
+static void *tc_arg(TpCall *c, const char *name) { FField *f = ue_find_prop(c->fn, name); return f ? c->p + FP_OFFSET(f) : NULL; }
+static void rot_dir(const float r[3], float d[3]) {   // FRotator (pitch, yaw, roll) degrees -> unit vector
+    float p = r[0] * 3.14159265f / 180.f, y = r[1] * 3.14159265f / 180.f;
+    d[0] = cosf(p) * cosf(y); d[1] = cosf(p) * sinf(y); d[2] = sinf(p);
+}
+// KismetSystemLibrary::LineTraceSingle along d (unit) for len units on trace channel chan (ETraceTypeQuery: 0 =
+// Visibility), ignoring the pawn: the first blocking point, 0 = none. The function and parameter offsets are looked up
+// once (the aim correction runs it every frame).
+static int trace_ch(UObject *pawn, const float s[3], const float d[3], float len, int chan, float hit[3]) {
+    static UObject *cdo; static UFunction *fn; static int32_t o_ctx, o_st, o_en, o_ch, o_self, o_hit, psize;
+    if (!fn) {
+        UClass *k = ue_find_class("KismetSystemLibrary");
+        TpCall c;
+        if (!k || !tc_prep(&c, UC_CDO(k), "LineTraceSingle")) return 0;
+        uint8_t *b0 = c.p, *pc = tc_arg(&c, "WorldContextObject"), *ps = tc_arg(&c, "Start"), *pe = tc_arg(&c, "End"),
+                *pch = tc_arg(&c, "TraceChannel"), *pi = tc_arg(&c, "bIgnoreSelf"), *ph = tc_arg(&c, "OutHit");
+        if (!pc || !ps || !pe || !pch || !pi || !ph) return 0;
+        o_ctx = (int32_t)(pc - b0); o_st = (int32_t)(ps - b0); o_en = (int32_t)(pe - b0); o_ch = (int32_t)(pch - b0);
+        o_self = (int32_t)(pi - b0); o_hit = (int32_t)(ph - b0); psize = UFN_PARMSSIZE(c.fn);
+        cdo = c.obj; fn = c.fn;
+    }
+    uint8_t p[1024];
+    memset(p, 0, psize);
+    *(UObject **)(p + o_ctx) = pawn;
+    float *st = (float *)(p + o_st), *en = (float *)(p + o_en);
+    for (int i = 0; i < 3; i++) { st[i] = s[i]; en[i] = s[i] + d[i] * len; }
+    p[o_ch] = (uint8_t)chan;
+    p[o_self] = 1;
+    ue_process_event(cdo, fn, p);
+    uint8_t *h = p + o_hit;
+    if (!(h[0] & 1)) return 0;
+    memcpy(hit, h + 0x1c, 12);   // HitResult.ImpactPoint
+    return 1;
+}
+static int trace(UObject *pawn, const float s[3], const float d[3], float hit[3]) { return trace_ch(pawn, s, d, 50000.f, 0, hit); }
+static float dist3(const float a[3], const float b[3]) {
+    float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+    return sqrtf(x * x + y * y + z * z);
+}
 static int alive(UObject *o, int32_t idx) { return o && idx >= 0 && ue_object_at(idx) == o; }
 static UClass *cls(const char *name) {   // /Script classes never unload
     static UClass *pvc, *ads, *hero;
@@ -136,10 +184,154 @@ static void tune(int apply) {
     }
 }
 
+// ---- Aim correction (#25) ----
+// Shots come from the hero's eyes along GetActorEyesViewPoint (measured with bullet-hole decals), while an
+// over-the-shoulder camera looks along a parallel ray `side`/`height` units away, so hits used to land that far from
+// the crosshair. Fix: find the point under the crosshair (a trace along the camera ray, starting beside the eyes so
+// nothing between the camera and the hero counts) and turn the local hero's eye rotation towards it: the shot still
+// starts at the eyes, it just aims at what the crosshair covers. Only the local hero, only on the game thread, only
+// in our third person (not while aiming: first person, the camera is the eyes). third-person.md "Aim correction".
+#define VT_EYES    (0x5F0 / 8)   // AActor::GetActorEyesViewPoint(this, FVector *, FRotator *) (exec thunk 0x1441ABEC0)
+#define VT_BASEAIM (0x6E0 / 8)   // APawn::GetBaseAimRotation(this, FRotator *ret) -> ret (exec thunk 0x1443A82D0)
+typedef void (*EyesFn)(UObject *self, float *loc, float *rot);
+typedef float *(*BaseAimFn)(UObject *self, float *ret);
+static EyesFn orig_eyes;
+static BaseAimFn orig_baseaim;
+static void *eyes_at, *baseaim_at;
+static int aim_hooked;          // 1 hooked, -1 failed
+static DWORD tp_tid;            // the game thread
+static UObject *aim_pawn;       // the local hero this frame (the detours act only on it)
+static int aim_fix = 1;         // ini thirdperson_aimfix
+static int aim_use = 1;         // which call gets corrected: 1 GetActorEyesViewPoint, 2 GetBaseAimRotation (dev)
+static int aim_chan;            // trace channel for the crosshair point (ETraceTypeQuery, 0 = Visibility)
+static int aim_ok;              // this frame: third person with an offset camera, aim_local valid
+static float aim_local[3];      // camera relative to the eyes in the view frame (forward, right, up), last frame
+static unsigned aim_frame, aim_cache_frame;
+static float aim_cache_key[6], aim_cache_rot[3];
+static int aim_n;               // corrections applied (dev status)
+static float aim_last_p[3], aim_last_deg;   // last crosshair point and correction angle (dev status)
+#ifndef B4B_RELEASE
+static float aim_test[2];       // dev `thirdperson aimtest`: extra yaw on eyes / base aim, to find the fire path
+static float probe_left;        // dev `thirdperson callers`: record who asks for the local hero's view point
+static int probe_all;           // ... `callers <s> all`: other heroes too (slot +2: e.g. a client's hero on the host)
+static struct { void *ra; int slot, n; } probe_ra[48];
+static int n_probe_ra;
+static void probe_note(int slot, void *ra) {
+    if (probe_left <= 0) return;
+    for (int i = 0; i < n_probe_ra; i++) if (probe_ra[i].ra == ra && probe_ra[i].slot == slot) { probe_ra[i].n++; return; }
+    if (n_probe_ra < 48) { probe_ra[n_probe_ra].ra = ra; probe_ra[n_probe_ra].slot = slot; probe_ra[n_probe_ra++].n = 1; }
+}
+#endif
+
+static void basis(const float r[3], float f[3], float rt[3], float up[3]) {   // FRotator (roll ignored) -> axes
+    float p = r[0] * 3.14159265f / 180.f, y = r[1] * 3.14159265f / 180.f, sp = sinf(p), cp = cosf(p), sy = sinf(y), cy = cosf(y);
+    f[0] = cp * cy; f[1] = cp * sy; f[2] = sp;
+    rt[0] = -sy; rt[1] = cy; rt[2] = 0;
+    up[0] = -sp * cy; up[1] = -sp * sy; up[2] = cp;
+}
+static float dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+// eye rotation `rot` at eye location `loc` -> towards the point under the crosshair (in place)
+static void aim_correct(const float loc[3], float rot[3]) {
+    if (!aim_ok) return;
+    if (aim_cache_frame == aim_frame && !memcmp(aim_cache_key, loc, 12) && !memcmp(aim_cache_key + 3, rot, 12)) {
+        memcpy(rot, aim_cache_rot, 12);
+        return;
+    }
+    float f[3], rt[3], up[3], s[3], hit[3], d[3];
+    basis(rot, f, rt, up);
+    for (int i = 0; i < 3; i++) s[i] = loc[i] + rt[i] * aim_local[1] + up[i] * aim_local[2];   // camera ray, beside the eyes
+    memcpy(aim_cache_key, loc, 12); memcpy(aim_cache_key + 3, rot, 12);
+    aim_cache_frame = aim_frame;
+    if (!trace_ch(aim_pawn, s, f, 50000.f, aim_chan, hit)) for (int i = 0; i < 3; i++) hit[i] = s[i] + f[i] * 50000.f;
+    for (int i = 0; i < 3; i++) d[i] = hit[i] - loc[i];
+    float n = sqrtf(dot3(d, d));
+    if (n < 1.f || dot3(d, f) < 0.5f * n) { memcpy(aim_cache_rot, rot, 12); return; }   // behind / sideways: leave it
+    for (int i = 0; i < 3; i++) d[i] /= n;
+    float np = asinf(d[2] > 1 ? 1 : d[2] < -1 ? -1 : d[2]) * 180.f / 3.14159265f, ny = atan2f(d[1], d[0]) * 180.f / 3.14159265f;
+    float c = dot3(d, f);
+    aim_last_deg = acosf(c > 1 ? 1 : c) * 180.f / 3.14159265f;
+    memcpy(aim_last_p, hit, 12);
+    rot[0] = np; rot[1] = ny;
+    memcpy(aim_cache_rot, rot, 12);
+    aim_n++;
+}
+static int aim_here(UObject *self) { return self == aim_pawn && self && GetCurrentThreadId() == tp_tid; }
+static void eyes_detour(UObject *self, float *loc, float *rot) {
+    orig_eyes(self, loc, rot);
+#ifndef B4B_RELEASE
+    if (probe_all && self != aim_pawn && GetCurrentThreadId() == tp_tid && ue_is_a(self, cls("HeroCharacter")))
+        probe_note(2, __builtin_return_address(0));
+#endif
+    if (!aim_here(self)) return;
+#ifndef B4B_RELEASE
+    probe_note(0, __builtin_return_address(0));
+    rot[1] += aim_test[0];
+#endif
+    if (aim_use & 1) aim_correct(loc, rot);
+}
+static float *baseaim_detour(UObject *self, float *ret) {
+    float *r = orig_baseaim(self, ret);
+#ifndef B4B_RELEASE
+    if (probe_all && self != aim_pawn && GetCurrentThreadId() == tp_tid && ue_is_a(self, cls("HeroCharacter")))
+        probe_note(3, __builtin_return_address(0));
+#endif
+    if (!aim_here(self)) return r;
+#ifndef B4B_RELEASE
+    probe_note(1, __builtin_return_address(0));
+    r[1] += aim_test[1];
+#endif
+    if ((aim_use & 2) && aim_ok) {
+        float loc[3], tmp[3];
+        (orig_eyes ? orig_eyes : (EyesFn)U_VTBL(self)[VT_EYES])(self, loc, tmp);
+        aim_correct(loc, r);
+    }
+    return r;
+}
+// hooks on the hero class's own GetActorEyesViewPoint / GetBaseAimRotation (vtable entries of the live hero: every
+// hero blueprint shares the native class's vtable), installed the first time third person is used
+static void aim_hook(UObject *pawn) {
+    if (aim_hooked || !pawn) return;
+    void **vt = U_VTBL(pawn);
+    eyes_at = vt[VT_EYES]; baseaim_at = vt[VT_BASEAIM];
+    int ok = eyes_at && baseaim_at &&
+             MH_CreateHook(eyes_at, (void *)eyes_detour, (void **)&orig_eyes) == MH_OK && MH_EnableHook(eyes_at) == MH_OK &&
+             MH_CreateHook(baseaim_at, (void *)baseaim_detour, (void **)&orig_baseaim) == MH_OK &&
+             MH_EnableHook(baseaim_at) == MH_OK;
+    aim_hooked = ok ? 1 : -1;
+    LOG("thirdperson: aim hooks %s (eyes 0x%llx, base aim 0x%llx)", ok ? "installed" : "FAILED",
+        (unsigned long long)((uintptr_t)eyes_at - g_base_delta), (unsigned long long)((uintptr_t)baseaim_at - g_base_delta));
+}
+// every tick: where the camera sits relative to the eyes (the camera manager's POV of the last frame; the detours
+// rebuild the camera from it with the current rotation, so turning or moving this frame doesn't lag)
+static void aim_update(UObject *pawn, UObject *pvc) {
+    static int32_t o_cache = -2;
+    aim_ok = 0;
+    aim_frame++;
+    tp_tid = GetCurrentThreadId();
+    aim_pawn = pawn;
+    if (!pawn || !pvc || !aim_fix || !tp_on || !*((uint8_t *)pvc + 0x215)) return;   // +0x215: IsThirdPerson()
+    aim_hook(pawn);
+    if (aim_hooked != 1) return;
+    UObject *pc = ue_local_pc(), *pcm = pc ? ue_get_ptr(pc, "PlayerCameraManager") : NULL;
+    if (!pcm) return;
+    if (o_cache == -2) o_cache = ue_prop_offset(pcm, "CameraCachePrivate");
+    if (o_cache < 0) return;
+    float *cam = (float *)((char *)pcm + o_cache + 0x10), *crot = cam + 3;   // CameraCacheEntry.POV Location, Rotation
+    float el[3], er[3], f[3], rt[3], up[3], d[3];
+    orig_eyes(pawn, el, er);
+    basis(crot, f, rt, up);
+    for (int i = 0; i < 3; i++) d[i] = cam[i] - el[i];
+    aim_local[0] = dot3(d, f); aim_local[1] = dot3(d, rt); aim_local[2] = dot3(d, up);
+    float lat = sqrtf(aim_local[1] * aim_local[1] + aim_local[2] * aim_local[2]);
+    aim_ok = lat > 0.5f && lat < 400.f && aim_local[0] < 0;   // offset camera behind the eyes (not centred, not 1P)
+}
+
 // every tick while on: third person, first person while aiming. A view the game itself asked for (a tag-driven 2 we
 // didn't write: healing, pounced, grabbed, ...; orbit 3) is left alone; when the game drops back to 1 we write 2 again.
 static void tp_sync(float dt) {
     UObject *pawn = local_hero(), *pvc = view_comp(pawn);
+    aim_update(pvc ? pawn : NULL, pvc);
     if (!pvc) return;
     if ((tp_ads_age += dt) > 1.f) { tp_ads_age = 0; ads_refresh(pawn); }
     tune(1);
@@ -157,8 +349,8 @@ void thirdperson_tick(float dt) {
 #endif
     static int was_down;
     if (tp_key) {
-        int down = (GetAsyncKeyState(tp_key) & 0x8000) != 0;
-        if (down && !was_down && cmds_game_focused()) {
+        int down = cmds_hotkey_down(tp_key);
+        if (down && !was_down) {
             static Out tmp;
             out_reset(&tmp);
             cmd_thirdperson(NULL, &tmp);
@@ -167,31 +359,61 @@ void thirdperson_tick(float dt) {
         was_down = down;
     }
     if (tp_on) tp_sync(dt);
+    else {
+        aim_ok = 0;
+#ifndef B4B_RELEASE
+        if (probe_left > 0 || aim_test[0] || aim_test[1]) { aim_update(local_hero(), NULL); }
+        if (probe_left > 0 && (probe_left -= dt) <= 0) LOG("thirdperson: callers: recording done (%d)", n_probe_ra);
+#endif
+    }
+#ifndef B4B_RELEASE
+    if (tp_on && probe_left > 0 && (probe_left -= dt) <= 0) LOG("thirdperson: callers: recording done (%d)", n_probe_ra);
+#endif
 }
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-// b4bcoop.ini: thirdperson=1 (start in third person), thirdperson_key=N (toggle key; off = none)
-int thirdperson_init(void) {
-    FILE *f = fopen(cmds_config_path(), "r");
-    if (f) {
-        char line[300];
-        while (fgets(line, sizeof line, f)) {
-            char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
-            char *v = strchr(line, '='); if (!v || line[0] == '#' || line[0] == ';') continue;
-            *v++ = 0;
-            while (*v == ' ') v++;
-            if (!strcmp(line, "thirdperson")) tp_on = atoi(v) != 0;
-            else if (!strcmp(line, "thirdperson_key")) tp_key = cmds_parse_key(v);
-            else if (!strcmp(line, "thirdperson_distance")) tp_dist = clampf((float)atof(v), 50, 600);
-            else if (!strcmp(line, "thirdperson_side")) tp_side = clampf((float)atof(v), -150, 150);
-            else if (!strcmp(line, "thirdperson_height")) tp_height = clampf((float)atof(v), -100, 150);
-            else if (!strcmp(line, "thirdperson_fov")) tp_fov = atof(v) > 0 ? clampf((float)atof(v), 60, 130) : 0;
-        }
-        fclose(f);
+// b4bcoop.ini: thirdperson=1 (start in third person), thirdperson_key=N (toggle key; off = none), the camera settings,
+// thirdperson_aimfix=0 (no aim correction). All of them also change live (cmds_ini_poll, val NULL = removed: the
+// default): thirdperson=0/1 switches the view like /thirdperson off/on, the camera settings apply at once.
+static int tp_started;   // thirdperson_init done: later calls are live changes
+int thirdperson_live(const char *key, const char *v) {
+    if (!strcmp(key, "thirdperson")) {
+        int on = v && atoi(v) != 0;
+        if (!tp_started) tp_on = on;
+        else if (on != tp_on) { static Out tmp; out_reset(&tmp); cmd_thirdperson(on ? "on" : "off", &tmp); }
+        return 1;
     }
-    LOG("thirdperson: start %s, key=0x%02x, distance %.0f side %.0f height %.0f fov %.0f", tp_on ? "on" : "off", tp_key,
-        tp_dist, tp_side, tp_height, tp_fov);
+    if (!strcmp(key, "thirdperson_key")) tp_key = v ? cmds_parse_key(v) : 'N';
+    else if (!strcmp(key, "thirdperson_distance")) tp_dist = v ? clampf((float)atof(v), 50, 600) : TP_DIST_DEF;
+    else if (!strcmp(key, "thirdperson_side")) tp_side = v ? clampf((float)atof(v), -150, 150) : TP_SIDE_DEF;
+    else if (!strcmp(key, "thirdperson_height")) tp_height = v ? clampf((float)atof(v), -100, 150) : 0;
+    else if (!strcmp(key, "thirdperson_fov")) tp_fov = v && atof(v) > 0 ? clampf((float)atof(v), 60, 130) : 0;
+    else if (!strcmp(key, "thirdperson_aimfix")) { aim_fix = v ? atoi(v) != 0 : 1; return 1; }
+    else return 0;
+    if (tp_started) {   // camera settings: at once, like the chat command
+        if (tp_fov <= 0) tune(0);
+        if (tp_on) tune(1);
+    }
+    return 1;
+}
+static void ini_pair(const char *k, const char *v, void *ctx) { (void)ctx; thirdperson_live(k, v); }
+void thirdperson_get(TpSettings *s) {
+    s->on = tp_on; s->aimfix = aim_fix; s->dist = tp_dist; s->side = tp_side; s->height = tp_height; s->fov = tp_fov;
+}
+void thirdperson_apply(const TpSettings *s) {
+    tp_dist = clampf(s->dist, 50, 600); tp_side = clampf(s->side, -150, 150); tp_height = clampf(s->height, -100, 150);
+    tp_fov = s->fov > 0 ? clampf(s->fov, 60, 130) : 0;
+    aim_fix = s->aimfix != 0;
+    if (tp_fov <= 0) tune(0);
+    if (tp_on) tune(1);
+    if (!s->on != !tp_on) { static Out tmp; out_reset(&tmp); cmd_thirdperson(s->on ? "on" : "off", &tmp); }
+}
+int thirdperson_init(void) {
+    cmds_ini_each(ini_pair, NULL);
+    tp_started = 1;
+    LOG("thirdperson: start %s, key=0x%02x, distance %.0f side %.0f height %.0f fov %.0f aimfix %d", tp_on ? "on" : "off",
+        tp_key, tp_dist, tp_side, tp_height, tp_fov, aim_fix);
     return 0;
 }
 
@@ -254,38 +476,6 @@ void cmd_thirdperson(const char *arg_in, Out *o) {
 }
 
 #ifndef B4B_RELEASE
-typedef struct { UObject *obj; UFunction *fn; uint8_t p[1024]; } TpCall;
-static void *tc_prep(TpCall *c, UObject *obj, const char *fname) {
-    c->obj = obj;
-    c->fn = obj ? ue_find_function(U_CLASS(obj), fname) : NULL;
-    if (!c->fn || UFN_PARMSSIZE(c->fn) > sizeof c->p) return NULL;
-    memset(c->p, 0, sizeof c->p);
-    return c;
-}
-static void *tc_arg(TpCall *c, const char *name) { FField *f = ue_find_prop(c->fn, name); return f ? c->p + FP_OFFSET(f) : NULL; }
-static void rot_dir(const float r[3], float d[3]) {   // FRotator (pitch, yaw, roll) degrees -> unit vector
-    float p = r[0] * 3.14159265f / 180.f, y = r[1] * 3.14159265f / 180.f;
-    d[0] = cosf(p) * cosf(y); d[1] = cosf(p) * sinf(y); d[2] = sinf(p);
-}
-// KismetSystemLibrary::LineTraceSingle (Visibility, ignoring the pawn): the first blocking point, 0 = none
-static int trace(UObject *pawn, const float s[3], const float d[3], float hit[3]) {
-    UClass *k = ue_find_class("KismetSystemLibrary");
-    TpCall c;
-    if (!k || !tc_prep(&c, UC_CDO(k), "LineTraceSingle")) return 0;
-    *(UObject **)tc_arg(&c, "WorldContextObject") = pawn;
-    float *st = tc_arg(&c, "Start"), *en = tc_arg(&c, "End");
-    for (int i = 0; i < 3; i++) { st[i] = s[i]; en[i] = s[i] + d[i] * 50000.f; }
-    *(uint8_t *)tc_arg(&c, "bIgnoreSelf") = 1;
-    ue_process_event(c.obj, c.fn, c.p);
-    uint8_t *h = tc_arg(&c, "OutHit");
-    if (!(h[0] & 1)) return 0;
-    memcpy(hit, h + 0x1c, 12);   // HitResult.ImpactPoint
-    return 1;
-}
-static float dist3(const float a[3], const float b[3]) {
-    float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
-    return sqrtf(x * x + y * y + z * z);
-}
 // `thirdperson aim [pitch yaw]`: camera POV vs the hero's eyes (GetActorEyesViewPoint) and where each ray hits (#25
 // crosshair accuracy). `thirdperson arm [i sx sy sz]`: the hero's spring arms; sets arm i's SocketOffset.
 static void tp_aim(char *a1, Out *o) {
@@ -394,6 +584,33 @@ static void watch_tick(float dt) {
     if (watch_left <= 0) LOG("tpwatch: end");
 }
 
+// `thirdperson targets [range]`: characters (not heroes) near the local hero: location, health (aim tests: did the
+// host apply a client's hit?)
+static void tp_targets(char *a1, Out *o) {
+    UObject *pawn = local_hero();
+    UClass *gc = ue_find_class("GobiCharacter"), *hc = cls("HeroCharacter");
+    float range = a1 ? (float)atof(a1) : 3000.f, me[3] = {0};
+    TpCall c;
+    if (pawn && tc_prep(&c, pawn, "K2_GetActorLocation")) { ue_process_event(c.obj, c.fn, c.p); memcpy(me, tc_arg(&c, "ReturnValue"), 12); }
+    char nm[128];
+    int shown = 0;
+    for (int32_t i = 0, n = ue_num_objects(); gc && i < n && shown < 30; i++) {
+        UObject *x = ue_object_at(i);
+        if (!x || (U_FLAGS(x) & LIVE_FLAGS) || !ue_is_a(x, gc) || (hc && ue_is_a(x, hc))) continue;
+        float l[3] = {0}, hp = -1;
+        if (!tc_prep(&c, x, "K2_GetActorLocation")) continue;
+        ue_process_event(c.obj, c.fn, c.p); memcpy(l, tc_arg(&c, "ReturnValue"), 12);
+        if (dist3(l, me) > range) continue;
+        UObject *h = NULL;
+        if (tc_prep(&c, x, "GetHealthComponent")) { ue_process_event(c.obj, c.fn, c.p); h = *(UObject **)tc_arg(&c, "ReturnValue"); }
+        if (h && tc_prep(&c, h, "GetHealth")) { ue_process_event(c.obj, c.fn, c.p); hp = *(float *)tc_arg(&c, "ReturnValue"); }
+        out_printf(o, "%s %p at (%.0f %.0f %.0f) dist %.0f hp %.1f\n", ue_obj_name(x, nm, sizeof nm), (void *)x, l[0], l[1], l[2],
+                   dist3(l, me), hp);
+        shown++;
+    }
+    out_printf(o, "%d target(s) within %.0f of (%.0f %.0f %.0f)\n", shown, range, me[0], me[1], me[2]);
+}
+
 // Dev CLI: `thirdperson [on|off|status]` = the chat command; `thirdperson view [1|2|3]` dumps the local hero's
 // PlayerViewComponent (view bytes, tag lists, owner tags, ADS), a digit sets the view once; `thirdperson aim|arm|decals`.
 int thirdperson_cmd(const char *verb, char *rest, Out *o) {
@@ -402,6 +619,42 @@ int thirdperson_cmd(const char *verb, char *rest, Out *o) {
     if (what && !strcmp(what, "aim")) { tp_aim(arg, o); return 1; }
     if (what && !strcmp(what, "arm")) { tp_arms(arg, o); return 1; }
     if (what && !strcmp(what, "decals")) { tp_decals(arg, o); return 1; }
+    if (what && !strcmp(what, "targets")) { tp_targets(arg, o); return 1; }
+    if (what && !strcmp(what, "callers")) {   // who asks for the local hero's eyes / base aim (the fire path)
+        UObject *pawn = local_hero();
+        aim_hook(pawn);
+        if (!arg) {
+            for (int i = 0; i < n_probe_ra; i++)
+                out_printf(o, "%s ret 0x%llx x%d\n", (const char *[]){"eyes   ", "baseaim", "other eyes", "other baseaim"}[probe_ra[i].slot],
+                           (unsigned long long)((uintptr_t)probe_ra[i].ra - g_base_delta), probe_ra[i].n);
+            out_printf(o, "%d callers%s (hooks %d)\n", n_probe_ra, probe_left > 0 ? ", still recording" : "", aim_hooked);
+            return 1;
+        }
+        char *all = strtok(NULL, " ");
+        n_probe_ra = 0; probe_left = (float)atof(arg); probe_all = all && !strcmp(all, "all");
+        out_printf(o, "recording %.1f s (hooks %d)\n", probe_left, aim_hooked);
+        return 1;
+    }
+    if (what && !strcmp(what, "aimtest")) {   // aimtest <eyes|base> <yaw>: skew one of them for the local hero
+        char *v = strtok(NULL, " ");
+        aim_hook(local_hero());
+        if (arg && v) aim_test[!strcmp(arg, "base")] = (float)atof(v);
+        out_printf(o, "aimtest eyes %+.1f base %+.1f (hooks %d)\n", aim_test[0], aim_test[1], aim_hooked);
+        return 1;
+    }
+    if (what && !strcmp(what, "aimfix")) {   // aimfix [0|1] [use 1|2|3] [chan n]: the correction and its status
+        char *v = strtok(NULL, " "), *w = v ? strtok(NULL, " ") : NULL;
+        if (arg && (arg[0] == '0' || arg[0] == '1')) aim_fix = atoi(arg);
+        for (char *k = arg; k; k = NULL) {
+            if (!strcmp(k, "use") && v) aim_use = atoi(v);
+            else if (!strcmp(k, "chan") && v) aim_chan = atoi(v);
+        }
+        (void)w;
+        out_printf(o, "aimfix %d use %d chan %d hooks %d ok %d local (%.1f %.1f %.1f) n %d last point (%.1f %.1f %.1f) "
+                      "%.2f deg\n", aim_fix, aim_use, aim_chan, aim_hooked, aim_ok, aim_local[0], aim_local[1],
+                   aim_local[2], aim_n, aim_last_p[0], aim_last_p[1], aim_last_p[2], aim_last_deg);
+        return 1;
+    }
     if (what && !strcmp(what, "watch")) { watch_left = arg ? (float)atof(arg) : 3.f; watch_t = 0; out_printf(o, "watching\n"); return 1; }
     if (!what || strcmp(what, "view")) {   // the chat command: pass the words through
         char line[64];

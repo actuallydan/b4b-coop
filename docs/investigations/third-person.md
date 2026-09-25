@@ -140,5 +140,36 @@ messages), `cheatprobe input <vk|lmb|rmb> [s]` (the same through SendInput: the 
 works for mouse buttons when the window is raised; this is how fire/ADS are tested), `cheatprobe bind [axis] [<Name>
 <Key>]` (list / add input mappings; not saved).
 
+## Aim correction (WIP, branch `convenience`, 2026-09-25)
+- Implemented (thirdperson.c, `thirdperson_aimfix=1` default): MinHook on the hero class's GetActorEyesViewPoint
+  (vtable +0x5F0; GetBaseAimRotation +0x6E0 hooked too, unused). For the local hero in our 3P with an offset camera, the
+  eye rotation is turned towards the point under the crosshair: camera ray (rebuilt each call from the camera's
+  offset to the eyes measured last frame from PlayerCameraManager.CameraCachePrivate POV), traced (Visibility, starting
+  beside the eyes), cached per frame. Game thread only.
+- Fire path (dev `thirdperson callers <s> [all]`): per shot one extra eyes call from 0x141930ceb (func 0x141930c50:
+  eyes for an autonomous/authority pawn, GetBaseAimRotation for a simulated proxy (+0x120 == 1); callers 0x141940150,
+  0x141942000, 0x141943930, 0x141946816) and one from 0x141ef8514. Per-frame callers 0x141531fbd, 0x141bfc088.
+- **Verified live on a client (lane 2, `multi.sh 2`)**: side 40 at a wall 600 away: without the fix the impact decal is
+  at the eye-ray point (17-80 units off the crosshair point), with it at the crosshair point (0-5 units = spread);
+  `thirdperson aim` then shows both rays hitting the same point (0.00 deg). Visibility traces hit a common's capsule.
+- **Open (the protocol question)**: does the host apply a corrected client shot? Not settled. Tries: host decals don't
+  show a client's impacts; `/freeze` (PlayersOnly) stops weapons on the host entirely (invalid test); unfrozen spawned
+  commons die at once or wander. Next: on the host `thirdperson callers 3 all` while the client fires: an "other eyes"
+  call from 0x141930ceb per client shot = the host re-traces with its own copy of the view (the fix would then need
+  host cooperation = protocol bump); none = the host takes the client's HitResults (ServerMoves carries a
+  TArray<FHitResult>) and the fix works as is. Then confirm with damage: `/bots off` + `/restart`, `/god all`, a common
+  in melee range, aim at its head with the crosshair (dev `thirdperson aim <pitch> <yaw>`, `thirdperson targets` shows
+  hp on host and client), one shot with `thirdperson aimfix 0` vs `1`.
+
+## Other results (2026-09-25, lane 2)
+- Gun-to-gun switch (pistol → AR, key then fire held, `thirdperson watch`): first shot 1.172 / 1.174 / 1.170 s in 3P vs
+  1.178 / 1.171 / 1.180 s in 1P (selection at 0.40-0.42 s): no difference.
+- Hotkeys now read the game's own input (PlayerController.IsInputKeyDown, cmds.c `cmds_hotkey_down`), GetAsyncKeyState
+  only as a fallback: N typed into the open chat box no longer toggles 3P (verified), and raising/switching the window
+  (wmctrl) no longer fires it (0 spurious toggles over two focus changes).
+- Not done: pounce/grab and medkit healing in 3P (a bandage given with `giveitem` wasn't selectable with keys 3-6;
+  `cheatprobe hp <#>` without a value is lethal, careful). Possible 1-frame first-person flash when a game-driven 3P
+  moment ends (the game writes 1, our next tick writes 2); an UpdateView hook would remove it if it shows.
+
 ## Open
-- Aim correction for side/height offsets (above). A shoulder-swap hotkey (`/thirdperson side swap` exists) if wanted.
+- Aim correction: the host question above. A shoulder-swap hotkey (`/thirdperson side swap` exists) if wanted.
