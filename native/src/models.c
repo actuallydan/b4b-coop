@@ -197,6 +197,97 @@ static void handle_str(const RowHandle *h, char *buf, size_t n) {
     else snprintf(buf, n, "%s/%s", ue_obj_name(h->table, t, sizeof t), ue_name(h->row, r, sizeof r));
 }
 
+static UObject *load_asset(const char *path) {
+    UClass *ksl = ue_find_class("KismetSystemLibrary");
+    UObject *cdo = ksl ? UC_CDO(ksl) : NULL;
+    UFunction *f = fn_of(cdo, "LoadAsset_Blocking");
+    int32_t pa = parm_off(f, "Asset"), rv = parm_off(f, "ReturnValue");
+    if (!f || pa < 0 || rv < 0 || UFN_PARMSSIZE(f) > 128) return NULL;
+    uint8_t p[128] = {0};
+    *(int32_t *)(p + pa) = -1;   // FWeakObjectPtr: none
+    *(FName *)(p + pa + 0x10) = make_name(path);
+    ue_process_event(cdo, f, p);
+    return *(UObject **)(p + rv);
+}
+
+static UObject *comp_named(UObject *actor, const char *name) {
+    int32_t n = ue_num_objects(); char a[128];
+    for (int32_t i = 0; i < n; i++) {
+        UObject *x = ue_object_at(i);
+        if (is_live(x) && U_OUTER(x) == actor && !_stricmp(ue_obj_name(x, a, sizeof a), name)) return x;
+    }
+    return NULL;
+}
+
+// ---- NPC bodies: skeletal meshes on the heroes' 3P_Biped_SK skeleton that are not survivor outfits ----
+// No customization row exists for them, so the look travels as a made-up outfit row name "b4bcoop.npc.<name>" in the
+// hero's own customization table: the replicated set carries it to everyone, the game itself finds no such row
+// (IsValid fails, nothing is applied by the game), and every machine running b4bcoop puts the NPC mesh on that hero
+// (tick_npc). Players without b4bcoop keep seeing the survivor. Ridden use 3P_Common_SK (and the Hag, Sleeper, Titan
+// their own): not offered.
+#define NPC_PREFIX "b4bcoop.npc."
+typedef struct { char name[40]; char path[160]; int bad; UObject *mesh; int32_t mesh_idx; } Npc;
+static Npc npcs[128];
+static int n_npcs = -1;
+static void build_npcs(void) {
+    n_npcs = 0;
+    UObject *ar = ue_find_first_of("AssetRegistryImpl");
+    if (!ar) { UClass *c = ue_find_class("AssetRegistryImpl"); ar = c ? UC_CDO(c) : NULL; }
+    UClass *ic = ue_find_class("AssetRegistry");
+    UFunction *f = ic ? ue_find_function(ic, "GetAssetsByClass") : NULL;   // IAssetRegistry (interface) on the impl
+    int32_t pc = parm_off(f, "ClassName"), pa = parm_off(f, "OutAssetData"), ps = parm_off(f, "bSearchSubClasses");
+    if (!ar || !f || pc < 0 || pa < 0 || UFN_PARMSSIZE(f) > 64) { LOG("models: no asset registry, no NPC bodies"); return; }
+    uint8_t p[64] = {0};
+    *(FName *)(p + pc) = make_name("SkeletalMesh");
+    if (ps >= 0) p[ps] = 1;
+    ue_process_event(ar, f, p);
+    TArray *arr = (TArray *)(p + pa);   // FAssetData (0x50) array from the game's allocator; left as is (once)
+    char b[200];
+    for (int i = 0; i < arr->num && n_npcs < 128; i++) {
+        ue_name(*(FName *)((char *)arr->data + i * 0x50), b, sizeof b);   // ObjectPath
+        if (!strstr(b, "/Characters/NPC/") && !strstr(b, "/Characters/NPCs/") && !strstr(b, "/Characters/Cultists/") &&
+            !strstr(b, "/BaseHero/Meshes/3P_Survivor")) continue;
+        if (strstr(b, "CultistPet")) continue;   // a Tallboy
+        Npc *n = &npcs[n_npcs++];
+        memset(n, 0, sizeof *n);
+        snprintf(n->path, sizeof n->path, "%s", b);
+        const char *base = strrchr(b, '.');
+        base = base ? base + 1 : b;
+        if (!_strnicmp(base, "3P_", 3)) base += 3;
+        size_t k = 0;
+        for (; *base && k + 1 < sizeof n->name; base++) {
+            if (!_strnicmp(base, "_SKM", 4)) { base += 3; continue; }
+            n->name[k++] = (char)tolower((unsigned char)*base);
+        }
+        n->name[k] = 0;
+    }
+    LOG("models: %d NPC bodies in the asset registry", n_npcs);
+}
+static Npc *npc_by_name(const char *name) {
+    if (n_npcs < 0) build_npcs();
+    for (int i = 0; i < n_npcs; i++) if (!_stricmp(npcs[i].name, name)) return &npcs[i];
+    return NULL;
+}
+// "b4bcoop.npc.<name>" row -> its NPC entry (NULL: not ours / unknown)
+static Npc *npc_of_row(FName row) {
+    char b[80];
+    ue_name(row, b, sizeof b);
+    return _strnicmp(b, NPC_PREFIX, sizeof NPC_PREFIX - 1) ? NULL : npc_by_name(b + sizeof NPC_PREFIX - 1);
+}
+static UObject *npc_mesh(Npc *n) {   // loaded on first use (blocking), kept alive by the components using it
+    if (n->mesh && ue_object_at(n->mesh_idx) == n->mesh) return n->mesh;
+    n->mesh = load_asset(n->path);
+    n->mesh_idx = n->mesh ? U_INDEX(n->mesh) : 0;
+    char b[64];
+    UObject *sk = n->mesh ? ue_get_ptr(n->mesh, "Skeleton") : NULL;
+    if (!sk || strcmp(ue_obj_name(sk, b, sizeof b), "3P_Biped_SK")) {
+        n->bad = 1;
+        LOG("models: NPC %s: %s", n->name, n->mesh ? "other skeleton, not usable" : "failed to load");
+        n->mesh = NULL;
+    }
+    return n->mesh;
+}
+
 // ---- players, slots, sets ----
 static UObject *my_ps(void) { UObject *pc = ue_local_pc(); return pc ? ue_get_ptr(pc, "PlayerState") : NULL; }
 static int is_client(void) {
@@ -225,16 +316,20 @@ static UObject *slot_owner(UObject *slot) { return slot ? ue_get_ptr(slot, "Owni
 static int foreign(const RowHandle *h, int hero) {
     if (!h->table) return 0;
     int t = hero_by_table(h->table);
-    return t < 0 || t != hero;
+    return t < 0 || t != hero || !dt_row(h->table, h->row);   // not a real row: an NPC body
 }
 static int set_foreign(const CustSet *s, int hero) {
     for (int k = 0; k < 4; k++) if (foreign(&s->slot[k], hero)) return 1;
     return 0;
 }
-static int set_sane(const CustSet *s) {   // every non-empty handle is a row of a CharacterCustomizationRow table
-    for (int k = 0; k < 4; k++)
-        if (s->slot[k].table && (!is_rowstruct(s->slot[k].table, "CharacterCustomizationRow") || !dt_row(s->slot[k].table, s->slot[k].row)))
-            return 0;
+// Every non-empty handle is a row of a CharacterCustomizationRow table, or (outfit only) one of our NPC names.
+static int set_sane(const CustSet *s) {
+    for (int k = 0; k < 4; k++) {
+        const RowHandle *h = &s->slot[k];
+        if (!h->table) continue;
+        if (!is_rowstruct(h->table, "CharacterCustomizationRow")) return 0;
+        if (!dt_row(h->table, h->row) && !(k == SLOT_OUTFIT && npc_of_row(h->row))) return 0;
+    }
     return 1;
 }
 
@@ -244,6 +339,7 @@ typedef struct {
     char key[80];              // host: player key (steam:<id>/name:<n>) or "slot:<n>" for a bot's slot
     char label[48];            // what was asked for (entry or hero name)
     RowHandle pick[4]; uint8_t has[4];
+    int npc;                   // pick[OUTFIT].row is an NPC name (table: the hero's own, filled in by compose)
     int32_t slot_idx;          // U_INDEX of the slot last seen (new map/slot: retry counters reset)
     int tries; float wait; int gave_up;
 } Want;
@@ -276,6 +372,7 @@ static void compose(const CustSet *cur, const Want *w, int hero, CustSet *out) {
     out->last = cur->last;
     int pieces = 0;
     for (int k = 0; k < 4; k++) if (w->has[k]) { out->slot[k].table = w->pick[k].table; out->slot[k].row = w->pick[k].row; out->last = (uint8_t)k; pieces |= k != SLOT_OUTFIT; }
+    if (w->npc) out->slot[SLOT_OUTFIT].table = hero >= 0 ? heroes[hero].custtable : NULL;
     if (!pieces || w->has[SLOT_OUTFIT]) return;
     out->slot[SLOT_OUTFIT].table = NULL; out->slot[SLOT_OUTFIT].row.idx = out->slot[SLOT_OUTFIT].row.num = 0;
     for (int k = 0; k < 3; k++) {
@@ -288,6 +385,7 @@ static int matches(const CustSet *cur, const Want *w) {
     int pieces = 0;
     for (int k = 0; k < 4; k++) {
         if (!w->has[k]) continue;
+        if (k == SLOT_OUTFIT && w->npc) { if (!cur->slot[k].table || !fname_eq(cur->slot[k].row, w->pick[k].row) || cur->last != SLOT_OUTFIT) return 0; continue; }
         if (cur->slot[k].table != w->pick[k].table || !fname_eq(cur->slot[k].row, w->pick[k].row)) return 0;
         pieces |= k != SLOT_OUTFIT;
     }
@@ -456,11 +554,54 @@ static void tick_others(float dt) {
     }
 }
 
+// Every machine: heroes whose replicated set names an NPC body wear it (the game applies nothing for that row).
+static UObject *comp_of(UObject *actor, const char *name) {   // cached per actor: object scans are slow
+    static struct { UObject *actor, *comp; int32_t ai, ci; char name[24]; } cache[48];
+    for (int i = 0; i < 48; i++)
+        if (cache[i].actor == actor && !strcmp(cache[i].name, name) && ue_object_at(cache[i].ai) == actor && ue_object_at(cache[i].ci) == cache[i].comp)
+            return cache[i].comp;
+    UObject *c = comp_named(actor, name);
+    static int next;
+    if (c) { int i = next++ % 48; cache[i].actor = actor; cache[i].comp = c; cache[i].ai = U_INDEX(actor); cache[i].ci = U_INDEX(c); snprintf(cache[i].name, sizeof cache[i].name, "%s", name); }
+    return c;
+}
+static void set_mesh(UObject *comp, UObject *mesh) {
+    static UFunction *f; static int32_t pm, pr;
+    if (!f) { f = fn_of(comp, "SetSkeletalMesh"); pm = parm_off(f, "NewMesh"); pr = parm_off(f, "bReinitPose"); }
+    if (!f || pm < 0) return;
+    int32_t om = ue_prop_offset(comp, "OverrideMaterials");   // the survivor outfit's material overrides don't fit
+    if (om >= 0) ((TArray *)((char *)comp + om))->num = 0;
+    uint8_t p[32] = {0};
+    *(UObject **)(p + pm) = mesh;
+    if (pr >= 0) p[pr] = 1;
+    ue_process_event(comp, f, p);
+}
+static int n_npc_applied;
+static void tick_npc(void) {
+    UObject **s; int n = hero_slots(&s);
+    for (int i = 0; i < n; i++) {
+        CustSet *cur = slot_set(s[i]);
+        UObject *pawn = slot_pawn(s[i]);
+        if (!cur || !pawn || cur->last != SLOT_OUTFIT || !cur->slot[SLOT_OUTFIT].table) continue;
+        Npc *np = npc_of_row(cur->slot[SLOT_OUTFIT].row);
+        if (!np || np->bad) continue;
+        UObject *body = ue_get_ptr(pawn, "Mesh"), *mesh = npc_mesh(np);
+        if (!body || !mesh || ue_get_ptr(body, "SkeletalMesh") == mesh) continue;
+        set_mesh(body, mesh);
+        UObject *head = comp_of(pawn, "ThirdPersonHeadMesh"), *legs = comp_of(pawn, "ThirdPersonLegsMesh");
+        if (head && ue_get_ptr(head, "SkeletalMesh")) set_mesh(head, NULL);
+        if (legs && ue_get_ptr(legs, "SkeletalMesh")) set_mesh(legs, NULL);
+        n_npc_applied++;
+        LOG("models: hero slot %d wears NPC %s", i, np->name);
+    }
+}
+
 void models_tick(float dt) {
     if ((tick_acc += dt) < 0.5f) return;
     dt = tick_acc; tick_acc = 0;
     UObject *w = ue_world();
     if (!w || !ue_local_pc()) return;
+    tick_npc();
     if (!me.on && !others[0].on) {   // cheap path: nothing wished (others[] is compacted on use)
         int any = 0;
         for (int i = 0; i < MAX_OTHERS; i++) any |= others[i].on;
@@ -555,17 +696,36 @@ static int reset_foreign_all(void) {
 // Resolve a name: an entry ("holly_elite_04"), or a survivor ("holly": its default skin).
 static int resolve(const char *name, Want *w, char *label, size_t n) {
     need_catalogue();
-    memset(w->pick, 0, sizeof w->pick); memset(w->has, 0, sizeof w->has);
+    memset(w->pick, 0, sizeof w->pick); memset(w->has, 0, sizeof w->has); w->npc = 0;
     for (int i = 0; i < n_cat; i++)
         if (!_stricmp(cat[i].name, name)) { want_pick(w, &cat[i]); snprintf(label, n, "%s", cat[i].name); return 0; }
     int hi = hero_by_slug(name);
     if (hi >= 0 && !want_hero(w, hi)) { snprintf(label, n, "%s", heroes[hi].slug); return 0; }
+    Npc *np = npc_by_name(name);
+    if (np && !np->bad) {
+        char row[80];
+        snprintf(row, sizeof row, NPC_PREFIX "%s", np->name);
+        w->pick[SLOT_OUTFIT].table = NULL; w->pick[SLOT_OUTFIT].row = make_name(row); w->has[SLOT_OUTFIT] = 1; w->npc = 1;
+        snprintf(label, n, "%s", np->name);
+        return 0;
+    }
     return -1;
 }
 
 static void list(const char *cat_arg, Out *o) {
     need_catalogue();
     if (!n_heroes) { out_printf(o, "no survivor data loaded yet\n"); return; }
+    if (cat_arg && (!_stricmp(cat_arg, "npc") || !_stricmp(cat_arg, "npcs"))) {
+        if (n_npcs < 0) build_npcs();
+        char line[200]; size_t k = snprintf(line, sizeof line, "NPC bodies (seen by players with b4bcoop):");
+        for (int i = 0; i < n_npcs; i++) {
+            if (npcs[i].bad) continue;
+            if (k + strlen(npcs[i].name) + 2 > 90) { out_printf(o, "%s\n", line); k = snprintf(line, sizeof line, " "); }
+            k += snprintf(line + k, sizeof line - k, " %s", npcs[i].name);
+        }
+        out_printf(o, "%s\n", line);
+        return;
+    }
     int hi = cat_arg && *cat_arg ? hero_by_slug(cat_arg) : -1;
     if (hi < 0 && cat_arg && *cat_arg && strcmp(cat_arg, "all")) {
         out_printf(o, "no survivor '%s'. /model list shows them\n", cat_arg);
@@ -580,6 +740,7 @@ static void list(const char *cat_arg, Out *o) {
             if (k > 70) { out_printf(o, "%s\n", line); k = 0; }
         }
         if (k) out_printf(o, "%s\n", line);
+        out_printf(o, "/model list npc: Fort Hope NPCs, survivors, cultists\n");
         return;
     }
     static const int order[4] = {SLOT_OUTFIT, SLOT_HEAD, SLOT_TORSO, SLOT_LEGS};
@@ -821,28 +982,6 @@ static void cmd_rows(const char *filter, Out *o) {
         out_printf(o, "%-28s %-8s %-6s row=%s mats=%d/%d 3p=%s fp=%s\n", e->name, heroes[e->hero].slug, SLOTN[e->slot],
                    ue_name(e->row, b, sizeof b), HMD_MATS(CC_3P(r))->num, HMD_MATS(CC_FP(r))->num, e->mesh3p, fp);
     }
-}
-
-static UObject *load_asset(const char *path) {
-    UClass *ksl = ue_find_class("KismetSystemLibrary");
-    UObject *cdo = ksl ? UC_CDO(ksl) : NULL;
-    UFunction *f = fn_of(cdo, "LoadAsset_Blocking");
-    int32_t pa = parm_off(f, "Asset"), rv = parm_off(f, "ReturnValue");
-    if (!f || pa < 0 || rv < 0 || UFN_PARMSSIZE(f) > 128) return NULL;
-    uint8_t p[128] = {0};
-    *(int32_t *)(p + pa) = -1;   // FWeakObjectPtr: none
-    *(FName *)(p + pa + 0x10) = make_name(path);
-    ue_process_event(cdo, f, p);
-    return *(UObject **)(p + rv);
-}
-
-static UObject *comp_named(UObject *actor, const char *name) {
-    int32_t n = ue_num_objects(); char a[128];
-    for (int32_t i = 0; i < n; i++) {
-        UObject *x = ue_object_at(i);
-        if (is_live(x) && U_OUTER(x) == actor && !_stricmp(ue_obj_name(x, a, sizeof a), name)) return x;
-    }
-    return NULL;
 }
 
 // mdl dump | rows [filter] | setslot <hero#> <entry> | rpc <entry> | reinit | mesh <hero#> <comp> <path> | load <path>
