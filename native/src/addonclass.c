@@ -5,7 +5,7 @@
 // A package (.uasset; B4B: legacy version -7, unversioned, split .uasset/.uexp) is judged by the classes of all its
 // exports, read from the package summary, name map, import map and export map (the export's ClassIndex; export
 // entries are 104 bytes in this build, tools/modkit/upkg.py). Cosmetic = every export's class is in the cosmetic
-// table below; anything else (physics, collision, data/curve tables, blueprints, skeletons, animations, maps,
+// table below; anything else (physics assets, data/curve tables, blueprints, skeletons, maps,
 // configs, unknown classes and file types) is gameplay. The author's `content=` line in the addoninfo is never
 // trusted: addons.c logs when it differs.
 #include <stdint.h>
@@ -53,6 +53,13 @@ static const Rule COSMETIC[] = {
     {"/Script/Engine", "SkeletalMesh", AK_MESHES}, {"/Script/Engine", "SkeletalMeshSocket", AK_MESHES},
     {"/Script/Engine", "MorphTarget", AK_MESHES}, {"/Script/Engine", "SkeletalMeshLODSettings", AK_MESHES},
     {"/Script/Engine", "StaticMesh", AK_MESHES}, {"/Script/Engine", "StaticMeshSocket", AK_MESHES},
+    // a static mesh's own collision travels with it; on a joiner the host's collision is authoritative anyway
+    {"/Script/Engine", "BodySetup", AK_MESHES}, {"/Script/NavigationSystem", "NavCollision", AK_MESHES},
+    {"/Script/Engine", "NavCollision", AK_MESHES},
+    // animations (their notifies' gameplay effects run on the host)
+    {"/Script/Engine", "AnimSequence", AK_ANIMATIONS}, {"/Script/Engine", "AnimMontage", AK_ANIMATIONS},
+    {"/Script/Engine", "AnimComposite", AK_ANIMATIONS}, {"/Script/Engine", "BlendSpace*", AK_ANIMATIONS},
+    {"/Script/Engine", "AimOffsetBlendSpace*", AK_ANIMATIONS}, {"/Script/Engine", "PoseAsset", AK_ANIMATIONS},
     {"/Script/ClothingSystemRuntimeCommon", NULL, AK_MESHES}, {"/Script/ClothingSystemRuntimeNv", NULL, AK_MESHES},   // cloth
     {"/Script/Engine", "SoundWave", AK_SOUNDS}, {"/Script/Engine", "SoundCue", AK_SOUNDS},
     {"/Script/Engine", "SoundClass", AK_SOUNDS}, {"/Script/Engine", "SoundMix", AK_SOUNDS},
@@ -72,12 +79,11 @@ static const Rule COSMETIC[] = {
 // Readable reasons for the usual gameplay classes (anything else: "<Class>")
 static const struct { const char *cls, *why; } GAMEPLAY[] = {
     {"PhysicsAsset", "physics asset"}, {"SkeletalBodySetup", "physics asset"}, {"PhysicsConstraintTemplate", "physics asset"},
-    {"PhysicalMaterial", "physical material"}, {"BodySetup", "collision"}, {"NavCollision", "navigation collision"},
+    {"PhysicalMaterial", "physical material"},
     {"DataTable", "data table"}, {"GuidDataTable", "data table"}, {"CompositeDataTable", "data table"},
     {"CurveTable", "curve table"}, {"CompositeCurveTable", "curve table"}, {"Curve*", "curve"},
     {"BlueprintGeneratedClass", "blueprint"}, {"AnimBlueprintGeneratedClass", "animation blueprint"},
-    {"Skeleton", "skeleton"}, {"AnimSequence", "animation"}, {"AnimMontage", "animation"}, {"AnimComposite", "animation"},
-    {"BlendSpace*", "animation"}, {"AimOffsetBlendSpace*", "animation"}, {"PoseAsset", "animation"},
+    {"Skeleton", "skeleton"},
     {"World", "map"}, {"LevelSequence", "level sequence"},
 };
 
@@ -214,10 +220,10 @@ void addonclass_file(AddonClass *c, const char *key, const char *path, int has_u
 }
 
 const char *addonclass_kinds(unsigned kinds, char *buf, size_t n) {
-    static const char *K[] = {"textures", "materials", "meshes", "sounds", "ui", "effects"};
+    static const char *K[] = {"textures", "materials", "meshes", "sounds", "ui", "effects", "animations"};
     size_t o = 0;
     buf[0] = 0;
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 7; i++)
         if (kinds & (1u << i)) o += (size_t)snprintf(buf + o, o < n ? n - o : 0, "%s%s", o ? ", " : "", K[i]);
     return buf;
 }

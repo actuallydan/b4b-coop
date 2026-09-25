@@ -266,10 +266,10 @@ conflict: holly_green.pak overrides holly_magenta.pak (2 file(s))
 
 **Cosmetic or gameplay:** b4bcoop looks at the files in every add-on and sorts it into one of two kinds (what the
 add-on says about itself doesn't count):
-- **cosmetic**: textures, materials, character and weapon models (on the game's own skeleton), cloth, sounds, UI,
-  effects. Changes only what you see and hear.
-- **gameplay**: anything else, e.g. physics or collision, data tables, blueprints, skeletons, animations, maps, config
-  files. Could change how the game plays, so hosts refuse these by default.
+- **cosmetic**: textures, materials, character, weapon and prop models (characters on the game's own skeleton),
+  animations, cloth, sounds, UI, effects. Changes only what you see and hear.
+- **gameplay**: anything else, e.g. physics assets, data tables, blueprints, skeletons, maps, config files. Could
+  change how the game plays, so hosts refuse these by default.
 
 `/addons` shows the kind of each add-on, `/addons info <#>` the first file that made it "gameplay".
 

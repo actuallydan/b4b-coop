@@ -68,7 +68,11 @@ COSMETIC = [
                                                  "SubsurfaceProfile")
 ] + [
     ("/Script/Engine", c, "meshes") for c in ("SkeletalMesh", "SkeletalMeshSocket", "MorphTarget",
-                                              "SkeletalMeshLODSettings", "StaticMesh", "StaticMeshSocket")
+                                              "SkeletalMeshLODSettings", "StaticMesh", "StaticMeshSocket",
+                                              "BodySetup", "NavCollision")   # a static mesh's own collision
+] + [("/Script/NavigationSystem", "NavCollision", "meshes")] + [
+    ("/Script/Engine", c, "animations") for c in ("AnimSequence", "AnimMontage", "AnimComposite", "BlendSpace*",
+                                                  "AimOffsetBlendSpace*", "PoseAsset")
 ] + [
     ("/Script/Engine", c, "sounds") for c in ("SoundWave", "SoundCue", "SoundClass", "SoundMix", "SoundAttenuation",
                                               "SoundConcurrency", "SoundSubmix", "ReverbEffect", "SoundNode*")
@@ -85,14 +89,12 @@ COSMETIC = [
 ] + [("/Script/Niagara", None, "effects")]
 GAMEPLAY = [("PhysicsAsset", "physics asset"), ("SkeletalBodySetup", "physics asset"),
             ("PhysicsConstraintTemplate", "physics asset"), ("PhysicalMaterial", "physical material"),
-            ("BodySetup", "collision"), ("NavCollision", "navigation collision"), ("DataTable", "data table"),
+            ("DataTable", "data table"),
             ("GuidDataTable", "data table"), ("CompositeDataTable", "data table"), ("CurveTable", "curve table"),
             ("CompositeCurveTable", "curve table"), ("Curve*", "curve"), ("BlueprintGeneratedClass", "blueprint"),
             ("AnimBlueprintGeneratedClass", "animation blueprint"), ("Skeleton", "skeleton"),
-            ("AnimSequence", "animation"), ("AnimMontage", "animation"), ("AnimComposite", "animation"),
-            ("BlendSpace*", "animation"), ("AimOffsetBlendSpace*", "animation"), ("PoseAsset", "animation"),
             ("World", "map"), ("LevelSequence", "level sequence")]
-KINDS = ("textures", "materials", "meshes", "sounds", "ui", "effects")
+KINDS = ("textures", "materials", "meshes", "sounds", "ui", "effects", "animations")
 
 
 def _match(name, pat):

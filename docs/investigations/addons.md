@@ -108,21 +108,24 @@ written as `content=`): same rules, kept in sync. The author's label is never tr
 - **Cosmetic** when every export's class is one of: textures (`Texture2D`, `TextureCube`, arrays, volume, render
   targets, light profiles), materials (`Material`, `MaterialInstanceConstant`, `MaterialFunction*`,
   `SubsurfaceProfile`), meshes (`SkeletalMesh` + `SkeletalMeshSocket`, `MorphTarget`, LOD settings, `StaticMesh`,
-  `StaticMeshSocket`, `/Script/ClothingSystemRuntime{Common,Nv}`), sounds (Engine sound classes, `SoundNode*`, all of
+  `StaticMeshSocket` and its own `BodySetup`/`NavCollision`, `/Script/ClothingSystemRuntime{Common,Nv}`), animations
+  (`AnimSequence`, montages, composites, blend spaces, pose assets), sounds (Engine sound classes, `SoundNode*`, all of
   `/Script/AkAudio`), UI (all of `/Script/UMG`, `/Script/MovieScene{,Tracks}`, fonts, `StringTable`, Slate style
   assets, a widget blueprint's class/functions/default object), effects (Cascade `Particle*`/`Distribution*`, all of
   `/Script/Niagara`). A `SkeletalMesh` package must import a `Skeleton` (it uses one of the game's skeletons).
-- **Gameplay** for anything else; named reasons: physics asset, physical material, collision (`BodySetup`, so a
-  static mesh with collision is gameplay), navigation collision, data/curve tables, curves, blueprint, animation
-  blueprint, skeleton, animation (`AnimSequence`, montages, blend spaces, pose assets: notifies can drive gameplay),
-  map (`.umap`, `World`), level sequence, instance of another package's blueprint class, unknown class.
+- **Gameplay** for anything else; named reasons: physics asset, physical material, data/curve tables, curves,
+  blueprint, animation blueprint, skeleton, map (`.umap`, `World`), level sequence, instance of another package's
+  blueprint class, unknown class.
+- Static meshes (with their collision) and animations are cosmetic by decision: players read "cosmetic" as "what it
+  looks like", and a prop or animation swap is that to them. On a joiner (the only one the policy judges) the host's
+  collision and the host-side effects of anim notifies are authoritative, so the residual effect is local.
 - Other files: `.ubulk`/`.uptnl` (bulk data) cosmetic; `.uexp` without its `.uasset` in the same add-on gameplay
   (class unknown); `.locres`/`.ufont` ui, `.bnk`/`.wem` sounds, shader libraries materials; `.ini` gameplay (config);
   any other type gameplay.
 - Checked on 1477 packages under `~/.local/share/b4b-coop/{extract,meshes,texwork}`: C (built natively with a small
   driver) and Python give identical results. Extracted game packages: 447 textures, 151 materials, 619 meshes
-  (all 601 mesh-mod outputs incl. 12 with cloth) cosmetic; animations, blueprints, `GuidDataTable`
-  (`*_Customization_DT`), static meshes (all have `BodySetup` + `NavCollision`), skeletons, physics assets gameplay.
+  (all 601 mesh-mod outputs incl. 12 with cloth) cosmetic; blueprints, `GuidDataTable` (`*_Customization_DT`),
+  skeletons, physics assets gameplay. (Animations and static meshes were gameplay in that run; reclassified since.)
 - Logged per add-on: `addons:    content: cosmetic (textures)` / `content: gameplay (1 file): data table:
   Walker_Customization_DT.uasset`; `its addoninfo says content=cosmetic; the files say gameplay (the files decide)`.
   `/addons` shows `[on, cosmetic]`, `/addons info` the kind, the first gameplay file and the short id.

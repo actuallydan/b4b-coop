@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { AK_TEXTURES = 1, AK_MATERIALS = 2, AK_MESHES = 4, AK_SOUNDS = 8, AK_UI = 16, AK_EFFECTS = 32 };
+enum { AK_TEXTURES = 1, AK_MATERIALS = 2, AK_MESHES = 4, AK_SOUNDS = 8, AK_UI = 16, AK_EFFECTS = 32, AK_ANIMATIONS = 64 };
 typedef struct {
     int gameplay;       // 1: at least one file affects gameplay
     int n_gameplay;     // how many files do
