@@ -140,6 +140,24 @@ the agent verifies byte signatures and refuses to hook on mismatch.
 - Test a mismatch: dev ini `b4bcoop_protocol_override=N` fakes another protocol (e.g.
   `B4B_INI_EXTRA2="b4bcoop_protocol_override=2" launch/multi.sh 2`).
 
+## Commit messages
+Subjects are public: `tools/relnotes.py` turns main's first-parent history (the `--no-ff` merges and direct commits)
+into the GitHub release notes (release.yml). So:
+- Subject = one plain-English line a player or contributor understands, imperative or descriptive, under ~100 chars,
+  issues as `(#N)`. No agent/lane names, test-infra jargon, addresses (`0x14...`), file-name prefixes or "WIP"; that
+  goes in the body. Merges get a descriptive subject (what the branch brings), never git's default "Merge branch 'x'".
+- Category = a `Release-note:` trailer, in the last paragraph above `Co-Authored-By`/`Claude-Session` (which never
+  reach the notes): `new`, `change`, `fix`, `docs` (player docs), `dev` (tests, tools, CLAUDE.md, investigations:
+  grouped under "Developer"), `none` (left out). Bare value = the subject is the note; `Release-note: fix: <text>`
+  = that text instead; repeat the trailer for several notes. Every player-facing change needs one. Put them on the
+  merge (it wins), or on the branch commits (used when the merge has none). Release bumps ("Release X.Y.Z") are
+  skipped. Older commits without trailers: the subject is used, the category guessed from the files touched.
+- Preview: `tools/relnotes.py` (since the last `v*` tag), `tools/relnotes.py v0.5.0`, `tools/relnotes.py A..B`; hand-edit
+  a published release with `gh release edit <tag> --notes-file` (keep the provenance text below the notes).
+- CI (`ci.yml` job `commits`) runs `tools/relnotes.py --check <pushed range>`: fails on `fixup!`/`squash!`, WIP,
+  default merge subjects and malformed `Release-note:` values; only warns on addresses, lane/agent jargon,
+  file-name prefixes and long subjects.
+
 ## How to run N local instances (unattended)
 `launch/multi.sh N` (N = 1-5; install the DLL first). Instance 1 hosts (by default: its ini has no `host=` line), the
 others join `127.0.0.1:7787` (loopback: allowed without `host_ip`, all game sockets are on 127.0.0.1); no clicks:
