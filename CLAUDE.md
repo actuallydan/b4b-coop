@@ -3,22 +3,27 @@
 Unofficial private co-op for Back 4 Blood (up to 4 players), no WB/Turtle Rock services. Approach: take the
 game's **offline mode** (full local progression in `PlayerProfileSettings.json`) and turn the offline session
 into a **listen server** others join — Seamless Co-op style. An injected agent DLL does the engine work.
+Player defaults (0.3.0): every offline Fort Hope hosts, friends join through Steam "Join Game" over Steam P2P only,
+the game's UDP socket is bound to 127.0.0.1 (nothing reachable from the network); `host_ip=1` is the advanced IP
+opt-in. Player docs: README.md (top) and its copy in `launch/package.sh` (`b4bcoop-README.txt`).
 
 Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOTES.md`. Read it before touching
 `native/` or `tools/`.
 
 ## Layout
 - `native/` — agent DLL (C, zig cc + MinHook), built as a proxy of `X3DAudio1_7.dll` (loads from the game dir on Proton
-  and Windows with no launch options) and of `dwmapi.dll` (legacy). Proxies are generated into `native/proxy/` by
+  and Windows with no launch options) and of `dwmapi.dll` (legacy, dev only: `launch/install.sh --legacy`, not shipped). Proxies are generated into `native/proxy/` by
   `tools/gen-proxy.py`. `native/launcher/redirect.c` → `xinput1_3.dll` for the game root: on Windows the Steam
   launcher stub loads it and it starts the game instead of the EAC bootstrapper. docs/investigations/launch.md.
   `native/build.sh` → `native/out/` (dev build); `native/build.sh --release` → `native/out/release/` (player build,
   defines `B4B_RELEASE`: no TCP command server, no dev/test commands, no `offline=1` automation; what
-  `launch/package.sh` ships); both produce all three DLLs. Dev-only code is under `#ifndef B4B_RELEASE` (whole
+  `launch/package.sh` ships); both produce all three DLLs and generate `native/out/gen/b4bcoop_version.h` from
+  `VERSION` (see "Versioning"). Dev-only code is under `#ifndef B4B_RELEASE` (whole
   `testing.c`, the command server, every CLI-only `*_cmd` handler). Player builds are verified from their log
   (`b4bcoop loaded (player build) as X3DAudio1_7.dll`), not with `tools/b4b.py`.
   - `ue.c/h` reflection layer for B4B's modified UE 4.25 (XOR'd GUObjectArray, shuffled FField, UObject +8).
-  - `main.c` Tick hook; dev builds: game-thread command queue + TCP command server (127.0.0.1:47112, first free of
+  - `main.c` Tick hook; logs `b4bcoop <version> (protocol N)` at load; `-b4bcoop=off` on the command line = the agent
+    starts nothing. Dev builds: game-thread command queue + TCP command server (127.0.0.1:47112, first free of
     +0..7; `B4B_COOP_PORT` pins it).
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
   - `netguard.c` outbound-traffic guard from DllMain (DNS/WinHTTP/TCP allowlist, EOS network off; `netguard`
@@ -54,30 +59,37 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     replies as local chat lines; host notices via ClientTeamMessage with our own type. Test: `type <text>` (real key
     presses), `click <x> <y>` (mouse click, e.g. post-round Continue), `chat status`, `popup [close]` (dev builds).
     `admin.c` the commands (`/help join host leave players ping kick ban lock bots restart say ready ...`, same verbs
-    on the dev CLI) and the host's PreLogin gate (join policy first, then bans in `b4bcoop-bans.txt`, lock).
+    on the dev CLI) and the host's PreLogin gate (join policy first, then the b4bcoop protocol (`?b4bcoop=` login
+    option; mismatch → "Host runs b4bcoop X (protocol N); you have Y (protocol M). Everyone needs the same version."
+    on both sides), then bans in `b4bcoop-bans.txt`, lock). B4B's PreLogin gets the options as a parsed TArray of
+    {FString key, value} (`options_str`), not one FString.
     docs/investigations/chat-commands.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
-    joins: the login's claimed id). docs/investigations/steam-p2p.md "Join policy".
-  - `presence.c` Steam "Join Game": while hosting, rich presence `connect=+b4bcoop_join steam:<id64> addr:<ip:port>`;
-    join requests (callback 337) and the same string on the command line become a session join target (overrides
-    host=/join=, auto sign-in Offline). `presence [on|off]`, `steamjoin <string>` (simulate), `invite`, `friends`;
-    ini `presence=0`, `presence_addr=`. docs/investigations/steam-invites.md.
+    joins, `host_ip=1` only: the login's claimed id). docs/investigations/steam-p2p.md "Join policy".
+  - `presence.c` Steam "Join Game": while hosting, rich presence `connect=+b4bcoop_join steam:<id64> proto:<n>
+    ver:<x.y.z>` (+ `addr:<ip:port>` only with `host_ip=1`); join requests (callback 337) and the same string on the
+    command line become a session join target (overrides host=/join=, auto sign-in Offline), or stop at once with the
+    version message if `proto:` differs. `presence [on|off]`, `steamjoin <string>` (simulate), `invite`, `friends`;
+    ini `presence=0`, `presence_addr=` (host_ip=1 only). docs/investigations/steam-invites.md.
   - `steamnet.c` Steam P2P: UDP shim under the retail net driver (ws2_32 sendto/recvfrom ↔ ISteamNetworking P2P,
-    Steam peers get fake 198.18.x.y addresses); hosts take UDP and Steam joins at once, `join steam:<id64>`, SteamID
-    in `status`, `steamnet [on|off]`, ini `steam_p2p=0`. USteamNetDriver can't work here (no STEAM socket subsystem).
-    Not yet tested between two accounts. docs/investigations/steam-p2p.md.
+    Steam peers get fake 198.18.x.y addresses); `join steam:<id64>`, SteamID in `status`, `steamnet [on|off]`, ini
+    `steam_p2p=0`. Its `bind` hook puts the game exe's wildcard UDP binds on 127.0.0.1 unless `host_ip=1` (not other
+    modules': Windows steamclient64 binds in-process). USteamNetDriver can't work here (no STEAM socket subsystem).
+    docs/investigations/steam-p2p.md (incl. "Loopback binding", "Two-account result").
   - `cmds.c` dev commands: `status players host join leave exec find call peek`; config = `b4bcoop.ini` next to the DLL
-    or `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; keys `host join steam_p2p allow_joins allow_steamids
-    flashlight_*`, dev `offline allow_self`).
-    `coop_join(target)` = join entry point (`ip[:port]`, `steam:<id64>`; any thread); `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`);
-    `coop_host`, `coop_leave`.
-- `launch/` — `install.sh [--release] [--legacy]` (build+copy DLLs, dev by default, `--legacy` = dwmapi.dll; rm before
-  cp — never overwrite a mapped DLL in place), `package.sh` (player zip mirroring the game folder + legacy zip +
-  `dist/SHA256SUMS`, reproducible), `run.sh` (Proton,
-  no EAC; `B4B_PREFIX` = alternate compatdata), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test
-  instances, below), `two.sh` (old: two copies on the real prefix), `winpy.sh`, `probed.sh`, `uninstall.sh`.
+    or `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; no ini = defaults; keys `host` (default 1, 0 when
+    `join=` is set) `join host_ip steam_p2p allow_joins allow_steamids flashlight_*`, dev `offline allow_self
+    b4bcoop_protocol_override`). `coop_join(target)` = join entry point (`steam:<id64>`; `ip[:port]` only 127.x unless
+    `host_ip=1`, else refused with `coop_ip_join_off_msg()`; appends `?b4bcoop=<proto>?b4bcoopver=<ver>`; any thread);
+    `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`); `coop_host`, `coop_leave`; `coop_version/protocol`.
+- `launch/` — `install.sh [--release] [--legacy]` (build+copy DLLs, dev by default, `--legacy` = dev-only dwmapi.dll;
+  rm before cp — never overwrite a mapped DLL in place), `package.sh` (player zip `dist/b4bcoop-<version>.zip`
+  mirroring the game folder, its `b4bcoop-README.txt` (CRLF, mirrors README's player section: keep in sync) +
+  `dist/SHA256SUMS`, reproducible), `run.sh` (Proton, no EAC; `B4B_PREFIX` = alternate compatdata; writes
+  `steam_appid.txt`), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test instances, below), `gamelock.sh`,
+  `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
 - `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
 - `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
@@ -86,14 +98,26 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 ## Setup
 `tools/fetch-deps.sh` (zig 0.15.2 sha256-checked, MinHook pinned to commit 8af6b4a, Windows Python, .venv; `--build`
 = only zig + MinHook) → `launch/install.sh`. CI: `.github/workflows/ci.yml` builds dev + player on every push/PR;
-`release.yml` builds the zip on a `v*` tag and publishes it with `SHA256SUMS` and a build provenance attestation.
-No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the legacy `dwmapi.dll` needs
-`WINEDLLOVERRIDES="dwmapi=n,b" %command%`). Steam's only public launch entry runs the root `Back4Blood.exe` stub →
+`release.yml` builds the zip on a `v<version>` tag (must match `VERSION`) and publishes it with `SHA256SUMS` and a
+build provenance attestation. No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the dev-only legacy
+`dwmapi.dll` needs `WINEDLLOVERRIDES="dwmapi=n,b" %command%`). Steam's only public launch entry runs the root `Back4Blood.exe` stub →
 `start_protected_game.exe` (EAC) → `Gobi/Binaries/Win64/Back4Blood.exe Gobi -SaveToUserDir`. Game build pinned: Steam buildid 14216215;
 the agent verifies byte signatures and refuses to hook on mismatch.
 
+## Versioning
+`VERSION` (repo root) holds both numbers; `native/build.sh` turns them into `native/out/gen/b4bcoop_version.h`
+(`B4B_VERSION`, `B4B_PROTOCOL`), and `launch/package.sh` names the zip after the version.
+- **version** (semver): bump for **every release**; tag the release `v<version>` (release.yml checks it).
+- **protocol** (integer): bump whenever host and client behavior must match: new RPC use, changed reward/burn-card
+  forwarding rules, anything a client must understand or a host must expect from the client. The host refuses a
+  login with another protocol (admin.c), and a Steam Join Game to a host with another protocol stops before
+  connecting (presence.c). A pure host-side or client-side fix needs no protocol bump.
+- Test a mismatch: dev ini `b4bcoop_protocol_override=N` fakes another protocol (e.g.
+  `B4B_INI_EXTRA2="b4bcoop_protocol_override=2" launch/multi.sh 2`).
+
 ## How to run N local instances (unattended)
-`launch/multi.sh N` (N = 1-5; install the DLL first). Instance 1 hosts, the others join `127.0.0.1:7787`; no clicks:
+`launch/multi.sh N` (N = 1-5; install the DLL first). Instance 1 hosts (by default: its ini has no `host=` line), the
+others join `127.0.0.1:7787` (loopback: allowed without `host_ip`, all game sockets are on 127.0.0.1); no clicks:
 the agent presses Sign in and answers the Online/Offline popup with Offline. Returns when the host sees N players
 (3 instances ≈ 90 s). Then e.g. `B4B_AGENT=0 .venv/bin/python tools/b4b.py mission Normal` starts a new Evansburgh
 campaign run on the host (same path as the war table); clients follow automatically. `launch/multi-stop.sh` kills
@@ -103,7 +127,8 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   log `b4bcoop-test<n>-<winpid>.log`, window "B4B #n" (`launch/shot.sh n out.png`).
 - Env: `B4B_GAME_PORT` (7787 — deliberately not 7777, so tests can't reach a real session), `B4B_STAGGER`,
   `B4B_TIMEOUT`, `B4B_FRESH=1` (re-clone), `B4B_BLANK="2 3"` (fresh offline profile for those instances),
-  `B4B_INI_EXTRA="netguard=off;netguard_eos=0"` (extra `b4bcoop.ini` lines for every instance).
+  `B4B_INI_EXTRA="netguard=off;netguard_eos=0"` (extra `b4bcoop.ini` lines for every instance), `B4B_INI_EXTRA<n>`
+  (instance n only), `B4B_PORT_BASE` (agent ports; 47120 when another game with the agent holds 47112).
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.
@@ -122,7 +147,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
 with a timeout and PASS/FAIL: join, mission follow, client flashlight replicated to the host, a host and a client burn
 card charged once to their own profiles, chat `/players` typed on the client, ready + `endmission 1` with the client's
 SP forwarded, a seamless chapter transition, both profiles diffed after the deferred save (client SP +forwarded
-amount exactly, host only its own), and no public peer on any game socket (`ss` sampler). `--full` adds a vanilla
+amount exactly, host only its own), the 0.3.0 defaults (host without `host=`, presence `steam:` + `proto:` and no
+`addr:`, protocol in the login options), no public peer on any game socket and nothing bound off loopback (`ss`
+sampler). `--full` adds a vanilla
 `multi.sh 5` (5th refused "Server full.", host survives) and a `teamsize=5` round (5 follow, SP forwarded to all 4
 clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
 screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
@@ -138,12 +165,11 @@ screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
   `ue.h`. System d3d/dxgi DLLs load our dwmapi too and import ordinal-only exports, so every proxy
   (`native/proxy/*.c/.def`) is generated by `tools/gen-proxy.py` to re-export every real export. Both agent names
   may be present: one agent per process (named mutex; a dwmapi.dll from the same dir wins). A plain Steam Play is
-  meant to work via the root `xinput1_3.dll` (unverified on Windows); `launch/run.cmd` is the fallback (no EAC
-  bootstrapper; `B4B_DIR` for non-default libraries). Build on Windows: Windows zig in `vendor/zig`, Git Bash.
+  meant to work via the root `xinput1_3.dll` (unverified on Windows); fallback: launch.md §3 B (launch option). Build on Windows: Windows zig in `vendor/zig`, Git Bash.
 
 ## Progress
 Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md` and closed GitHub issues):
-- Offline Fort Hope as listen server (PacketRelayNetDriver, UDP 7777, DTLS); auto-host/auto-join via `b4bcoop.ini`;
+- Offline Fort Hope as listen server (PacketRelayNetDriver, UDP 7777, DTLS); auto-host (default) / auto-join;
   camp → mission via server-travel redirect; chapter → chapter via the game's own seamless travel; clients take over
   bots through the retail PlayerSlotManager path. Real two-machine session with a Windows client on its own account.
 - Remote players keep their own deck (`cards.c` safety net), their rewards (`rewards.c`: supply points etc. forwarded
@@ -156,6 +182,10 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
 
 - Two real Steam accounts on one machine (2026-09-24): Steam P2P join, mission follow and per-player rewards verified
   (docs/investigations/steam-p2p.md, "Two-account result"); second account runs in Flatpak Steam.
+- 0.3.0 defaults (2026-09-24, local copies on Proton): hosting with no `host=` line, presence `steam:` + `proto:` and
+  no `addr:`, game UDP on 127.0.0.1 (host and client) with loopback joins working (`e2e.py --quick` 12/12),
+  remote-IP joins refused with the message, protocol mismatch refused on both sides, `host_ip=1` back to 0.0.0.0 and
+  IP joins.
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
@@ -163,13 +193,15 @@ Known issues / open:
   and the no-script launch (root `xinput1_3.dll` redirect + `X3DAudio1_7.dll`; test script in
   docs/investigations/launch.md §6). On Proton the `X3DAudio1_7.dll` agent is verified with a plain Steam launch.
 - All local test copies share one Steam id; two-account behavior is only covered by the one real session.
-- Steam Join Game/invites (`presence.c`): rich presence, launch-command-line join and simulated join requests verified
-  on one account; the real callback, the Join Game menu and Steam-initiated launch need the two-account plan in
-  docs/investigations/steam-invites.md. Local copies on one account overwrite each other's rich presence.
+- Steam Join Game/invites (`presence.c`), now the players' main join path: rich presence, launch-command-line join and
+  simulated join requests verified on one account; the real callback, the Join Game menu and Steam-initiated launch
+  need the two-account plan in docs/investigations/steam-invites.md (#10). Local copies on one account overwrite each
+  other's rich presence.
 - A client that disconnects before the saferoom-exit charge keeps its burn card. Skull totem points and duffel-bag
   rewards reach the client (verified, client-rewards.md §6b), but a remote player's duffel roll can't see what they
   own, so they may get a product they already have (a no-op).
 
 Next:
-1. Real multi-machine session on the new build (Windows client): netguard, rewards, burn cards, 5 players.
-2. In-game UX for host/join (no ini/CLI); two-account test of Steam P2P (plan in docs/investigations/steam-p2p.md).
+1. Two-account test of Steam's own Join Game click / invite (#10; plan in docs/investigations/steam-invites.md).
+2. Real multi-machine session on the new build (Windows client, launch.md §6): netguard, rewards, burn cards, 5
+   players, and whether Windows shows any Firewall prompt.

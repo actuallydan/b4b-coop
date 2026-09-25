@@ -11,7 +11,8 @@ retail, so client-hosted listen servers are a shipped code path. Steam, IP, and 
 ## Launching
 - `launch/run.sh` runs `Gobi/Binaries/Win64/Back4Blood.exe` directly under Proton (no EAC bootstrapper).
   Or a plain Steam launch: the agent is `X3DAudio1_7.dll` (Wine's builtin is prefer-native, so the copy in the game
-  dir loads without overrides). Legacy `dwmapi.dll`: launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`.
+  dir loads without overrides). Dev-only legacy `dwmapi.dll` (`launch/install.sh --legacy`, not shipped): launch
+  options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`. `-b4bcoop=off` on the command line: the agent starts nothing.
   Launch chain, EAC and the Windows redirect: docs/investigations/launch.md.
 - A game started by Wine is reparented to systemd, so `/proc/<pid>/mem` is unreadable under yama ptrace_scope=1.
   Use `launch/probed.sh` (Windows Python in the same prefix, ReadProcessMemory) + `tools/probe.py '<code>'`.
@@ -40,15 +41,17 @@ Matchmaking, MatchmakingSetHostTaskData, GobiSession*, DedicatedServerManager, C
 PlayerProfileData (OfflineData), EOnlineMode {Offline, Online}, *SeamlessTravelData.
 
 ## Agent DLL (native/) — status 2026-09-23
-Built with zig cc + MinHook as an X3DAudio1_7.dll proxy (and a legacy dwmapi.dll proxy). Dev builds (`native/build.sh`) take commands over 127.0.0.1:47112(+n per
+Built with zig cc + MinHook as an X3DAudio1_7.dll proxy (and a dev-only legacy dwmapi.dll proxy). Dev builds (`native/build.sh`) take commands over 127.0.0.1:47112(+n per
 instance) via `tools/b4b.py`; player builds (`native/build.sh --release`, `B4B_RELEASE`) have no command server:
-`status | players | host | join <ip> | exec <console cmd> | find <substr> | call <Class> <Func> [cdo] | peek <hex> [n]`.
+`status | players | host | join <steam:id64 | ip> | exec <console cmd> | find <substr> | call <Class> <Func> [cdo] | peek <hex> [n]`.
 Hooks: UGameEngine::Tick (game-thread command queue), UEngine::SetClientTravel 0x144130880, FMsg::Logf_Internal
 0x142411DB0 (engine log -> b4bcoop-<pid>.log). Global UE_LOG gate byte at 0x1469BD96D (shipping leaves it 0).
 
 Proven: offline Fort Hope `?listen` host; client `open ip:7777` joins camp; host mission start redirected to
 `servertravel ...?listen`; client joins mission, PlayerSlotManager gives it a slot and TakeOverBot (retail hot-join path).
-PreLogin options carry HydraPublicId=offline.<steamid64>.
+PreLogin options carry HydraPublicId=offline.<steamid64>. B4B's PreLogin (0x1419FE9C0) gets the login URL options
+already parsed: a TArray of 32-byte {FString key, FString value} entries (admin.c `options_str`); the
+client's own `open` URL options (e.g. our `?b4bcoop=<protocol>`) arrive there too.
 Known: offline mission start logs "Kicking remote clients with EDisconnectError::HostStartedSoloGame" (harmless now,
 travel redirect wins); client that follows too early fails the DTLS handshake -> agent retries 3s later.
 Transport: PacketRelayNetDriver (IpNetDriver subclass) on UDP 7777 with DTLSHandlerComponent encryption.

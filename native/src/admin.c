@@ -6,9 +6,9 @@
 // A client's commands never reach the host (chat.c intercepts before anything is sent).
 //
 // Host-side enforcement (hook AGameModeBase::PreLogin override, the function that calls slotguard's ApproveLogin):
-// the join policy (joinpolicy.c: by default Steam friends only) is checked first, before the game's own PreLogin runs;
-// then a banned player id, or any new player while the session is locked, gets a login error before a
-// PlayerController exists. Bans persist in b4bcoop-bans.txt next to the agent config (cmds_config_path()).
+// the join policy (joinpolicy.c: by default Steam friends only) is checked first, then the joiner's b4bcoop protocol
+// (version_refused), both before the game's own PreLogin runs; then a banned player id, or any new player while the
+// session is locked, gets a login error before a PlayerController exists. Bans persist in b4bcoop-bans.txt next to the agent config (cmds_config_path()).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +18,9 @@
 #include "log.h"
 #include "cmds.h"
 
-#define ADDR_PRELOGIN  VA(0x1419FE9C0ull)  // void AGobiGameMode::PreLogin(this, const FString& Options, const FString& Address,
-                                           //   const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage); logs "PreLogin Options"
+#define ADDR_PRELOGIN  VA(0x1419FE9C0ull)  // void AGobiGameMode::PreLogin(this, const <parsed options>& Options (TArray,
+                                           //   options_str), const FString& Address, const FUniqueNetIdRepl& UniqueId,
+                                           //   FString& ErrorMessage); logs "PreLogin Options"
 #define ADDR_RESIZE    VA(0x140BAF260ull)  // TArray<TCHAR>::ResizeForCopy(this, NewMax, PrevMax): GMalloc-backed storage
 #define ADDR_FREE      VA(0x140C823B0ull)  // FMemory::Free
 static const uint8_t SIG_PRELOGIN[] = {0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,
@@ -29,7 +30,7 @@ static const uint8_t SIG_RESIZE[] = {0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x2
                                      0x63,0xda,0x48,0x8b,0xf9};
 static const uint8_t SIG_FREE[] = {0x48,0x85,0xc9,0x74,0x49,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9};
 
-typedef void (*PreLoginFn)(UObject *gm, const FString *opts, const FString *addr, const void *uid, FString *err);
+typedef void (*PreLoginFn)(UObject *gm, const TArray *opts, const FString *addr, const void *uid, FString *err);
 typedef void (*ResizeFn)(FString *s, int32_t new_max, int32_t prev_max);
 static PreLoginFn orig_prelogin;
 static ResizeFn resize_fn;
@@ -215,6 +216,24 @@ static int is_banned(const char *key, const char *name) {
 }
 
 // ---- login gate ----
+// The login URL options as "?key=value?key=value". B4B's PreLogin gets them parsed, not as one FString: a TArray of
+// 32-byte {FString key, FString value} entries (the game's own "PreLogin Options:" log line joins them, 0x14414D310).
+static void options_str(const TArray *opts, char *buf, size_t n) {
+    size_t k = 0;
+    buf[0] = 0;
+    if (!opts || !opts->data || opts->num < 0 || opts->num > 64) return;
+    for (int i = 0; i < opts->num && k + 3 < n; i++) {
+        const FString *kv = (const FString *)((const char *)opts->data + i * 32);
+        buf[k++] = '?';
+        ascii_of(&kv[0], buf + k, n - k);
+        k += strlen(buf + k);
+        if (k + 2 >= n) break;
+        buf[k++] = '=';
+        ascii_of(&kv[1], buf + k, n - k);
+        k += strlen(buf + k);
+    }
+}
+
 static void opt_value(const char *opts, const char *key, char *buf, size_t n) {
     buf[0] = 0;
     size_t kl = strlen(key);
@@ -231,7 +250,7 @@ static void opt_value(const char *opts, const char *key, char *buf, size_t n) {
 // Join policy, before the game's own PreLogin: over Steam P2P the SteamID comes from the authenticated P2P session
 // (steamnet.c already refused anyone the policy rejects; this is the second check), over IP it is the login's claim.
 // Returns 1 if the login was refused here.
-static int policy_refused(const FString *opts, const FString *addr, const void *uid, FString *err) {
+static int policy_refused(const TArray *opts, const FString *addr, const void *uid, FString *err) {
     char o[1024], name[64], ip[64], why[96];
     ascii_of(addr, ip, sizeof ip);
     uint64_t claimed = uid_id64(uid), p2p = steamnet_peer_of_addr(ip), id = p2p ? p2p : claimed;
@@ -239,7 +258,7 @@ static int policy_refused(const FString *opts, const FString *addr, const void *
         LOG("admin: join policy: steam:%llu%s allowed (%s)", (unsigned long long)id, p2p ? " (Steam P2P)" : "", why);
         return 0;
     }
-    ascii_of(opts, o, sizeof o);
+    options_str(opts, o, sizeof o);
     opt_value(o, "Name", name, sizeof name);
     LOG("admin: login %s from %s (steam:%llu%s): refused by the join policy: %s", name, ip, (unsigned long long)id,
         p2p ? ", Steam P2P" : ", claimed", why);
@@ -249,12 +268,49 @@ static int policy_refused(const FString *opts, const FString *addr, const void *
     return 1;
 }
 
-static void prelogin_detour(UObject *gm, const FString *opts, const FString *addr, const void *uid, FString *err) {
+// Version gate, right after the join policy: the joiner's b4bcoop protocol (URL option b4bcoop=<n>, b4bcoopver=<x.y.z>,
+// added by cmds.c to every join) must equal ours (VERSION; bumped when host and clients must match). Missing = an
+// older b4bcoop. Both sides get the same sentence: the joiner as its login error, the host as a chat line.
+static void clean_token(char *s) {   // from the joiner's URL: keep it printable and short
+    for (char *c = s; *c; c++) if (!isalnum((unsigned char)*c) && *c != '.' && *c != '-') *c = '?';
+    if (strlen(s) > 24) s[24] = 0;
+}
+static int version_refused(const TArray *opts, const void *uid, FString *err) {
+    char o[1024], proto[32], ver[40], want[16];
+    options_str(opts, o, sizeof o);
+#ifndef B4B_RELEASE
+    LOG("admin: PreLogin options: %s", o);
+#endif
+    opt_value(o, "b4bcoop", proto, sizeof proto);
+    snprintf(want, sizeof want, "%d", coop_protocol());
+    if (!strcmp(proto, want)) return 0;
+    char name[64], key[80], theirs[80], msg[240];
+    opt_value(o, "b4bcoopver", ver, sizeof ver);
+    opt_value(o, "Name", name, sizeof name);
+    clean_token(proto); clean_token(ver);
+    if (proto[0]) snprintf(theirs, sizeof theirs, "%s (protocol %s)", ver[0] ? ver : "?", proto);
+    else snprintf(theirs, sizeof theirs, "an older b4bcoop");
+    snprintf(msg, sizeof msg, "Host runs b4bcoop %s (protocol %d); you have %s. Everyone needs the same version.",
+             coop_version(), coop_protocol(), theirs);
+    LOG("admin: login %s: refused, other b4bcoop version: %s", name, msg);
+    if (!err || fstring_assign_game(err, msg)) { LOG("admin: could not set the login error, allowing"); return 0; }
+    n_refused++;
+    static char told[16][80]; static int n_told;   // one host notice per player per session (old clients retry)
+    if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
+    for (int i = 0; i < n_told; i++) if (!strcmp(told[i], key)) return 1;
+    if (n_told < 16) snprintf(told[n_told++], sizeof told[0], "%s", key);
+    chat_local("%s could not join: they have %s%s; you have b4bcoop %s (protocol %d). Everyone needs the same version.",
+               name[0] ? name : "A player", proto[0] ? "b4bcoop " : "", theirs, coop_version(), coop_protocol());
+    return 1;
+}
+
+static void prelogin_detour(UObject *gm, const TArray *opts, const FString *addr, const void *uid, FString *err) {
     if (policy_refused(opts, addr, uid, err)) return;   // strangers never reach the game's login code
+    if (version_refused(opts, uid, err)) return;        // another b4bcoop protocol: nothing would work right
     orig_prelogin(gm, opts, addr, uid, err);
     if (err && err->num > 1) return;   // already refused (e.g. slotguard's "Server full.")
     char o[1024], name[64], key[80], ip[64];
-    ascii_of(opts, o, sizeof o);
+    options_str(opts, o, sizeof o);
     ascii_of(addr, ip, sizeof ip);
     opt_value(o, "Name", name, sizeof name);
     if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
@@ -514,7 +570,7 @@ void admin_ready(const char *rest, Out *o) {
 
 // ---- dispatch ----
 static const struct { const char *name; int admin; const char *usage; } CMDS[] = {
-    {"help", 0, "/help"}, {"join", 0, "/join <ip[:port] | steam:<id64>>"}, {"host", 0, "/host"}, {"leave", 0, "/leave"},
+    {"help", 0, "/help"}, {"join", 0, "/join steam:<id64> (or <ip[:port]> with host_ip=1)"}, {"host", 0, "/host"}, {"leave", 0, "/leave"},
     {"players", 0, "/players"}, {"flashlight", 0, "/flashlight [on|off|auto]"}, {"ping", 0, "/ping"},
     {"kick", 1, "/kick <name|#>"}, {"ban", 1, "/ban <name|#>"}, {"unban", 1, "/unban <name|steam:id|#n|all>"},
     {"bans", 1, "/bans"}, {"lock", 1, "/lock"}, {"unlock", 1, "/unlock"}, {"teamsize", 1, "/teamsize N"},
@@ -523,7 +579,8 @@ static const struct { const char *name; int admin; const char *usage; } CMDS[] =
 #define N_CMDS ((int)(sizeof CMDS / sizeof CMDS[0]))
 
 static void help(Out *o) {
-    out_printf(o, "/join <ip[:port]>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n");
+    out_printf(o, "b4bcoop %s (protocol %d)\n/join steam:<id64>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n",
+               coop_version(), coop_protocol());
     if (is_client()) { out_printf(o, "(/kick /ban /lock ... are for the host)\n"); return; }
     out_printf(o, "host: /kick /ban <name|#>  /unban  /bans\n/lock  /unlock  /teamsize N  /bots on|off\n"
                   "/restart  /ready [vote]  /say <msg>\n//text sends a message starting with /\n");

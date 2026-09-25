@@ -36,10 +36,20 @@ int slotguard_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if h
 void slotguard_tick(float dt);
 void cmds_auto_join_backoff(double seconds);  // client: the host rejected us as full
 // Join / host entry points (chat /join, Steam invites, CLI join). Any thread: off the game thread the request is
-// queued for the next tick. target: "ip[:port]" (default 7777) or "steam:<steamid64>" (Steam P2P, steamnet.c).
+// queued for the next tick. target: "steam:<steamid64>" (Steam P2P, steamnet.c) or "ip[:port]" (default 7777; only
+// 127.0.0.1 unless host_ip=1).
 void coop_join(const char *target);
 void coop_host(void);                  // host the current offline camp (UDP + Steam P2P)
 void coop_leave(void);                 // client: disconnect, back to own camp, no auto-rejoin
+// Version (VERSION -> b4bcoop_version.h) and protocol: host and clients must run the same protocol (admin.c login
+// gate, presence.c connect string). Dev builds: b4bcoop_protocol_override=N fakes another protocol.
+const char *coop_version(void);
+int coop_protocol(void);
+void coop_version_mismatch(char *buf, size_t n, const char *host_ver, const char *host_proto);  // joiner's message
+// host_ip=1 (advanced): IP hosting/joining. Default 0: game UDP bound to 127.0.0.1, IP joins only to this machine.
+int coop_host_ip(void);
+int coop_is_loopback(const char *hostport);   // 127.x.y.z / localhost
+const char *coop_ip_join_off_msg(void);       // why an IP join was refused
 int slotguard_kick(UObject *pc);       // host: close a remote player's connection
 int chat_init(void);
 void chat_tick(float dt);

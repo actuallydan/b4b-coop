@@ -1,99 +1,121 @@
 #!/usr/bin/env bash
-# Build the player zip from the player build (native/build.sh --release: no command server, no test commands).
-# Its layout mirrors the game folder, so installing = copying its contents into the folder Steam's
-# "Browse local files" opens (docs/investigations/launch.md):
+# Build the player zip dist/b4bcoop-<version>.zip (VERSION) from the player build (native/build.sh --release: no
+# command server, no test commands). Its layout mirrors the game folder, so installing = extracting it into the folder
+# Steam's "Browse local files" opens (docs/investigations/launch.md):
 #   xinput1_3.dll                         Windows: lets a normal Steam "Play" skip the EAC bootstrapper
 #   Gobi/Binaries/Win64/X3DAudio1_7.dll   the mod (Windows and Linux/Steam Deck, no launch options)
-#   Gobi/Binaries/Win64/b4bcoop.ini       settings
+#   Gobi/Binaries/Win64/b4bcoop.ini       settings (all optional: no ini = host by default, Steam joins only)
 #   b4bcoop-README.txt, b4bcoop-LICENSE.txt
-# Also dist/b4bcoop-legacy.zip (player build of the old dwmapi.dll + launcher .cmd), kept until the Windows flow is
-# verified, and dist/SHA256SUMS. Both zips are reproducible. CI runs this on a v* tag (.github/workflows/release.yml).
+# Plus dist/SHA256SUMS. The zip is reproducible. CI runs this on a v* tag (.github/workflows/release.yml).
+# b4bcoop-README.txt mirrors README.md's Install / Play / Options / Remove / Troubleshooting sections: keep them in sync.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
+version=$(sed -n 's/^version=//p' "$root/VERSION") protocol=$(sed -n 's/^protocol=//p' "$root/VERSION")
 "$root/native/build.sh" --release >/dev/null
 rel="$root/native/out/release"
-dist="$root/dist"; out="$dist/b4bcoop"; legacy="$dist/b4bcoop-legacy"
-rm -rf "$out" "$legacy"; mkdir -p "$out/Gobi/Binaries/Win64" "$legacy"
+dist="$root/dist"; out="$dist/b4bcoop"; zip="b4bcoop-$version.zip"
+rm -rf "$out" "$dist/b4bcoop-legacy" "$dist"/b4bcoop*.zip; mkdir -p "$out/Gobi/Binaries/Win64"
 cp "$rel/xinput1_3.dll" "$out/"
 cp "$rel/X3DAudio1_7.dll" "$out/Gobi/Binaries/Win64/"
 cp "$root/LICENSE" "$out/b4bcoop-LICENSE.txt"
 ini="$out/Gobi/Binaries/Win64/b4bcoop.ini"
 cat > "$ini" <<'INI'
-; b4bcoop settings. Pick ONE of these (remove the leading ';' to enable a line).
-; Host: your offline Fort Hope becomes a server others can join (UDP 7777 must be reachable).
-;host=1
-; Join: when you reach offline Fort Hope, connect to the host's IP.
-;join=HOST.IP.GOES.HERE
-; Or join over Steam's relay network, no port forwarding (experimental): join=steam:<host's 17-digit Steam ID>
-; (a host accepts both; its status/log shows "join me: steam:7656..."). Turn Steam P2P off: steam_p2p=0
-;steam_p2p=0
-; Flashlight toggle key (default L; 0 disables).
+; b4bcoop settings. Everything here is optional: with no changes you host automatically in offline Fort Hope,
+; and your Steam friends join you with "Join Game" in their Steam friends list.
+; To turn a setting on, remove the ';' at the start of its line.
+
+; Don't host: your offline game stays private.
+;host=0
+
+; Host only: allow 5 survivors (default 4).
+;teamsize=5
+
+; Flashlight toggle key (default L; 0 disables it).
 ;flashlight_key=L
-; Host only: who may join. Default: only your Steam friends. allow_joins=anyone lets in anyone who has your address.
+
+; Host only: who may join. Default: only your Steam friends. "anyone" also lets in people who aren't.
 ;allow_joins=friends
 ; Host only: always let these Steam IDs in (17-digit Steam IDs, comma-separated), friends or not.
 ;allow_steamids=7656119XXXXXXXXXX
-; Host only: allow 5 survivors (default 4).
-;teamsize=5
+
+; ADVANCED, most players never need this: host and join by IP address instead of through Steam.
+; Needs port forwarding (UDP 7777), triggers the Windows Firewall prompt, and everyone in the game needs it.
+; Then join=<host's IP> joins a host by address.
+;host_ip=1
+
 ; Blocks all third-party network traffic (Epic/WB/Turtle Rock services) while you play. If something won't
 ; start or connect, try netguard=off and tell us.
 ;netguard=block
 INI
 sed -i 's/$/\r/' "$ini"
-cat > "$out/b4bcoop-README.txt" <<'TXT'
-b4bcoop - private Back 4 Blood co-op (offline mode + listen server). No WB/Turtle Rock servers.
+cat > "$out/b4bcoop-README.txt" <<TXT
+b4bcoop $version (protocol $protocol) - private Back 4 Blood co-op in offline mode, with your Steam friends.
+No Warner Bros / Turtle Rock servers. Everyone who plays together needs the mod, and the same version.
 
-INSTALL (Windows, Linux, Steam Deck - the same steps)
-1. Steam > Back 4 Blood > right click > Manage > Browse local files. This opens the game folder
-   (the one with Back4Blood.exe, Gobi and EasyAntiCheat in it).
-2. Copy everything from this zip into that folder. The zip's Gobi folder merges into the game's
-   Gobi folder; nothing of the game is replaced.
-3. Edit Gobi\Binaries\Win64\b4bcoop.ini: to join a friend, set   join=<their IP>   (remove the ';').
-   To host, set   host=1
-4. Press Play in Steam as usual. No launch options needed.
+INSTALL (Windows, Linux and Steam Deck - the same steps)
+1. Open the game folder: in Steam, right-click Back 4 Blood > Manage > Browse local files.
+   It is the folder with Back4Blood.exe and a folder named Gobi in it. On Steam Deck, use Desktop Mode.
+2. Extract EVERYTHING from this zip into that folder. The zip's Gobi folder merges into the game's
+   Gobi folder (say yes if asked to merge). No game file is replaced. You get:
+     xinput1_3.dll                          next to Back4Blood.exe
+     b4bcoop-README.txt, b4bcoop-LICENSE.txt
+     Gobi\Binaries\Win64\X3DAudio1_7.dll    the mod
+     Gobi\Binaries\Win64\b4bcoop.ini        settings (optional)
+3. That's all: no launch options, no scripts.
 
 PLAY
-- Choose to play OFFLINE and go to Fort Hope. You'll connect to the host automatically
-  (it retries every 20 seconds until the host is up).
-- When the host starts a mission from the war table, you follow automatically.
-- Hosts only accept their Steam friends by default (see allow_joins / allow_steamids in b4bcoop.ini).
-- Chat commands: type /help in the chat box.
+1. Press Play in Steam. Steam itself must be online: joins go through Steam.
+2. At the title screen, sign in and choose Offline.
+3. In Fort Hope you are hosting automatically: your Steam friends see "Join Game" on you in their
+   Steam friends list. Nothing to set up, no ports to open.
+4. Start missions from the war table as usual. Everyone in your game follows you in.
+JOIN A FRIEND: in the Steam friends list, right-click your friend while they are in Back 4 Blood >
+Join Game, or accept their Steam invite. Works with your game closed or running.
+Only the host's Steam friends can join. Type /help in the game's chat for the chat commands.
+
+OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, remove the ';' in front of a line.
+  host=0             don't host; your offline game stays private
+  teamsize=5         (host) 5 survivors instead of 4
+  flashlight_key=L   the flashlight toggle key (0 turns it off)
+  allow_joins=anyone (host) also let in people who aren't your Steam friends;
+                     or allow_steamids=<17-digit Steam ID> for one person
+  host_ip=1          ADVANCED: host and join by IP address instead of through Steam. Needs port
+                     forwarding (UDP 7777) and triggers the Windows Firewall prompt.
+
+REMOVE: delete these files from the game folder.
+1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-LICENSE.txt
+2. In Gobi\Binaries\Win64: X3DAudio1_7.dll, b4bcoop.ini, all b4bcoop-*.log files, and b4bcoop-bans.txt
+   (only there if you banned someone).
+3. Left over from older versions, if present, in Gobi\Binaries\Win64: dwmapi.dll, "Play B4B co-op.cmd",
+   steam_appid.txt. On Linux also remove the launch option WINEDLLOVERRIDES="dwmapi=n,b" %command%
+Steam's "Verify integrity of game files" does NOT remove these: they are extra files, not game files.
+Your offline progress stays either way.
+
+TROUBLESHOOTING
+- "Everyone needs the same version": someone has another b4bcoop version. Everyone downloads the
+  latest release and extracts it again.
+- Play online / with Easy Anti-Cheat without removing the mod: add  -b4bcoop=off  to the launch options
+  (Steam > right-click Back 4 Blood > Properties > Launch Options). Remove it again to play co-op.
+- The log: Gobi\Binaries\Win64\b4bcoop-<number>.log (the newest one). Its first lines show the version.
+  No new log after starting the game = the mod didn't load.
+- Windows: this install layout hasn't been tested on a Windows PC yet (it has on Linux / Proton). If the
+  mod doesn't load there, please open an issue on GitHub and attach Gobi\Binaries\Win64\b4bcoop-launcher.log
+  if that file exists.
+- Join Game missing or not working: both need the mod (same version), Steam online, and the host in
+  Fort Hope or a mission. Fallback: the host looks up their 17-digit Steam ID (Steam > click your account
+  name at the top right > Account details), and you type  /join steam:<that number>  in the game's chat.
 
 SAFETY
 Unofficial, not affiliated with Turtle Rock Studios or Warner Bros. Games. Offline mode only: it blocks the game's
-online services while it runs. Don't use it for online play. No warranty (see b4bcoop-LICENSE.txt).
+online services while it runs. Don't use it for online play. By default nothing is opened to the network: players
+connect through Steam. No warranty (see b4bcoop-LICENSE.txt).
 Source code and how to check this download: https://github.com/actuallydan/b4b-coop
-
-UNINSTALL: delete xinput1_3.dll (game folder), and X3DAudio1_7.dll + b4bcoop.ini (Gobi\Binaries\Win64).
-Both DLL names are ordinary Windows components the game looks for in its own folder first; ours load the
-real ones from the system folder, so sound and controllers work as usual.
-Upgrading from an older b4bcoop: delete Gobi\Binaries\Win64\dwmapi.dll and "Play B4B co-op.cmd", and on
-Linux remove the WINEDLLOVERRIDES launch option.
-To play online with Easy Anti-Cheat without uninstalling: add  -b4bcoop=off  to the launch options.
-Log files for troubleshooting: Gobi\Binaries\Win64\b4bcoop-*.log
 TXT
 sed -i 's/$/\r/' "$out/b4bcoop-README.txt"
 
-# legacy layout: dwmapi.dll + Windows launcher; Linux needs WINEDLLOVERRIDES="dwmapi=n,b" %command%
-cp "$rel/dwmapi.dll" "$ini" "$legacy/"
-cp "$root/LICENSE" "$legacy/LICENSE.txt"
-printf '%s\r\n' '@echo off' \
-  'rem b4bcoop: start Back 4 Blood directly (no EAC bootstrapper) so the mod loads. Steam must be running.' \
-  'cd /d "%~dp0"' \
-  'echo 924970> steam_appid.txt' \
-  'set SteamAppId=924970' \
-  'set SteamGameId=924970' \
-  'start "" Back4Blood.exe %*' > "$legacy/Play B4B co-op.cmd"
-
-# Reproducible zips: fixed timestamps and file order, no extra attributes.
-for d in "$out" "$legacy"; do
-  find "$d" -type d -exec chmod 755 {} + ; find "$d" -type f -exec chmod 644 {} +
-  find "$d" -exec touch -d '2020-01-01 00:00:00 UTC' {} +
-done
-rm -f "$dist/b4bcoop.zip" "$dist/b4bcoop-legacy.zip"
-(cd "$out" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort | TZ=UTC zip -qX -@ "$dist/b4bcoop.zip")
-(cd "$dist" && find b4bcoop-legacy | LC_ALL=C sort | TZ=UTC zip -qX -@ b4bcoop-legacy.zip)
-(cd "$dist" && sha256sum b4bcoop.zip b4bcoop/xinput1_3.dll b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll \
-  b4bcoop-legacy.zip b4bcoop-legacy/dwmapi.dll > SHA256SUMS)
-echo "$dist/b4bcoop.zip"
-echo "$dist/b4bcoop-legacy.zip (old dwmapi.dll layout)"
+# Reproducible zip: fixed timestamps and file order, no extra attributes.
+find "$out" -type d -exec chmod 755 {} + ; find "$out" -type f -exec chmod 644 {} +
+find "$out" -exec touch -d '2020-01-01 00:00:00 UTC' {} +
+(cd "$out" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort | TZ=UTC zip -qX -@ "$dist/$zip")
+(cd "$dist" && sha256sum "$zip" b4bcoop/xinput1_3.dll b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll > SHA256SUMS)
+echo "$dist/$zip"

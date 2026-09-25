@@ -31,11 +31,12 @@ jobs:
         run: |
           # the zip mirrors the game folder (docs/investigations/launch.md)
           want="Gobi/Binaries/Win64/X3DAudio1_7.dll Gobi/Binaries/Win64/b4bcoop.ini b4bcoop-LICENSE.txt b4bcoop-README.txt xinput1_3.dll"
-          got=$(unzip -Z1 dist/b4bcoop.zip | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+          zip="dist/b4bcoop-$(sed -n 's/^version=//p' VERSION).zip"   # named after VERSION
+          got=$(unzip -Z1 "$zip" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
           [ "$got" = "$want" ] || { echo "::error::unexpected zip contents: $got"; exit 1; }
-          dlls="dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll dist/b4bcoop/xinput1_3.dll dist/b4bcoop-legacy/dwmapi.dll"
+          dlls="dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll dist/b4bcoop/xinput1_3.dll"
           for dll in $dlls; do
-            for s in "server: listening" "exec failed" "rewardtest" "steamjoin" "Dev_JoinPool"; do
+            for s in "server: listening" "exec failed" "rewardtest" "steamjoin" "Dev_JoinPool" "b4bcoop_protocol_override"; do
               if grep -qaF -- "$s" "$dll"; then echo "::error::player build $dll contains dev string '$s'"; exit 1; fi
             done
           done
@@ -51,7 +52,6 @@ jobs:
         with:
           name: b4bcoop-${{ github.sha }}
           path: |
-            dist/b4bcoop.zip
-            dist/b4bcoop-legacy.zip
+            dist/b4bcoop-*.zip
             dist/SHA256SUMS
           retention-days: 14

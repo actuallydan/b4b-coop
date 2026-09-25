@@ -8,7 +8,9 @@
 # can never land in a real session), B4B_STAGGER (s between launches, default 20), B4B_TIMEOUT (s, default 600),
 # B4B_FRESH=1 re-clones the prefixes from the real one (~600 MB each, ~20 s), B4B_BLANK="2 3" gives those
 # instances a fresh offline profile (no decks/unlocks), B4B_INI_EXTRA="netguard=off;..." appends agent config lines
-# to every instance's b4bcoop.ini. All copies share one Steam account: same player name and
+# to every instance's b4bcoop.ini, B4B_INI_EXTRA<n>="..." to instance n's only. The host's ini has no host= line
+# (hosting is the default); joiners get join=127.0.0.1:<port> (loopback: allowed without host_ip=1, and the game's
+# sockets are bound to 127.0.0.1). All copies share one Steam account: same player name and
 # same offline.<steamid64> id on the host.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

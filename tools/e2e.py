@@ -6,7 +6,9 @@
 --quick (default, ~6 min): 2 instances (host + client), Evansburgh Easy:
     join, mission follow, client flashlight replicated to the host, a host and a client burn card (charged to their
     own profiles), chat `/players` typed on the client, ready + endmission success with the client's SP forwarded,
-    seamless chapter transition, profile diffs after the deferred save, and no public TCP/UDP peer (ss) all along.
+    seamless chapter transition, profile diffs after the deferred save, the 0.3.0 defaults (host with no host= line,
+    Steam-only presence with the protocol, protocol in the login options), and (ss, all along) no public TCP/UDP peer
+    and no game socket bound off loopback.
 --full (~15 min in all): also 5 instances without teamsize (the 5th is refused with "Server full.", host survives) and a
     teamsize=5 round (5 humans follow into the mission, rewards forwarded to all 4 clients).
 
@@ -152,11 +154,22 @@ def public(addr):
     return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified)
 
 
+def loopback(addr):
+    host = addr.rsplit(":", 1)[0].strip("[]").split("%")[0]
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None): ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
 class SocketSampler(threading.Thread):
-    """ss -tunapH every 3 s; any socket of a test-prefix process with a public peer is a finding."""
+    """ss -tunapH every 3 s; any socket of a test-prefix process with a public peer is a finding, and so is (host_ip=0,
+    the default) any UDP socket or TCP listener of theirs that is not bound to loopback."""
     def __init__(self):
         super().__init__(daemon=True)
-        self.stop_ev, self.samples, self.public, self.seen = threading.Event(), 0, [], set()
+        self.stop_ev, self.samples, self.public, self.seen, self.exposed = threading.Event(), 0, [], set(), []
 
     def run(self):
         f = open(os.path.join(OUT, "ss-samples.txt"), "a")
@@ -179,6 +192,10 @@ class SocketSampler(threading.Thread):
                         f.write(f"{datetime.datetime.now():%H:%M:%S} {line}\n"); f.flush()
                     if public(cols[5]) and key not in [k for k, _ in self.public]:
                         self.public.append((key, line))
+                    # reachable from the network: a UDP socket or TCP listener not bound to loopback (host_ip=0)
+                    if (cols[0] == "udp" or cols[1] == "LISTEN") and not loopback(cols[4]) \
+                            and key not in [k for k, _ in self.exposed]:
+                        self.exposed.append((key, line))
             self.stop_ev.wait(3)
         f.close()
 
@@ -310,6 +327,14 @@ def duo(args):
         agent(H, "steamnet"); agent(H, "netguard"); agent(C, "netguard")
         hl, cl = S.logs[H], S.logs[C]
 
+        # defaults: the host's ini has no host= line; Steam-only presence; the client's login carries its protocol
+        c = Check("duo", "defaults: host by default, presence steam: without addr:, protocol in the login")
+        adv = wait_for(lambda: hl.grep(r'presence: advertising connect="([^"]*)"', since_mark=False), 30, 3) or []
+        dflt = hl.grep(r"config: .* host=1 \(default\)", since_mark=False)
+        login = hl.grep(r"admin: PreLogin options: .*\?b4bcoop=\d+\?b4bcoopver=", since_mark=False)
+        ok = bool(dflt) and bool(adv) and "steam:" in adv[-1] and "proto:" in adv[-1] and "addr:" not in adv[-1]
+        c.done(ok and bool(login), f"connect={adv[-1] if adv else '-'}; default host={bool(dflt)}; login={bool(login)}")
+
         c = Check("duo", "mission follow (client hero in Evansburgh_B)")
         agent(H, "mission", "Easy")
         ok = wait_for(lambda: MAP_B in S.world(H) and MAP_B in S.world(C) and has_hero(H) and has_hero(C), 240, 5)
@@ -408,6 +433,10 @@ def duo(args):
         c.done(sampler.samples > 0 and not sampler.public,
                f"{sampler.samples} samples, {len(sampler.seen)} distinct sockets"
                + (": " + " | ".join(l for _, l in sampler.public[:3]) if sampler.public else ""))
+        c = Check("duo", "nothing reachable from the network (game UDP on 127.0.0.1, ss)")
+        c.done(sampler.samples > 0 and not sampler.exposed,
+               f"{len(sampler.seen)} distinct sockets"
+               + (": " + " | ".join(l for _, l in sampler.exposed[:3]) if sampler.exposed else ""))
 
 
 def host_applied(text, what):

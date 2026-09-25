@@ -1,7 +1,7 @@
 # Release: on a v* tag, build the player package from this commit with the pinned toolchain (zig 0.15.2, MinHook
-# 8af6b4a; tools/fetch-deps.sh checks both), then publish dist/b4bcoop.zip (+ b4bcoop-legacy.zip, the old dwmapi.dll
-# layout until the no-script Windows launch is verified) + SHA256SUMS as a GitHub release with a
-# signed build provenance attestation. Verify a download: gh attestation verify b4bcoop.zip -R actuallydan/b4b-coop
+# 8af6b4a; tools/fetch-deps.sh checks both), then publish dist/b4bcoop-<version>.zip + SHA256SUMS as a GitHub release
+# with a signed build provenance attestation. The tag must be v<version> from VERSION.
+# Verify a download: gh attestation verify b4bcoop-<version>.zip -R actuallydan/b4b-coop
 name: release
 
 on:
@@ -31,6 +31,14 @@ jobs:
       - name: Fetch the pinned toolchain (zig 0.15.2 + MinHook)
         run: tools/fetch-deps.sh --build
 
+      - name: Check the tag matches VERSION
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          v=$(sed -n 's/^version=//p' VERSION)
+          [ "$TAG" = "v$v" ] || { echo "::error::tag $TAG but VERSION says $v"; exit 1; }
+          echo "ZIP=b4bcoop-$v.zip" >> "$GITHUB_ENV"
+
       - name: Build the player package (native/build.sh --release)
         run: launch/package.sh
 
@@ -38,11 +46,12 @@ jobs:
         run: |
           # the zip mirrors the game folder (docs/investigations/launch.md)
           want="Gobi/Binaries/Win64/X3DAudio1_7.dll Gobi/Binaries/Win64/b4bcoop.ini b4bcoop-LICENSE.txt b4bcoop-README.txt xinput1_3.dll"
-          got=$(unzip -Z1 dist/b4bcoop.zip | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+          zip="dist/b4bcoop-$(sed -n 's/^version=//p' VERSION).zip"   # named after VERSION
+          got=$(unzip -Z1 "$zip" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
           [ "$got" = "$want" ] || { echo "::error::unexpected zip contents: $got"; exit 1; }
-          dlls="dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll dist/b4bcoop/xinput1_3.dll dist/b4bcoop-legacy/dwmapi.dll"
+          dlls="dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll dist/b4bcoop/xinput1_3.dll"
           for dll in $dlls; do
-            for s in "server: listening" "exec failed" "rewardtest" "steamjoin" "Dev_JoinPool"; do
+            for s in "server: listening" "exec failed" "rewardtest" "steamjoin" "Dev_JoinPool" "b4bcoop_protocol_override"; do
               if grep -qaF -- "$s" "$dll"; then echo "::error::player build $dll contains dev string '$s'"; exit 1; fi
             done
           done
@@ -54,11 +63,9 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: |
-            dist/b4bcoop.zip
-            dist/b4bcoop-legacy.zip
+            dist/${{ env.ZIP }}
             dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll
             dist/b4bcoop/xinput1_3.dll
-            dist/b4bcoop-legacy/dwmapi.dll
 
       - name: Create the GitHub release
         env:
@@ -70,12 +77,12 @@ jobs:
           Built by GitHub Actions from commit ${GITHUB_SHA} (tag ${TAG}), workflow \`.github/workflows/release.yml\`.
 
           Check your download:
-          - \`sha256sum -c --ignore-missing SHA256SUMS\` next to the zip (Windows: \`Get-FileHash b4bcoop.zip\`, compare with the line below)
-          - \`gh attestation verify b4bcoop.zip -R ${REPO}\` proves it was built by this repository's workflow.
+          - \`sha256sum -c --ignore-missing SHA256SUMS\` next to the zip (Windows: \`Get-FileHash ${ZIP}\`, compare with the line below)
+          - \`gh attestation verify ${ZIP} -R ${REPO}\` proves it was built by this repository's workflow.
 
           \`\`\`
           $(cat dist/SHA256SUMS)
           \`\`\`
           EOF
-          gh release create "$TAG" dist/b4bcoop.zip dist/b4bcoop-legacy.zip dist/SHA256SUMS --repo "$REPO" --verify-tag \
+          gh release create "$TAG" "dist/$ZIP" dist/SHA256SUMS --repo "$REPO" --verify-tag \
             --title "b4b-coop $TAG" --notes-file notes.md
