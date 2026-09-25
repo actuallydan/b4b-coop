@@ -274,7 +274,11 @@ cosmetic, ~25 s. AR02 handed out with `giveitem <slot> row Weapons_DT DF038C6A4E
   (before `ready`) spawns no pickup at all (the game's; the search ends after 4 s). On C: client 2's dropped LMG
   `aklmg` on the floor on host + client 2 (`floor_lmg_host.png`), retail on client 3 (`floor_lmg_noaddon.png`).
 - `/models off` (host): both floor copies `back to its own mesh` on the host and on client 2 (from the notice).
+- `tools/e2e.py --quick` (lane 2, this build): 14/14 PASS.
 - Screenshots: `~/.local/share/b4b-coop/floorlooks/shots/` (not committed).
+- State (stopping point): feature done and live-verified; not yet done: a late joiner / a player dropping a weapon
+  while far from others (only the 3 m search radius on clients), LMG01 floor copy seen by a client picking it up in
+  third person, pickups nobody dropped (by design untouched).
 
 ### Limits / open
 - Clients pair a pickup by position (the host's PreviousOwner doesn't replicate): two heroes dropping the same weapon
