@@ -234,6 +234,10 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
   no `addr:`, game UDP on 127.0.0.1 (host and client) with loopback joins working (`e2e.py --quick` 12/12),
   remote-IP joins refused with the message, protocol mismatch refused on both sides, `host_ip=1` back to 0.0.0.0 and
   IP joins.
+- Model mods (`models` branch, 2026-09-25, epic #23, local sessions on Proton): add-ons in player builds (#20),
+  multiplayer rules `addons_policy` (#22), texture/material edits, SKM + static-mesh writing, a CC0 FBX survivor
+  (3P + FP arms) and an AK replacing AR02 as add-ons; the separate `modkit/` (b4bmod, own zip). Not run on real
+  Windows (modkit .NET tools); hair renders opaque, no facial animation.
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
