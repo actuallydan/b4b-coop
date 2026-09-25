@@ -67,6 +67,10 @@ int admin_cmd(const char *verb, char *rest, Out *o);
 void admin_slash(char *line, Out *o);  // a chat command typed by the local player (without the '/')
 void admin_on_initslots(UObject *psm); // teamsize.c: right before APlayerSlotManager::InitSlots
 void admin_ready(const char *rest, Out *o); // host: ready every player (chat /ready, dev `ready [vote]`)
+int admin_notice(UObject *pc, const char *text);  // host: one chat notice line to that player's client (0 = sent)
+UObject *admin_find_player(const char *arg, Out *o);  // player state by /players number or name (NULL + reply)
+void admin_ps_key(UObject *ps, char *buf, size_t n);   // steam:<id64> or name:<name>
+void admin_ps_name(UObject *ps, char *buf, size_t n);  // player name, a bot's hero name
 void cmds_set_session_join(const char *targets); // Steam join target(s), comma-separated; overrides host=/join=
 const char *cmds_session_join(void);
 void cmds_join_now(void);                      // attempt the session target now (leaves the current session)
@@ -115,3 +119,9 @@ int rewardguard_cmd(const char *verb, char *rest, Out *o);  // dev builds: `rewa
 // paks.c (dev builds only): engine pak layer, model mods (docs/investigations/model-mods-paks.md)
 void paks_early_init(void);                                // DllMain: hook FPakPlatformFile::Initialize, ini modpaks=
 int paks_cmd(const char *verb, char *rest, Out *o);        // `paks`, `mountpak`, `dumpassets`; 1 if handled
+// models.c: runtime model swaps (#19, docs/investigations/model-swap.md)
+int models_init(void);
+void models_tick(float dt);
+int models_cmd(const char *verb, char *rest, Out *o);  // dev builds: `model`, `models`, `mdl ...`
+void models_slash(const char *verb, char *rest, Out *o); // chat /model, /models
+void models_host_notice(const char *text);               // chat.c: a host notice arrived (client)

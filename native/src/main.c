@@ -128,6 +128,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     steamnet_init();
     presence_init();
     joinpolicy_init();
+    models_init();
 #ifndef B4B_RELEASE
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
 #endif

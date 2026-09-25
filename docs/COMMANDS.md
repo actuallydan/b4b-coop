@@ -32,6 +32,9 @@ Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](
 | `/join steam:<id>` | Joins a friend by their Steam ID | `/join steam:7656119XXXXXXXXXX` |
 | `/leave` | Leaves the host's game, back to your own Fort Hope | `/leave` |
 | `/host` | Starts hosting your Fort Hope (only needed with `host=0`) | `/host` |
+| `/model <name>` | Changes how your survivor looks, this game session only | `/model karlee_elite_03`, `/model holly` |
+| `/model list [survivor\|npc]` | The looks you can use | `/model list`, `/model list walker` |
+| `/model reset` | Back to your own look | `/model reset` |
 
 **`/help`**: the first line is your version, e.g. `b4bcoop 0.3.0 (protocol 1)`. The host also sees the host-only
 commands; a client sees `(/kick /ban /lock ... are for the host)`.
@@ -52,6 +55,11 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
   **Account details**.
 - Joining by IP address (`/join 1.2.3.4`) works only with `host_ip=1` (advanced, see below). Without it the reply
   is `Joining by IP address is off. Join through Steam instead: ...`.
+
+**`/model`**: wear another survivor's outfit (`/model walker_elite_07`), a whole survivor's look (`/model holly`),
+single pieces (`/model holly_head_03`) or a Fort Hope NPC (`/model vanessa`). Everyone sees survivor outfits; NPC
+looks only players with b4bcoop. Kept through map changes, death and respawn; nothing is saved. `/model` alone shows
+what you wear. All names, examples and limits: `docs/commands-models.md`.
 
 **`/leave`**: only while in someone else's game (else `you are not in someone else's session`).
 
@@ -85,6 +93,8 @@ sent to the host.
 | `/ready vote` | Readies everyone for the post-round vote | `/ready vote` |
 | `/restart` | Restarts the current chapter (counts as a wipe) | `/restart` |
 | `/say <message>` | A message every player sees in their chat | `/say back in 5 min` |
+| `/model <player> <name\|reset>` | Changes a player's or a bot's look; everyone is told | `/model 2 doc_elite_03` |
+| `/models on\|off` | Allows or stops model swaps for everyone (on by default) | `/models off` |
 
 **`<player>`** is the number from `/players` (`2` or `#2`), or a name: exact (any case) or the start of a name, if
 only one player matches. Bots and yourself can't be kicked or banned (`Holly is a bot`, `that's you`).
@@ -118,6 +128,10 @@ session only.
 **`/restart`**: only in a mission. Fails the mission on purpose, like a team wipe, and the game restarts the chapter
 (or goes back to the last checkpoint) for everyone. It counts as a failed attempt, like a real wipe. If a wipe would
 end your run, it refuses: `restart refused: failing now would end the run (GameOver)`.
+
+**`/models off`**: resets every look that uses another survivor's outfit or an NPC, and refuses new ones (the player
+sees `The host turned model swaps off (/models).`). Players can still wear their own survivor's outfits. `/models on`
+allows swaps again. `/model <player> reset` puts one player or bot back to their own look.
 
 **`/say`**: every player with b4bcoop sees `<your name>: [host] back in 5 min` in their chat, you too.
 

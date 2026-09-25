@@ -69,6 +69,11 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     on both sides), then bans in `b4bcoop-bans.txt`, lock). B4B's PreLogin gets the options as a parsed TArray of
     {FString key, value} (`options_str`), not one FString.
     docs/investigations/chat-commands.md.
+  - `models.c` `/model` runtime model swaps (#19, `models` branch): another survivor's outfits/pieces through the
+    game's own replicated `PlayerSlot.CurrentCustomizationSet` (`ServerSelectCustomizationSet`, no validation), NPC
+    bodies as a made-up row `b4bcoop.npc.<name>` put on by every b4bcoop machine; host `/model <player>`,
+    `/models off` (hook on the RPC implementation), campaign-run save keeps own looks. Dev `mdl ...`.
+    docs/investigations/model-swap.md, player page docs/commands-models.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
