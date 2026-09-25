@@ -99,3 +99,16 @@ Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID
 - `B4B_LANE=2 tools/e2e.py --quick --no-lock`: 13/13 PASS incl. the new overlay smoke check (`#1 frames built=232
   drawn=232; #2 frames built=256 drawn=256`), /tmp/b4b-e2e-l2-20260925-163516.
 - Not tried: window resize (ResizeBuffers), native Windows, gamepad.
+
+## Models tab (models.c `models_panel`, 2026-09-25, lane 2, `multi.sh 2`, `casual_joe.pak` + `mod_ak47.pak` via `addons_dir=`)
+- Driven with `overlay press/set`: search `walker_elite` + click `walker_elite_03` -> `/model walker_elite_03` applied;
+  NPC bodies `emmett`, Add-on outfits `casual_joe`, `Use##ak47` (AR02 given with `giveitem`: FP/3P meshes from
+  `/Game/b4bcoop/weapons/ak47/`), whole survivor `walker` -> `walker_elite_00`; per-type `Reset##w:AR02` -> row back,
+  FP overrides 10.
+- Host target combo `#1` + click `karlee_elite_05` -> `/model #1 karlee_elite_05` (client's slot shows it, notice on
+  the client); Everyone's look `Reset##1` -> `/model #1 reset`.
+- `Model swaps allowed` off -> `/models off`, 3 looks reset; the client's tab shows the refusal line and, in its greyed
+  Host section, the announced state off. Client: `casual_joe` and `Use##ak47` from its own tab applied.
+- `tools/e2e.py --quick` (lane 2): 14/14, /tmp/b4b-e2e-l2-20260925-180035. Screenshots:
+  `~/.local/share/b4b-coop/models-tab/shots/` (not committed).
+- Combo labels with spaces need quotes for the dev driver: `overlay set '"Change the look of##target"' "#1"`.
