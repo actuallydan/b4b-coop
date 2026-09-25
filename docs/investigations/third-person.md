@@ -118,16 +118,15 @@ cheat; now a personal chat command for everyone: `/thirdperson` (`native/src/thi
 ## Game's own 3P moments with /thirdperson on
 - Incap: `cheatprobe hp Hergmgurk 0` → downed, a bot picked the hero up ("Vigor!"), view `want 2 applied 2` the whole
   time and after; nothing stuck. A dead bot (`hp #1 0` hit a bot) didn't touch the local view.
-- Pounce: `/spawn stalker 2` near the team: the bots killed them before a pounce (16 s of polling the owner tags);
-  not exercised. Healing with a medkit: not exercised.
+- Grabbed (2026-09-25, lane 2, host in 3P, bots away): `/spawn stalker 1` grappled the host: view `want 3 applied 3`
+  (the game's orbit camera) the whole grab; after `/killall` back to `want 2`, our camera (180 / side 40, `thirdperson
+  aim`: 180.0 along, 40.0 off) at once. Screenshots: game's grapple camera, then over the shoulder again.
+- Healing (host in 3P, hp set to 60, a bandage via `giveitem 0 <#>`, key 4, left mouse held): "Healing..." bar in our
+  3P, view 2 throughout, hp 60 -> 92, camera settings intact. (No medkit pickup on that map; the bandage uses the same
+  heal action.) Downed (`cheatprobe hp #0`) and `/revive`: view 2 throughout and after.
 
 ## Not verified
-- Pounced / grabbed / healing while on (the game's own 3P tags): the logic leaves those views alone (a 2 we didn't
-  write, or 3), and our camera settings apply to them; not exercised live.
-- Gun-to-gun switch timing 1P vs 3P (above).
-- Dev-CLI note: with the window raised by wmctrl, `thirdperson_key` (N) fired once on its own (log `thirdperson:
-  hotkey: first person` right after `wmctrl -a`); probably a stale key state at focus change under Wine. Not seen
-  otherwise.
+- Card pickups and other interactions in 3P (#27).
 - `/freeze` (cheat) also blocks the local player's firing.
 
 ## Dev tools added (dev builds)
@@ -140,7 +139,7 @@ messages), `cheatprobe input <vk|lmb|rmb> [s]` (the same through SendInput: the 
 works for mouse buttons when the window is raised; this is how fire/ADS are tested), `cheatprobe bind [axis] [<Name>
 <Key>]` (list / add input mappings; not saved).
 
-## Aim correction (WIP, branch `convenience`, 2026-09-25)
+## Aim correction (2026-09-25, lane 2)
 - Implemented (thirdperson.c, `thirdperson_aimfix=1` default): MinHook on the hero class's GetActorEyesViewPoint
   (vtable +0x5F0; GetBaseAimRotation +0x6E0 hooked too, unused). For the local hero in our 3P with an offset camera, the
   eye rotation is turned towards the point under the crosshair: camera ray (rebuilt each call from the camera's
@@ -152,14 +151,17 @@ works for mouse buttons when the window is raised; this is how fire/ADS are test
 - **Verified live on a client (lane 2, `multi.sh 2`)**: side 40 at a wall 600 away: without the fix the impact decal is
   at the eye-ray point (17-80 units off the crosshair point), with it at the crosshair point (0-5 units = spread);
   `thirdperson aim` then shows both rays hitting the same point (0.00 deg). Visibility traces hit a common's capsule.
-- **Open (the protocol question)**: does the host apply a corrected client shot? Not settled. Tries: host decals don't
-  show a client's impacts; `/freeze` (PlayersOnly) stops weapons on the host entirely (invalid test); unfrozen spawned
-  commons die at once or wander. Next: on the host `thirdperson callers 3 all` while the client fires: an "other eyes"
-  call from 0x141930ceb per client shot = the host re-traces with its own copy of the view (the fix would then need
-  host cooperation = protocol bump); none = the host takes the client's HitResults (ServerMoves carries a
-  TArray<FHitResult>) and the fix works as is. Then confirm with damage: `/bots off` + `/restart`, `/god all`, a common
-  in melee range, aim at its head with the crosshair (dev `thirdperson aim <pitch> <yaw>`, `thirdperson targets` shows
-  hp on host and client), one shot with `thirdperson aimfix 0` vs `1`.
+- **The host takes the client's hits (no protocol change needed)**, `multi.sh 2`, client in 3P side 40, bots out of
+  the way (incapped + `/tp` to the end saferoom; otherwise they kill every spawned common within a second), `/cheats on`,
+  `/god all`, a spawned common (20 hp, `thirdperson targets` on the host). The client's control rotation (what the host
+  replicates) was set with `thirdperson aim <p> <y>`, the client's own shot skewed with `aimtest eyes <yaw>`, aimfix 0,
+  one short burst (`cheatprobe input lmb 0.08`), rotation checked unchanged after the shot; A and B each run twice, same result:
+  - A: control rotation on the common, shot skewed +45 (client decal on the wall beside it): host hp **20 -> 20**.
+  - B: control rotation 45 deg off, shot skewed -45 onto the common (client blood decals at it): host hp **20 -> 0.6**.
+  - aimfix 1, crosshair (camera ray) on a common's head at 360: `thirdperson aim` 0.00 deg, host hp 20 -> 0.
+  The host does call the fire-path view function (0x141930ceb, "other eyes" in `thirdperson callers 3 all`) once per
+  client shot, but damage follows the client's own trace: a hit is decided by the shooter's game, so the correction
+  works client-only. Nothing seen that rejects a shot 45 deg away from the replicated view.
 
 ## Other results (2026-09-25, lane 2)
 - Gun-to-gun switch (pistol → AR, key then fire held, `thirdperson watch`): first shot 1.172 / 1.174 / 1.170 s in 3P vs
@@ -167,9 +169,10 @@ works for mouse buttons when the window is raised; this is how fire/ADS are test
 - Hotkeys now read the game's own input (PlayerController.IsInputKeyDown, cmds.c `cmds_hotkey_down`), GetAsyncKeyState
   only as a fallback: N typed into the open chat box no longer toggles 3P (verified), and raising/switching the window
   (wmctrl) no longer fires it (0 spurious toggles over two focus changes).
-- Not done: pounce/grab and medkit healing in 3P (a bandage given with `giveitem` wasn't selectable with keys 3-6;
-  `cheatprobe hp <#>` without a value is lethal, careful). Possible 1-frame first-person flash when a game-driven 3P
-  moment ends (the game writes 1, our next tick writes 2); an UpdateView hook would remove it if it shows.
+- `cheatprobe hp <#>` without a value is lethal (it downs the hero), careful.
+- #27 (interactions in 3P, deferred): the door's "PRESS F TO OPEN" prompt did show in 3P on the host; card pickups
+  not tried.
+- Possible 1-frame first-person flash when a game-driven 3P moment ends (the game writes 1, our next tick writes 2); an UpdateView hook would remove it if it shows.
 
 ## Open
-- Aim correction: the host question above. A shoulder-swap hotkey (`/thirdperson side swap` exists) if wanted.
+- A shoulder-swap hotkey (`/thirdperson side swap` exists) if wanted.

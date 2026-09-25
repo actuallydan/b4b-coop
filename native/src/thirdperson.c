@@ -47,9 +47,10 @@ static int tp_key = 'N';           // ini thirdperson_key (VK), 0 = none
 // SocketOffset +0x234, the game's own: 300 / 0,0,0) and ThirdPersonCamera (CameraComponent.FieldOfView +0x230).
 // Applied every tick while /thirdperson is on (cheap float writes, so a new hero or a reset by the game is covered),
 // the game's values are put back when it goes off. Shots come from the hero's eyes, not the camera (measured, see
-// third-person.md): side/height move the camera off the line of fire, so hits land that far beside the crosshair.
+// third-person.md): side/height move the camera off the line of fire; the aim correction below turns the eyes back
+// onto the crosshair point (without it, hits land that far beside the crosshair).
 #define TP_DIST_DEF 180.f
-#define TP_SIDE_DEF 40.f     // over the right shoulder by default (hits land this far beside the crosshair; ADS exact)
+#define TP_SIDE_DEF 40.f     // over the right shoulder by default (aim correction puts hits under the crosshair)
 static float tp_dist = TP_DIST_DEF, tp_side = TP_SIDE_DEF, tp_height, tp_fov;   // tp_fov 0 = the game's
 static UObject *tp_arm, *tp_cam;                                     // on tp_pawn
 static int32_t tp_armi = -1, tp_cami = -1;
@@ -444,7 +445,7 @@ static int tune_cmd(const char *arg, const char *val, Out *o) {
     if (tp_fov <= 0) tune(0);   // FOV back to the game's at once (the rest is re-applied below)
     if (tp_on) tune(1);
     tune_status(o);
-    if (tp_side || tp_height)
+    if ((tp_side || tp_height) && !aim_fix)
         out_printf(o, "note: shots come from your hero's eyes, so they land %.0f cm off the crosshair point; aiming "
                       "(right mouse) is exact\n", sqrtf(tp_side * tp_side + tp_height * tp_height));
     return 1;

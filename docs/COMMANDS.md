@@ -59,9 +59,8 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 - The **N** key toggles it too (see `thirdperson_key`).
 - Moments where the game itself switches to a view from behind (healing, being grabbed or pounced, ...) are left to
   the game.
-- There is no third-person crosshair: the normal centre-of-screen one is used. With the camera straight behind
-  your hero (the default), shots land exactly under it, but your hero's head covers it; aim with right mouse for
-  precise shots.
+- There is no third-person crosshair: the normal centre-of-screen one is used, and shots land under it (see **Aim**
+  below). Aim with right mouse for precise shots.
 - Camera settings (only your view, applied at once, kept for every map until the game quits; put them in
   `b4bcoop.ini` to keep them):
 
@@ -73,10 +72,11 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 | `/thirdperson fov <n>` | the game's | `60`-`130`, `0` = the game's | Field of view in third person |
 | `/thirdperson reset` | | | Back to these defaults |
 
-- **Aim with a side or height offset**: your shots still come from your hero's eyes, not from the camera, so they
-  land that many units beside (or below) the point under the crosshair: `side 40` = 40 cm to the left of it, at
-  every range (a lot up close, little far away). The command reminds you. Aiming with right mouse is always exact;
-  `side 0` also puts shots exactly under the crosshair, but your hero's head then covers it.
+- **Aim**: your shots come from your hero's eyes, not from the camera. With a side or height offset b4bcoop turns
+  your hero's aim towards whatever is under the crosshair, so shots land there (also as a client: the host takes your
+  hits as your game saw them). Something right beside your hero that only the camera sees past can still stop a
+  shot. `thirdperson_aimfix=0` turns this off: shots then land `side`/`height` units beside the crosshair point, at
+  every range. Aiming with right mouse is always exact.
 
 **`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope.
 - `<id>` is the host's 17-digit Steam ID. The host finds it in Steam: click your account name at the top right →
@@ -289,6 +289,7 @@ Rules:
 | `thirdperson_side` | `40` | `-150`-`150` | Over-the-shoulder offset, negative = left (`/thirdperson side`) |
 | `thirdperson_height` | `0` | `-100`-`150` | Camera height offset (`/thirdperson height`) |
 | `thirdperson_fov` | `0` (game's) | `60`-`130` | Third-person field of view (`/thirdperson fov`) |
+| `thirdperson_aimfix` | `1` | `0`, `1` | `0`: no aim correction, shots land beside the crosshair by the camera offset |
 | `allow_joins` | `friends` | `friends`, `anyone` | Host: who may join |
 | `allow_steamids` | none | Steam IDs | Host: these players may always join |
 | `presence` | `1` | `0`, `1` | `0`: friends don't see **Join Game** on you |
