@@ -88,6 +88,8 @@ Delete these files from the game folder (Steam → right-click Back 4 Blood → 
 Steam's "Verify integrity of game files" does **not** remove these: they are extra files, not game files. Your offline
 progress stays either way.
 
+Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `b4bcoop-modkit-<version>.zip` on [Releases](../../releases)).
+
 ## Troubleshooting
 - **"Everyone needs the same version"**: someone has another b4bcoop version. Everyone downloads the latest release
   and extracts it again (step 3 of Install).
@@ -113,6 +115,7 @@ The game has almost the entire retail experience with **no third-party network t
 
 So far we've implemented:
 - a **manual flashlight toggle** (L), optional
+- an optional **third-person camera** for your own hero (`/thirdperson`)
 - **5-player+** sessions (`teamsize=5` on the host), and a clean "Server full." instead of a host crash when too many
 join. Steam joins between two real accounts are verified; clicking Join Game in Steam's own friends list is new in
 this version and not yet tested between two accounts.

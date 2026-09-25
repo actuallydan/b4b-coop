@@ -8,7 +8,7 @@ Status 2026-09-25, build 14216215. Code: `modkit/` (author docs: `modkit/README.
   dev-only). Own folder `modkit/`, own README, own zip `dist/modkit/b4bcoop-modkit-<version>.zip`
   (`modkit/package.sh`, reproducible; release.yml uploads it next to the player zip).
 - Offline extraction for modders = CUE4Parse (pakx), not the game-side `dumpassets`.
-- No third-party piece bundled; the README says how to get each one. The pak AES key is not in the repo.
+- No third-party piece bundled; the README says how to get each one. The pak AES key is built into `b4bmod.py` (Dan: it is public and already in git history).
 
 ## Findings
 - **CUE4Parse from NuGet** (`CUE4Parse` 1.2.2.202609, Apache-2.0) reads B4B (`GAME_Back4Blood`); no source clone
@@ -16,14 +16,14 @@ Status 2026-09-25, build 14216215. Code: `modkit/` (author docs: `modkit/README.
 - **No proprietary Oodle needed.** CUE4Parse's default Oodle decompressor is `OodleSharp` 0.0.1 (NuGet, MIT, a managed
   port by NotOfficer). `pakx extract 'Heroes/Walker/'` without a native library: 801 files, 1.82 GB, byte-identical
   to the run with `liboodle-data-shared.so` (`diff -r`), and the 453 files also in the `dumpassets` dump are
-  identical to it. Speed: 15.8 s managed vs 3.2 s native (1.8 GB). Native Oodle stays optional (`b4bmod config
-  oodle`); pakx refuses a path that doesn't exist, because `OodleHelper.Initialize(path)` otherwise **downloads**
-  the library from the OodleUE GitHub release (what FModel does). The kit never downloads Oodle.
+  identical to it. Speed: 15.8 s managed vs 3.2 s native (1.8 GB). Dan's call: open source only, so the native
+  option was removed (pakx never calls `OodleHelper.Initialize`, which would **download** the library from the
+  OodleUE GitHub release when given a missing path, as FModel does). The kit never uses or downloads Oodle.
 - **Key check**: `pakx key` decrypts every encrypted index (AES-256-ECB, footer offset/size at +53/+45) and compares
   SHA1 with the footer (+25): 61/61 OK in 0.07 s; a key with one changed byte -> `wrong AES key: it does not decrypt
-  pakchunk0-WindowsNoEditor.pak`. `list`/`extract` run the same check first. The key comes from `--aes-key`,
-  `B4B_AES_KEY` or `b4bmod.ini` (`config aes_key` stores it only after the check). Removed from `b4bmod.py`,
-  mesh-mods.md and model-mods-paks.md (git history still has it). `modkit/package.sh` refuses any 64-hex string.
+  pakchunk0-WindowsNoEditor.pak`. `list`/`extract` run the same check first. The key is built in (`AES_KEY` in
+  `b4bmod.py`); `--aes-key`, `B4B_AES_KEY` or `b4bmod.ini` (`config aes_key`, stored only after the check) override
+  it if a game update changes it. `modkit/package.sh` refuses any other 64-hex string.
 - `find` now lists through pakx (no Python `cryptography` needed): 289,479 files, cache per pak set
   (`listing/files-<sha1 of pak names+sizes>.tsv`).
 - UAssetAPI: GitHub archive of commit 3228c1e (83 MB, SHA-256 `3c044cc8…4e92f`) instead of `git clone` (Windows

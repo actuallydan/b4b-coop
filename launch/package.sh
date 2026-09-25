@@ -101,6 +101,8 @@ REMOVE: delete these files from the game folder.
 Steam's "Verify integrity of game files" does NOT remove these: they are extra files, not game files.
 Your offline progress stays either way.
 
+Making your own add-ons: see the modkit (b4bcoop-modkit-<version>.zip on the b4bcoop Releases page).
+
 TROUBLESHOOTING
 - "Everyone needs the same version": someone has another b4bcoop version. Everyone downloads the
   latest release and extracts it again.

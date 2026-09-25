@@ -30,12 +30,7 @@ Blender) · [docs/addons.md](docs/addons.md) (packing, testing, sharing).
    It downloads the .NET 10 SDK (if you don't have it) and UAssetAPI into the kit's `deps` folder, builds the tools,
    and lists what is still missing. Nothing is installed system-wide and no admin rights are needed. Takes a few
    minutes the first time (about 250 MB).
-5. Set the game's AES key ([The AES key](#the-aes-key)):
-   ```
-   b4bmod config aes_key 0x0208...
-   ```
-   b4bmod checks it against the game's files and tells you if it is wrong.
-6. `b4bmod status` should end with `ready.`
+5. `b4bmod status` should end with `ready.`
 
 b4bmod finds Back 4 Blood in your Steam libraries. If not: `b4bmod config game "D:\SteamLibrary\steamapps\common\Back 4 Blood"`
 (the folder with `Back4Blood.exe` and `Gobi` in it).
@@ -48,7 +43,6 @@ Python 3.10+ (preinstalled on most distributions and SteamOS), `bash` and `curl`
 script). Extract the zip, then in a terminal in that folder:
 ```
 ./b4bmod.sh setup
-./b4bmod.sh config aes_key 0x0208...
 ./b4bmod.sh status
 ```
 The game is found in `~/.local/share/Steam`, `~/.steam/steam` and Flatpak Steam, including extra Steam libraries.
@@ -62,37 +56,22 @@ Everywhere in the guides, `b4bmod` means `./b4bmod.sh` on Linux.
 | UAssetAPI | reads and writes the game's cooked asset files | MIT | `b4bmod setup` downloads the tested version (commit `3228c1e`) from GitHub, checks its SHA-256, and unpacks it to `deps\UAssetAPI`. Manual: download `https://github.com/atenfyr/UAssetAPI/archive/3228c1e86261aa08131f7ec0ff1a395f5d0b2a84.zip` and extract it so that `deps\UAssetAPI\UAssetAPI\UAssetAPI.csproj` exists |
 | CUE4Parse | reads the game's `.pak` files (the same library FModel uses) | Apache-2.0 | NuGet package `CUE4Parse` 1.2.2.202609: `dotnet` downloads it on the first build, into your NuGet cache (`%USERPROFILE%\.nuget\packages`). It brings **OodleSharp** (MIT), an open-source Oodle decoder |
 | BCnEncoder.Net, StbImageSharp, StbImageWriteSharp | texture compression, PNG read/write | MIT / Unlicense | NuGet, same as above |
-| Oodle | the game's files are Oodle-compressed | proprietary (Epic Games / RAD) | **Not needed**: CUE4Parse decompresses with OodleSharp. Optional, about 5x faster extraction of big folders: a native Oodle library. We never ship or download it; see [Optional: native Oodle](#optional-native-oodle) |
-| The AES key | the game's pak index is encrypted | (a number) | you look it up: [The AES key](#the-aes-key) |
+| Oodle | the game's files are Oodle-compressed | | **Not needed**: CUE4Parse decompresses with OodleSharp (open source, above). The kit uses no proprietary Oodle library |
+| The AES key | the game's pak index is encrypted | (a number) | built into b4bmod: [The AES key](#the-aes-key) |
 | Blender 4.2+ | editing models, FBX conversion | GPL | [blender.org](https://www.blender.org/download/) (only for models) |
 | Back 4 Blood (Steam) | the game files everything starts from | | read only; b4bmod writes into the game folder only for `install` / `uninstall` (`b4bcoop-addons`) |
 | The b4bcoop mod | loads add-ons in the game | | the player zip from the b4bcoop releases, to test your add-on |
 
-### Optional: native Oodle
-Only for speed. Ways UE modders usually have it:
-- **FModel** downloads it automatically: look in FModel's output/data folder (usually `Output\.data` next to
-  FModel.exe) for `oodle-data-shared.dll` (older FModel versions: `oo2core_9_win64.dll`).
-- The **OodleUE** project's GitHub releases (`github.com/WorkingRobot/OodleUE`, the library built from the
-  Unreal Engine sources): `clang-cl-x64-release.zip` has `bin\oodle-data-shared.dll`; for Linux,
-  `gcc-x64-release.zip` has `lib/liboodle-data-shared.so`. That is where FModel and CUE4Parse get it.
-
-Then `b4bmod config oodle "C:\path\to\oodle-data-shared.dll"` (`b4bmod config oodle none` to go back). Oodle is
-Epic Games' / RAD's proprietary code under the Unreal Engine license: make sure you may use it, and don't
-redistribute it.
-
 ## The AES key
 The file list inside Back 4 Blood's `.pak` files is encrypted with AES-256. The key is the same for every copy of the
 game (it is built into the game; one key per game build), and it is publicly known: UE modders collect such keys in
-community AES key lists for FModel and UModel. Search for "Back 4 Blood AES key" (for example the UE4/UE5 AES key
-lists on GitHub or the FModel / UModel communities). It is 64 hexadecimal digits, `0x0208…7CFD`.
-
-This kit doesn't contain the key. Give it to b4bmod once:
+community AES key lists for FModel and UModel. b4bmod has it built in:
 ```
-b4bmod config aes_key 0x<the 64 hex digits>
+0x0208250257E8EA16828509DEBF23D703A5B509FE4F15F33F11BEE4BAB1F97CFD
 ```
-b4bmod decrypts every pak index with it and compares the result with the checksum stored in the pak, so a wrong key
-is caught at once (`wrong AES key: it does not decrypt pakchunk0-WindowsNoEditor.pak`). Also possible: the
-environment variable `B4B_AES_KEY`, or `--aes-key <key>` on any command.
+`b4bmod status` decrypts every pak index with it and compares the result with the checksum stored in the pak. If a game
+update ever changes the key, status says `WRONG`; then set the new one with `b4bmod config aes_key 0x<64 hex digits>`,
+the environment variable `B4B_AES_KEY`, or `--aes-key <key>` on any command.
 
 ## From an FBX to an add-on
 The short version, for a survivor outfit (details: [docs/meshes.md](docs/meshes.md), [docs/textures.md](docs/textures.md)):
@@ -115,7 +94,7 @@ Do the same for the first-person arms (`FP_Walker_Elite_00_SKM`): they have thei
 
 | Command | What it does |
 |---|---|
-| `setup`, `status`, `config [key [value]]` | get and check the tools; settings `aes_key`, `game`, `oodle`, `blender` |
+| `setup`, `status`, `config [key [value]]` | get and check the tools; settings `game`, `blender`, `aes_key` (built in; override only) |
 | `find "<regex>"` | search the game's asset paths (`/Game/...`) |
 | `extract <asset or "folder/*">` | copy game files out of the paks (the other commands do this for what they need) |
 | `info`, `tree <asset>` | what an asset is; mesh → materials → textures |
@@ -139,7 +118,7 @@ Do the same for the first-person arms (`FP_Walker_Elite_00_SKM`): they have thei
 ## Troubleshooting
 - `'py' is not recognized` / `'python' is not recognized`: install Python from python.org with "Add python.exe to
   PATH", then open a new command prompt.
-- `no AES key set` / `wrong AES key`: see [The AES key](#the-aes-key).
+- `wrong AES key`: see [The AES key](#the-aes-key).
 - `Back 4 Blood not found`: `b4bmod config game "<game folder>"`.
 - `building b4bmod failed`: the lines above it are the compiler's; the first build needs internet access for NuGet.
   `b4bmod setup` rebuilds everything.
@@ -153,7 +132,7 @@ Do the same for the first-person arms (`FP_Walker_Elite_00_SKM`): they have thei
 - **Linux** (Arch, Python 3.14, .NET SDK 10.0.401, Blender 5.1): everything, from a fresh unzip of this kit
   (`setup` downloading .NET and UAssetAPI) through `find`, `extract`, `tree`, `export`, `texture`, `mi`, `mesh
   export/import` (FBX and glTF), `pack`, `install`, `check`. Extracted files are byte-identical to what the running
-  game reads (801/801 files of a survivor, also identical with and without native Oodle).
+  game reads (801/801 files of a survivor).
 - **Windows**: not yet run on a Windows PC. Run under Wine with Windows Python 3.12: `b4bmod.cmd`, `status`,
   `config`, `mesh info/export/import`, `pack`, `install`, `check`, `uninstall` (Windows paths, `%LOCALAPPDATA%`);
   the add-on it packed is byte-identical to the Linux one. Not run on Windows: `setup` (PowerShell .NET install)
