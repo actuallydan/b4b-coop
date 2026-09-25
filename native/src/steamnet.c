@@ -475,9 +475,44 @@ static void print_peer(Out *o, const Peer *p, int i) {
     } else out_printf(o, " session: none\n");
 }
 
-// `steamnet [on|off]`: state, and the P2P session of every Steam peer
+// `steamnet ping [max age s]`: Steam's relay network (SDR) state and ISteamNetworkingUtils::CheckPingDataUpToDate,
+// which starts a new ping measurement to every relay POP when the data is older than max age (0 = now). Used to show
+// that the ~30 UDP sockets on 0.0.0.0 seen in bursts are Steam's own relay pings (steam-p2p.md "Loopback binding").
+typedef struct { int avail, ping_in_progress, avail_config, avail_any_relay; char msg[256]; } RelayStatus;
+static void relay_ping(char *arg, Out *o) {
+    void *u = NULL;
+    const char *ver = NULL;
+    static const char *vers[] = {"SteamNetworkingUtils004", "SteamNetworkingUtils003"};
+    for (size_t i = 0; !u && i < sizeof vers / sizeof *vers; i++) if ((u = iface(vers[i]))) ver = vers[i];
+    if (!u) { out_printf(o, "no ISteamNetworkingUtils (003/004)\n"); return; }
+    // v003/v004 vtable (checked against Proton's lsteamclient thunks; InitRelayNetworkAccess is an inline SDK helper
+    // calling CheckPingDataUpToDate): [0] AllocateMessage [1] GetRelayNetworkStatus [2] GetLocalPingLocation ...
+    // [7] CheckPingDataUpToDate [8] GetPingToDataCenter [9] GetDirectPingToPOP [10] GetPOPCount
+    void **vt = *(void ***)u;
+    int (*status)(void *, RelayStatus *) = (int (*)(void *, RelayStatus *))vt[1];
+    uint8_t (*uptodate)(void *, float) = (uint8_t (*)(void *, float))vt[7];
+    int (*pops)(void *) = (int (*)(void *))vt[10];
+    RelayStatus st = {0};
+    int a = status(u, &st);
+    out_printf(o, "%s: relay network %d (config %d, any relay %d), ping in progress=%d, POPs=%d: %.200s\n", ver, a,
+               st.avail_config, st.avail_any_relay, st.ping_in_progress, pops(u), st.msg);
+    if (arg) {
+        float age = (float)atof(arg);
+        uint8_t fresh = uptodate(u, age);
+        LOG("steamnet: relay ping data %s (max age %.0fs)", fresh ? "up to date" : "stale: Steam started a new ping measurement", age);
+        out_printf(o, "CheckPingDataUpToDate(%.0f) = %d%s\n", age, fresh, fresh ? "" : " (new ping measurement started)");
+    }
+}
+
+// `steamnet [on|off|ping [age]]`: state, and the P2P session of every Steam peer
 int steamnet_cmd(const char *verb, char *rest, Out *o) {
     if (strcmp(verb, "steamnet")) return 0;
+    if (rest && !strncmp(rest, "ping", 4) && (!rest[4] || rest[4] == ' ')) {
+        char *a = rest + 4;
+        while (*a == ' ') a++;
+        relay_ping(*a ? a : NULL, o);
+        return 1;
+    }
     if (rest && (!strcmp(rest, "on") || !strcmp(rest, "off"))) {
         g_enabled = !strcmp(rest, "on");
         out_printf(o, "Steam P2P %s\n", g_enabled ? "on" : "off");
