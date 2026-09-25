@@ -135,6 +135,9 @@ void addons_init(void);                       // init_thread: queue the player n
 void addons_slash(const char *verb, char *rest, Out *o);  // chat /addons (any thread that runs chat commands)
 typedef struct { const char *title, *file, *hash; int gameplay; unsigned kinds; const char *reason; } AddonRef;
 int addons_active(AddonRef *out, int max);    // add-ons mounted in this game, load order
+// Added outfits (addoninfo outfit= lines) of the mounted add-ons: object paths "/Game/X/Y.Y", meshfp "" = none
+typedef struct { const char *name, *hero, *mesh3p, *meshfp, *title, *addon; } AddonOutfit;
+int addons_outfits(AddonOutfit *out, int max);
 // addons_mp.c: add-ons in multiplayer (#22): login summary, host addons_policy, /addons players|policy
 int addons_policy_set(const char *v);         // any|cosmetic|none|match; -1 if unknown
 const char *addons_policy_name(void);

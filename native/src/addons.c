@@ -105,6 +105,52 @@ static int read_at(HANDLE h, uint64_t off, void *buf, DWORD n) {
     return SetFilePointerEx(h, li, NULL, FILE_BEGIN) && ReadFile(h, buf, n, &got, NULL) && got == n;
 }
 
+// ---- added outfits: addoninfo `outfit=<name>|<survivor>|<3P mesh>|<FP mesh>|<title>` (modkit: b4bmod survivor --as;
+// docs/investigations/new-assets.md). models.c wears them (/model <name>). ----
+#define MAX_OUTFITS 64
+typedef struct { Addon *addon; char name[33], hero[24], mesh3p[200], meshfp[200], title[64]; } Outfit;
+static Outfit OF[MAX_OUTFITS];
+static int nOF;
+static int outfit_path(const char *in, char *out, size_t n) {   // "/Game/X/Y[.Y]" -> "/Game/X/Y.Y"; "" = none
+    out[0] = 0;
+    if (!*in) return 1;
+    if (strncmp(in, "/Game/", 6) || strlen(in) >= n / 2 - 2) return 0;
+    for (const char *c = in; *c; c++) if ((unsigned char)*c < 33 || (unsigned char)*c > 126 || *c == '"' || *c == '\\') return 0;
+    const char *base = strrchr(in, '/') + 1;
+    if (strchr(base, '.')) snprintf(out, n, "%s", in);
+    else snprintf(out, n, "%s.%s", in, base);
+    return 1;
+}
+static void parse_outfit(Addon *a, char *v) {
+    char *f[5] = {0}; int k = 0;
+    for (char *p = v; k < 5; k++) { f[k] = p; p = strchr(p, '|'); if (!p) { k++; break; } *p++ = 0; }
+    Outfit o = {0};
+    o.addon = a;
+    int ok = k >= 3 && strlen(f[0]) > 0 && strlen(f[0]) < sizeof o.name && isalpha((unsigned char)f[0][0]);
+    for (const char *c = f[0]; ok && *c; c++) ok = islower((unsigned char)*c) || isdigit((unsigned char)*c) || *c == '_';
+    if (ok) ok = outfit_path(trim(f[2]), o.mesh3p, sizeof o.mesh3p) && o.mesh3p[0] && (k < 4 || outfit_path(trim(f[3]), o.meshfp, sizeof o.meshfp));
+    if (!ok || nOF >= MAX_OUTFITS) { LOG("addons: %s: outfit line ignored (%s): %s", a->name, ok ? "too many outfits" : "expected <name>|<survivor>|<3P mesh>|<FP mesh>|<title>", f[0] ? f[0] : ""); return; }
+    snprintf(o.name, sizeof o.name, "%s", f[0]);
+    snprintf(o.hero, sizeof o.hero, "%s", f[1] ? trim(f[1]) : "-");
+    snprintf(o.title, sizeof o.title, "%s", k >= 5 && *f[4] ? trim(f[4]) : o.name);
+    OF[nOF++] = o;
+}
+
+// Outfits of the mounted add-ons; a name in two add-ons: the later one (load order) wins, like files.
+int addons_outfits(AddonOutfit *out, int max) {
+    int k = 0;
+    for (int i = 0; i < nOF; i++) {
+        const Outfit *o = &OF[i];
+        if (o->addon->mounted <= 0) continue;
+        int j = 0;
+        while (j < k && strcmp(out[j].name, o->name)) j++;
+        if (j == k) { if (k >= max) continue; k++; }
+        out[j].name = o->name; out[j].hero = o->hero; out[j].mesh3p = o->mesh3p; out[j].meshfp = o->meshfp;
+        out[j].title = o->title; out[j].addon = o->addon->title;
+    }
+    return k;
+}
+
 // ---- addoninfo ----
 static void parse_info(Addon *a, char *text) {
     for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
@@ -125,6 +171,7 @@ static void parse_info(Addon *a, char *text) {
         else if (!_stricmp(k, "category")) dst = a->category, n = sizeof a->category;
         else if (!_stricmp(k, "description")) dst = a->desc, n = sizeof a->desc;
         else if (!_stricmp(k, "content")) dst = a->claim, n = sizeof a->claim;
+        else if (!_stricmp(k, "outfit")) parse_outfit(a, v);
         if (dst) snprintf(dst, n, "%s", v);
     }
 }
