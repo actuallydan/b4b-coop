@@ -40,8 +40,15 @@ Nothing is saved: your profile, your unlocked outfits and your campaign runs sta
   `/model list outfits` lists yours, e.g. `/model casual_joe`. Works on any survivor.
 - **An add-on weapon look**: add-ons can add a model for one of the game's weapons (`b4bmod weapon --as <name>`).
   `/model list weapons` lists them with their weapon, e.g. `/model ak47` = your AR02 shows the AK. It stays on every
-  AR02 you get (pickups, new maps) until `/model reset`; your survivor's look is separate. Also in the `~` window,
-  Models tab (Use / Reset).
+  AR02 you get (pickups, new maps) until `/model reset`; your survivor's look is separate.
+
+## The `~` window: Models tab
+
+Everything above without typing: **Your look** (what you wear, your pick, the host's refusal if it said no, **Reset my
+look**), **Pick a look** (Survivors / NPC bodies / Add-on outfits, a search box; click a name to wear it), **Weapon
+looks** (per weapon type: **Use**, the add-on it comes from, **Reset** for just that weapon type), **Everyone's look**
+(every player and bot). Host only (greyed on a client): **Change the look of** a player or bot (pick them, then click a
+look; everyone is told), their **Reset**, and **Model swaps allowed** (`/models on|off`).
 
 `/model list holly` shows names without the survivor in front: `elite_04` there is `/model holly_elite_04`.
 

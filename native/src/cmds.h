@@ -193,6 +193,8 @@ int wlooks_init(void);
 void wlooks_tick(float dt);
 int wlooks_pick(const char *name, Out *o);               // /model <name>: 1 if it is a weapon look (handled)
 void wlooks_reset(Out *o);                               // /model reset: your weapons back to your own skins
+void wlooks_reset_code(const char *code, Out *o);        // one weapon type (NULL = all) back to your own skin
+void wlooks_panel(int blocked, const char *why);         // ~ Models tab: the weapon looks section (blocked: Use greyed)
 void wlooks_list(Out *o);                                // /model list weapons
 void wlooks_overview(Out *o);                            // the /model list overview line
 void wlooks_status(Out *o);

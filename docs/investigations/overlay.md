@@ -21,7 +21,8 @@ command has a control (checklist below); the chat commands stay.
 
 ## Panel registry (overlay.h)
 - `overlay_add_panel(name, order, draw)` from a module's init; a tab per panel, sorted by order (Session 10, Players 20,
-  Camera 30, Flashlight 40, Cheats 50, Add-ons 70 (addons.c, models branch), Settings 90, Help 100; Models 60 next).
+  Camera 30, Flashlight 40, Cheats 50, Models 60 (models.c, models branch), Add-ons 70 (addons.c, models branch), Settings 90,
+  Help 100).
 - Widgets: `ov_text/_dim/_warn`, `ov_heading`, `ov_button`, `ov_button_confirm` (second click within 3 s),
   `ov_checkbox`, `ov_radio`, `ov_selectable` (list row), `ov_slider(_int)` + `ov_edit_done`, `ov_input_text/int`, `ov_combo`, `ov_key`, tables,
   `ov_tooltip`, `ov_copy`.
@@ -69,6 +70,10 @@ command has a control (checklist below); the chat commands stay.
 | `/addons [list]`, `/addons info <#>` (anyone) | Add-ons: table in load order (on, #, title + state / "not loaded: why", kind), conflicts; click a row = details (author, description, content class + first gameplay file, id Copy, outfits it adds, its conflicts, `/addons info` button); folder path Copy; "Load add-ons" (`addons`, restart) |
 | `/addons on\|off <#>` (anyone) | Add-ons: the row's checkbox (runs `/addons on\|off <file>`); beyond the chat: Up/Down (load order, `addons_move`), banner while `addonlist.txt` differs from what is mounted; hand edits of the file are re-read |
 | `/addons players`, `/addons policy` (host) | Add-ons: policy radios (`addons_policy`, saved + live via `addons_live`), players' summaries table, `/addons players` button; greyed on a client |
+| `/model`, `/model list [<survivor>\|npc\|outfits\|weapons]` (anyone) | Models: "Your look" (now, your pick, host refusal), `/model` button; lists Survivors (header per survivor: whole survivor + outfits/heads/torsos/legs) / NPC bodies (grouped) / Add-on outfits (by add-on), search box; Weapon looks per weapon type with the add-on |
+| `/model <name>`, `/model reset` (anyone) | Models: click a name (runs `/model <name>`), Use per weapon look, Reset my look; beyond the chat: Reset per weapon type (`wlooks_reset_code`) |
+| `/model <player> <name>\|reset` (host) | Models: "Change the look of" combo (then click a look), Everyone's look table: Change / Reset per row (greyed on a client) |
+| `/models [on\|off]` (host) | Models: "Model swaps allowed" checkbox (client: greyed, shows the host's last announced state), `/models` button, add-on policy line |
 | ini keys | Settings: text size, overlay/flashlight/third-person keys; Camera: `thirdperson*`; Flashlight: sticky; Session: `presence`, `allow_joins`, `allow_steamids` |
 
 Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID Copy.
@@ -94,3 +99,16 @@ Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID
 - `B4B_LANE=2 tools/e2e.py --quick --no-lock`: 13/13 PASS incl. the new overlay smoke check (`#1 frames built=232
   drawn=232; #2 frames built=256 drawn=256`), /tmp/b4b-e2e-l2-20260925-163516.
 - Not tried: window resize (ResizeBuffers), native Windows, gamepad.
+
+## Models tab (models.c `models_panel`, 2026-09-25, lane 2, `multi.sh 2`, `casual_joe.pak` + `mod_ak47.pak` via `addons_dir=`)
+- Driven with `overlay press/set`: search `walker_elite` + click `walker_elite_03` -> `/model walker_elite_03` applied;
+  NPC bodies `emmett`, Add-on outfits `casual_joe`, `Use##ak47` (AR02 given with `giveitem`: FP/3P meshes from
+  `/Game/b4bcoop/weapons/ak47/`), whole survivor `walker` -> `walker_elite_00`; per-type `Reset##w:AR02` -> row back,
+  FP overrides 10.
+- Host target combo `#1` + click `karlee_elite_05` -> `/model #1 karlee_elite_05` (client's slot shows it, notice on
+  the client); Everyone's look `Reset##1` -> `/model #1 reset`.
+- `Model swaps allowed` off -> `/models off`, 3 looks reset; the client's tab shows the refusal line and, in its greyed
+  Host section, the announced state off. Client: `casual_joe` and `Use##ak47` from its own tab applied.
+- `tools/e2e.py --quick` (lane 2): 14/14, /tmp/b4b-e2e-l2-20260925-180035. Screenshots:
+  `~/.local/share/b4b-coop/models-tab/shots/` (not committed).
+- Combo labels with spaces need quotes for the dev driver: `overlay set '"Change the look of##target"' "#1"`.
