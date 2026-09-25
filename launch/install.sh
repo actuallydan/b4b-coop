@@ -9,7 +9,7 @@
 #                                 WINEDLLOVERRIDES="dwmapi=n,b" %command%)
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-source "$here/launch/lane.sh"   # B4B_LANE=2: the Flatpak game copy (its player files are backed up first)
+source "$here/launch/lane.sh"   # B4B_LANE=2: the Flatpak game copy; both lanes' player files are backed up first
 game="${B4B_DIR:-$lane_game}"
 bin="$game/Gobi/Binaries/Win64"
 out="$here/native/out" flavor="dev build" legacy=0 build=()
@@ -21,7 +21,8 @@ for a in "$@"; do
   esac
 done
 "$here/native/build.sh" "${build[@]}" >/dev/null
-[[ $B4B_LANE == 2 && -z ${B4B_DIR:-} ]] && "$here/launch/lane-restore.sh" backup
+# the lane folder's player install (launch/lane-restore.sh): lane 2 always, lane 1 under its gamelock (else Dan's own)
+[[ -z ${B4B_DIR:-} && ( $B4B_LANE == 2 || -d $lane_lock ) ]] && "$here/launch/lane-restore.sh" backup
 rm -rf "$bin/ue4ss"
 # rm first: a running game maps the old file, and overwriting it in place would corrupt that mapping
 rm -f "$bin/dwmapi.dll" "$bin/X3DAudio1_7.dll" "$game/xinput1_3.dll"

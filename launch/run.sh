@@ -6,7 +6,7 @@ set -euo pipefail
 steam="$HOME/.local/share/Steam"
 source "$(dirname "$0")/lane.sh"   # B4B_LANE=2: the Flatpak game copy, still run with this (native) Steam and Proton
 game="${B4B_DIR:-$lane_game}"
-[[ $B4B_LANE == 2 && -z ${B4B_DIR:-} ]] && "$(dirname "$0")/lane-restore.sh" backup
+[[ -z ${B4B_DIR:-} && ( $B4B_LANE == 2 || -d $lane_lock ) ]] && "$(dirname "$0")/lane-restore.sh" backup
 proton="${PROTON:-$steam/steamapps/common/Proton - Experimental/proton}"
 # B4B_PREFIX: alternate compatdata dir (isolated test prefixes, see launch/multi.sh)
 export STEAM_COMPAT_DATA_PATH="${B4B_PREFIX:-$steam/steamapps/compatdata/924970}"

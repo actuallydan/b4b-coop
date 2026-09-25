@@ -121,7 +121,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `steamnet.c` Steam P2P: UDP shim under the retail net driver (ws2_32 sendto/recvfrom ↔ ISteamNetworking P2P,
     Steam peers get fake 198.18.x.y addresses); `join steam:<id64>`, SteamID in `status`, `steamnet [on|off]`, ini
     `steam_p2p=0`. Its `bind` hook puts the game exe's wildcard UDP binds on 127.0.0.1 unless `host_ip=1` (not other
-    modules': Windows steamclient64 binds in-process). USteamNetDriver can't work here (no STEAM socket subsystem).
+    modules': Windows steamclient64 binds in-process). Steam's own relay pings (~27 UDP sockets on 0.0.0.0 from
+    steamclient.so in the game process; dev `steamnet ping 0` triggers them) are outside that promise: steam-p2p.md
+    "Loopback binding". USteamNetDriver can't work here (no STEAM socket subsystem).
     docs/investigations/steam-p2p.md (incl. "Loopback binding", "Two-account result").
   - `cmds.c` dev commands: `status players host join leave exec find call peek poke`; config = `b4bcoop.ini` next to the DLL
     or `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; no ini = defaults; keys `host` (default 1, 0 when
@@ -205,10 +207,13 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   `/tmp/b4b-game-lane2.lock`, prefixes `prefixes/lane2/test<n>`, game port 7887, agent ports 47140+, windows
   "B4B L2 #n", artifacts `/tmp/b4b-e2e-l2-<time>`; still run with the native Steam/Proton (one Steam id).
   Each lane's `gamelock.sh`, `multi-stop.sh` (matches only its own prefix root) and instances are independent.
-  That folder is also the player build of Dan's second account (dreamsofants): `B4B_LANE=2 gamelock.sh acquire`
-  (and install.sh/run.sh) backs up its top-level player files (`launch/lane-restore.sh`, into
-  `~/.local/share/b4b-coop/lane2-player-backup/`), `release` stops lane-2 instances and restores them sha256-exact
-  (lane test logs move to `~/.local/share/b4b-coop/lane2-logs/`); acquire waits while that account's game runs.
+  Both folders hold one of Dan's player installs (lane 1: his own account's; lane 2: his second account's,
+  dreamsofants). `gamelock.sh acquire` backs up the lane's player files (`launch/lane-restore.sh`: top-level files of
+  the game root and Win64, and Win64/b4bcoop-addons/, into `~/.local/share/b4b-coop/lane<n>-player-backup/`; also
+  install.sh/run.sh: lane 2 always, lane 1 only while its lock is held); `release` stops the lane's instances,
+  restores them sha256-exact and removes what the dev install added (test logs move to a new
+  `~/.local/share/b4b-coop/lane<n>-logs/<time>/`), so no reinstall of main's build is needed. Acquire waits while
+  the player's own game runs in that folder. Never edit his `b4bcoop.ini`.
   Usage: `export B4B_LANE=2; launch/gamelock.sh acquire <me>; launch/install.sh; launch/multi.sh 2; ...; release`.
 - 5 players: `B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5` (opt-in `teamsize` in `native/src/teamsize.c`). Verified: a
   full mission and 2 chapter transitions with 5 humans. Without it, a 5th joiner is refused with "Server full."
@@ -223,7 +228,8 @@ card charged once to their own profiles, chat `/players` typed on the client, re
 SP forwarded, a seamless chapter transition, both profiles diffed after the deferred save (client SP +forwarded
 amount exactly, host only its own), the 0.3.0 defaults (host without `host=`, presence `steam:` + `proto:` and no
 `addr:`, protocol in the login options), no public peer on any game socket and nothing bound off loopback (`ss`
-sampler). `--full` adds a vanilla
+sampler, every second; sockets made through Wine's ws2_32 only: Steam's native steamclient.so relay pings, ss lines
+without `wineserver`, are listed apart and are no failure; steam-p2p.md "Loopback binding"). `--full` adds a vanilla
 `multi.sh 5` (5th refused "Server full.", host survives) and a `teamsize=5` round (5 follow, SP forwarded to all 4
 clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
 screenshots in `/tmp/b4b-e2e-<time>/` (`--out`). `B4B_LANE=2 tools/e2e.py --quick` runs it on lane 2 (above), in
@@ -245,7 +251,8 @@ used to get its profile reset ("HydraPublicId mismatch"); joins now wait for the
 - Wine reparents the game to systemd: `/proc/<pid>/mem` is unreadable (yama=1). Use the Windows-side tools.
 - `pkill -f <pattern>` kills your own shell when the pattern appears in the command; kill by PID from `pgrep`.
 - SIGTERM on a Wine game whose wineserver is gone leaves a zombie with ~200 threads parked in ntsync that still holds
-  its UDP port; use SIGKILL. Proton resets `STEAM_COMPAT_DATA_PATH` inside the game (use `WINEPREFIX`/own vars).
+  its UDP port; use SIGKILL. Such a zombie (state Z, threads in ntsync_schedule) goes away when one of its
+  threads gets SIGKILL: `kill -9 <tid from /proc/<pid>/task>`. Proton resets `STEAM_COMPAT_DATA_PATH` inside the game (use `WINEPREFIX`/own vars).
 - Shipping build writes no engine log; the agent enables the UE_LOG gate (0x1469BD96D) and captures it.
 - Native Windows: the exe is ASLR'd (Wine keeps the preferred base), so all static addresses go through `VA()` in
   `ue.h`. System d3d/dxgi DLLs load our dwmapi too and import ordinal-only exports, so every proxy
@@ -272,10 +279,16 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
   no `addr:`, game UDP on 127.0.0.1 (host and client) with loopback joins working (`e2e.py --quick` 12/12),
   remote-IP joins refused with the message, protocol mismatch refused on both sides, `host_ip=1` back to 0.0.0.0 and
   IP joins.
+- 2026-09-25 (local copies on Proton, two lanes): `/thirdperson` (#25: camera settings, N key, shoulder default, aim
+  correction toward the crosshair verified client-only on host damage); the `~` overlay (#26, D3D12 + ImGui) with every
+  chat command, ini save and key binding; live ini reload; joins wait for the offline sign-in (fixes a profile reset
+  race with `join=`); e2e: golden test profiles, Steam's own relay sockets (steamclient.so, 0.0.0.0) reported apart
+  from game sockets.
 - Model mods (`models` branch, 2026-09-25, epic #23, local sessions on Proton): add-ons in player builds (#20),
   multiplayer rules `addons_policy` (#22), texture/material edits, SKM + static-mesh writing, a CC0 FBX survivor
-  (3P + FP arms) and an AK replacing AR02 as add-ons; the separate `modkit/` (b4bmod, own zip). Not run on real
-  Windows (modkit .NET tools); hair renders opaque, no facial animation.
+  (3P + FP arms, alpha hair) and an AK replacing AR02 as add-ons; added outfits and weapon looks (`--as`, `/model`)
+  that others without the add-on see as vanilla; Models and Add-ons tabs in the `~` window; the separate `modkit/`
+  (b4bmod, own zip). Not run on real Windows (modkit .NET tools); no facial animation.
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
@@ -287,6 +300,9 @@ Known issues / open:
   simulated join requests verified on one account; the real callback, the Join Game menu and Steam-initiated launch
   need the two-account plan in docs/investigations/steam-invites.md (#10). Local copies on one account overwrite each
   other's rich presence.
+- #27: in third person some interactions fail / their prompt is missing (e.g. picking up cards); deferred.
+- Steam's own relay sockets (in-process steamclient) bind 0.0.0.0; outside the game-socket loopback promise (Dan to
+  confirm the wording).
 - A client that disconnects before the saferoom-exit charge keeps its burn card. Skull totem points and duffel-bag
   rewards reach the client (verified, client-rewards.md §6b), but a remote player's duffel roll can't see what they
   own, so they may get a product they already have (a no-op).
