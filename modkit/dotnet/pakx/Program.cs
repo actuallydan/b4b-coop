@@ -4,15 +4,14 @@ using CUE4Parse.FileProvider;
 using CUE4Parse.UE4.Versions;
 
 // pakx: offline reader for Back 4 Blood's retail paks (no game running). CUE4Parse (NuGet, GAME_Back4Blood) plus
-// the pak AES key, which the modder supplies (modkit/README.md). Same bytes as the dev agent's `dumpassets`
+// the pak AES key (built into b4bmod.py). Same bytes as the dev agent's `dumpassets`
 // (453/453 in docs/investigations/model-mods-paks.md). Normally run through modkit/b4bmod.py.
 const string Usage = @"pakx key     --paks <Paks dir> --aes <hex>                       check the key against the pak indexes
 pakx list    --paks <Paks dir> --aes <hex> [<regex>]             every file path (size, path), TSV with the pak name
-pakx extract --paks <Paks dir> --aes <hex> --out <dir> [--oodle <lib>] <regex>
+pakx extract --paks <Paks dir> --aes <hex> --out <dir> <regex>
                                                                  write every matching file to <dir>/Gobi/Content/...
 <regex> is matched (case-insensitive) against paths like Gobi/Content/Characters/Heroes/Holly/.../x_SKM.uasset.
-Oodle: CUE4Parse decompresses with its built-in managed decoder (OodleSharp, MIT). --oodle <oo2core/oodle-data-shared
-library> uses a native Oodle library instead; pakx never downloads one.";
+Oodle: CUE4Parse decompresses with its open-source managed decoder (OodleSharp, MIT); no native Oodle is used.";
 
 try { return Run(args); }
 catch (UsageException e) { Console.Error.WriteLine($"pakx: {e.Message}\n\n{Usage}"); return 2; }
@@ -24,24 +23,14 @@ static int Run(string[] args)
     string cmd = args[0];
     var named = new Dictionary<string, string>();
     var pos = new List<string>();
-    if (Directory.Exists(cmd) && args.Length >= 5)
+    for (int i = 1; i < args.Length; i++)
     {
-        // legacy form: pakx <Paks dir> <aes> <oodle lib> <out dir> <regex> [--list]
-        named["--paks"] = args[0]; named["--aes"] = args[1]; named["--oodle"] = args[2]; named["--out"] = args[3];
-        pos.Add(args[4]);
-        cmd = args.Length > 5 && args[5] == "--list" ? "list" : "extract";
-    }
-    else
-    {
-        for (int i = 1; i < args.Length; i++)
+        if (args[i] is "--paks" or "--aes" or "--out")
         {
-            if (args[i] is "--paks" or "--aes" or "--out" or "--oodle")
-            {
-                if (i + 1 >= args.Length) throw new UsageException($"{args[i]} needs a value");
-                named[args[i]] = args[++i];
-            }
-            else pos.Add(args[i]);
+            if (i + 1 >= args.Length) throw new UsageException($"{args[i]} needs a value");
+            named[args[i]] = args[++i];
         }
+        else pos.Add(args[i]);
     }
     string paks = named.GetValueOrDefault("--paks") ?? throw new UsageException("--paks <Paks dir> is required");
     if (!Directory.Exists(paks)) throw new PakxException($"no such folder: {paks}");
@@ -62,12 +51,6 @@ static int Run(string[] args)
             Regex re = new(pos.Count > 0 ? pos[0] : (cmd == "list" ? "." : throw new UsageException("<regex> is required")),
                            RegexOptions.IgnoreCase);
             string outDir = cmd == "extract" ? named.GetValueOrDefault("--out") ?? throw new UsageException("--out <dir> is required") : null;
-            if (cmd == "extract" && named.TryGetValue("--oodle", out var oodle))
-            {
-                // CUE4Parse downloads a library when the path doesn't exist: never let it
-                if (!File.Exists(oodle)) throw new PakxException($"no Oodle library at {oodle}");
-                CUE4Parse.Compression.OodleHelper.Initialize(oodle);
-            }
             var pp = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(EGame.GAME_Back4Blood),
                                              StringComparer.OrdinalIgnoreCase);
             pp.Initialize();

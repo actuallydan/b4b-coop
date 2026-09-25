@@ -2,8 +2,8 @@
 """b4bmod: the b4bcoop mod maker's kit, one command from the game's files to an installed add-on.
 
   setup                                   get .NET 10 + UAssetAPI (no admin), build the tools, show what's missing
-  status                                  what is set up: tools, game folder, AES key, Oodle, Blender
-  config [<key> [<value>]]                show or set aes_key (checked against the game's paks), game, oodle, blender
+  status                                  what is set up: tools, game folder, AES key, Blender
+  config [<key> [<value>]]                show or set game, blender, aes_key (built in; only to override)
 
   find <regex>                            search every game asset path (offline, from the pak indexes)
   extract <asset | folder/*>... [--regex R] [-o DIR]
@@ -51,6 +51,8 @@ UASSETAPI_ZIP_SHA256 = "3c044cc871c41e877f76ce42ced31f0d700ae9febe959d35b03a41de
 DOTNET_CHANNEL = "10.0"
 PROJECTS = {"b4bmod": os.path.join(KIT, "dotnet", "b4bmod"), "pakx": os.path.join(KIT, "dotnet", "pakx")}
 KEY_RX = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
+# The pak index AES key: the same for every copy of this game build (the public community key; `status` checks it).
+AES_KEY = "0x0208250257E8EA16828509DEBF23D703A5B509FE4F15F33F11BEE4BAB1F97CFD"
 
 
 def die(msg, code=1):
@@ -82,11 +84,7 @@ OPTS = {}   # --aes-key, --game, --src given on the command line
 
 
 def aes_key(required=True):
-    k = OPTS.get("--aes-key") or os.environ.get("B4B_AES_KEY") or read_config().get("aes_key")
-    if not k and required:
-        die("no AES key set. Back 4 Blood's paks need the game's AES key to be read (one key for every copy of the game).\n"
-            "  Find it in a public UE AES key list (search \"Back 4 Blood AES key\"; README.md, \"The AES key\"), then\n"
-            "  b4bmod config aes_key 0x<64 hex digits>")
+    k = OPTS.get("--aes-key") or os.environ.get("B4B_AES_KEY") or read_config().get("aes_key") or AES_KEY
     if k and not KEY_RX.match(k.strip()):
         die("the AES key must be 64 hex digits, optionally with 0x in front")
     return k.strip() if k else None
@@ -281,9 +279,6 @@ def asset_regex(a):
 def extract(patterns, out=None, quiet=False):
     out = out or src_dir()
     args = ["extract", "--out", out]
-    oodle = read_config().get("oodle")
-    if oodle:
-        args += ["--oodle", oodle]
     rx = "|".join(f"(?:{p})" for p in patterns)
     r = pakx(args + [rx], capture=True)
     if not quiet or not r.stderr.startswith("0 files"):
@@ -333,18 +328,14 @@ def cmd_status(a):
     g = find_game()
     print(f"game        {g or 'NOT FOUND: b4bmod config game <Back 4 Blood folder>'}")
     k = aes_key(required=False)
-    src = "--aes-key" if OPTS.get("--aes-key") else "B4B_AES_KEY" if os.environ.get("B4B_AES_KEY") else CONFIG
-    if not k:
-        print("AES key     NOT SET: b4bmod config aes_key 0x<64 hex digits>  (README.md, \"The AES key\")")
-        ok = False
-    elif g and dn and os.path.exists(tool_dll("pakx")):
+    src = ("--aes-key" if OPTS.get("--aes-key") else "B4B_AES_KEY" if os.environ.get("B4B_AES_KEY")
+           else CONFIG if read_config().get("aes_key") else "built in")
+    if g and dn and os.path.exists(tool_dll("pakx")):
         r = run_dotnet_tool("pakx", ["key", "--paks", os.path.join(g, "Gobi", "Content", "Paks"), "--aes", k], capture=True)
         print(f"AES key     {'OK (checked against the paks)' if r.returncode == 0 else 'WRONG: ' + (r.stderr or r.stdout).strip()} (from {src})")
         ok &= r.returncode == 0
     else:
         print(f"AES key     set (from {src}), not checked yet")
-    oodle = read_config().get("oodle")
-    print(f"Oodle       {oodle + ' (native)' if oodle else 'built-in managed decoder (OodleSharp, via CUE4Parse); optional native: config oodle'}")
     bl = blender_exe()
     print(f"Blender     {bl or 'not found (only for meshes): install Blender, or b4bmod config blender <path to blender>'}")
     print(f"mesh tools  {MESH}")
@@ -358,12 +349,12 @@ def cmd_config(a):
     cfg = read_config()
     if not a:
         print(f"{CONFIG}:")
-        for k in ("aes_key", "game", "oodle", "blender"):
+        for k in ("game", "blender", "aes_key"):
             print(f"  {k}={cfg.get(k, '')}")
         return 0
     k = a[0].lower()
-    if k not in ("aes_key", "game", "oodle", "blender"):
-        die("keys: aes_key, game, oodle, blender")
+    if k not in ("aes_key", "game", "blender"):
+        die("keys: game, blender, aes_key")
     if len(a) == 1:
         print(cfg.get(k, ""))
         return 0
