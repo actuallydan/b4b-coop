@@ -126,6 +126,15 @@ void addons_unavailable(const char *why);     // paks.c: hooks unavailable, noth
 void addons_mount(void);                      // FPakPlatformFile::Initialize hook, right after the retail paks
 void addons_init(void);                       // init_thread: queue the player notice (conflicts, bad add-ons)
 void addons_slash(const char *verb, char *rest, Out *o);  // chat /addons (any thread that runs chat commands)
+typedef struct { const char *title, *file, *hash; int gameplay; unsigned kinds; const char *reason; } AddonRef;
+int addons_active(AddonRef *out, int max);    // add-ons mounted in this game, load order
+// addons_mp.c: add-ons in multiplayer (#22): login summary, host addons_policy, /addons players|policy
+int addons_policy_set(const char *v);         // any|cosmetic|none|match; -1 if unknown
+const char *addons_policy_name(void);
+const char *addons_login_option(void);        // "?b4bcoopaddons=..." appended to every join URL (cmds.c)
+int addons_login_check(const char *value, const char *name, const char *key, char *err, size_t en);  // host: 1 = refuse
+void addons_login_record(UObject *conn, const char *name, const char *value);  // host: accepted login's summary
+int addons_mp_slash(const char *sub, char *arg, Out *o);  // /addons players|policy; 1 if handled
 // models.c: runtime model swaps (#19, docs/investigations/model-swap.md)
 int models_init(void);
 void models_tick(float dt);

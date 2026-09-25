@@ -232,7 +232,7 @@ void chat_on_join_failed(const char *error) {
     const char *e = strstr(error, "Error: '");
     char msg[256];
     snprintf(msg, sizeof msg, "Could not join: %.*s", e ? (int)strcspn(e + 8, "'") : 40, e ? e + 8 : "connection failed");
-    if (strstr(error, "same version")) {
+    if (strstr(error, "same version") || strstr(error, " add-ons")) {   // another version, or add-ons (restart needed)
         cmds_auto_join_stop();
         if (cmds_session_join()[0]) cmds_set_session_join(NULL);
     } else if (strstr(error, "banned")) {

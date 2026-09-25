@@ -11,7 +11,9 @@
 //   index would be a Fatal in the engine) and is the add-on's content id (#22: compare it across a session).
 //   Conflicts: two enabled add-ons with the same file path; logged, listed by /addons, and one chat notice. "Mixed":
 //   one package's files (.uasset/.uexp/.ubulk) end up from different add-ons, which can crash the game.
-//   Client-side only: nothing here is sent to the host or other players (no protocol change).
+//   Each add-on is classified from its files (addonclass.c, #22): cosmetic or gameplay-affecting; the addoninfo's
+//   own `content=` line is only compared. Add-ons stay client-side (each player sees their own); what a joiner runs is
+//   summarized in the login options and checked against the host's addons_policy (addons_mp.c).
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +21,7 @@
 #include <ctype.h>
 #include "log.h"
 #include "cmds.h"
+#include "addonclass.h"
 
 #define ADDON_ORDER 1000          // read order of the first add-on; retail paks are 4 (+100 per patch level)
 #define PAK_MAGIC 0x18772u
@@ -31,11 +34,12 @@
 typedef struct {
     wchar_t file[MAX_PATH];       // file name in the add-ons folder
     char name[MAX_PATH];          // same, UTF-8 (addonlist.txt key, chat)
-    char title[96], author[64], version[32], category[48], desc[400], hash[41];
+    char title[96], author[64], version[32], category[48], desc[400], hash[41], claim[48];   // claim: addoninfo content=
     int nfiles, present, on, on_at_start, valid, mounted;   // mounted: 1 ok, -1 Mount failed, 0 not mounted
     char why[120];                // why it can't load
     uint32_t order;
     char **keys;                  // normalized file paths (conflict check, freed after the scan)
+    AddonClass cls;               // cosmetic or gameplay, from the files (addonclass.c)
 } Addon;
 static Addon A[MAX_ADDONS];
 static int nA, n_mount;
@@ -120,6 +124,7 @@ static void parse_info(Addon *a, char *text) {
         else if (!_stricmp(k, "version")) dst = a->version, n = sizeof a->version;
         else if (!_stricmp(k, "category")) dst = a->category, n = sizeof a->category;
         else if (!_stricmp(k, "description")) dst = a->desc, n = sizeof a->desc;
+        else if (!_stricmp(k, "content")) dst = a->claim, n = sizeof a->claim;
         if (dst) snprintf(dst, n, "%s", v);
     }
 }
@@ -153,6 +158,41 @@ static void norm_key(char *s) {   // mount point + name -> "gobi/content/..." (l
     if (p != s) memmove(s, p, strlen(p) + 1);
 }
 
+// ---- content class (addonclass.c): each .uasset's header is read from the pak ----
+typedef struct { uint64_t off, size; uint32_t method; char path[200]; } Ent;
+typedef struct { const char *key; size_t kl; int owner; } Slot;   // key[0..kl): a file path or a package stem
+static uint64_t fnv(const char *s, size_t n) { uint64_t h = 1469598103934665603ull; for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)s[i]) * 1099511628211ull; return h; }
+static Slot *slot_of(Slot *t, size_t cap, const char *k, size_t kl) {
+    for (size_t i = fnv(k, kl) & (cap - 1);; i = (i + 1) & (cap - 1))
+        if (!t[i].key || (t[i].kl == kl && !memcmp(t[i].key, k, kl))) return &t[i];
+}
+static size_t stem_len(const char *k);
+
+static void classify(Addon *a, HANDLE h, const Ent *ents) {
+    size_t cap = 16;
+    while (cap < (size_t)a->nfiles * 2 + 16) cap <<= 1;
+    Slot *assets = calloc(cap, sizeof *assets);   // stems that have a .uasset in this add-on
+    addonclass_begin(&a->cls);
+    if (!assets) { a->cls.gameplay = 1; snprintf(a->cls.reason, sizeof a->cls.reason, "out of memory"); return; }
+    for (int i = 0; i < a->nfiles; i++) {
+        size_t l = strlen(a->keys[i]);
+        if (l > 7 && !strcmp(a->keys[i] + l - 7, ".uasset")) { Slot *s = slot_of(assets, cap, a->keys[i], l - 7); s->key = a->keys[i]; s->kl = l - 7; }
+    }
+    for (int i = 0; i < a->nfiles; i++) {
+        const char *k = a->keys[i];
+        size_t sl = stem_len(k), l = strlen(k);
+        int has_uasset = slot_of(assets, cap, k, sl)->key != NULL;
+        uint8_t *data = NULL;
+        if (l > 7 && !strcmp(k + l - 7, ".uasset") && !ents[i].method && ents[i].size <= (32u << 20)) {
+            data = malloc(ents[i].size ? ents[i].size : 1);
+            if (data && !read_at(h, ents[i].off + ENTRY_HDR, data, (DWORD)ents[i].size)) { free(data); data = NULL; }
+        }
+        addonclass_file(&a->cls, k, ents[i].path, has_uasset, data, data ? ents[i].size : 0);
+        free(data);
+    }
+    free(assets);
+}
+
 static int load_pak(Addon *a, const wchar_t *path) {
     HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) { snprintf(a->why, sizeof a->why, "can't open (error %lu)", GetLastError()); return 0; }
@@ -177,6 +217,8 @@ static int load_pak(Addon *a, const wchar_t *path) {
     int32_t n = (int32_t)rd32(&r);
     if (r.bad || n < 0 || n > 1000000) { snprintf(a->why, sizeof a->why, "damaged pak (bad index)"); goto out; }
     a->keys = calloc((size_t)n + 1, sizeof *a->keys);
+    Ent *ents = calloc((size_t)n + 1, sizeof *ents);
+    if (!a->keys || !ents) { snprintf(a->why, sizeof a->why, "out of memory"); free(ents); goto out; }
     for (int32_t i = 0; i < n && !r.bad; i++) {
         rdstr(&r, name, sizeof name);
         uint64_t off = rd64(&r), size = rd64(&r); rd64(&r);
@@ -185,7 +227,7 @@ static int load_pak(Addon *a, const wchar_t *path) {
         if (method) { uint32_t nb = rd32(&r); rd(&r, (size_t)nb * 16); }
         rd32(&r); rd(&r, 1);
         if (r.bad) break;
-        if (off > ioff || size > ioff - off) { snprintf(a->why, sizeof a->why, "damaged pak (file %s out of range)", name); goto out; }
+        if (off > ioff || size > ioff - off) { snprintf(a->why, sizeof a->why, "damaged pak (file %s out of range)", name); free(ents); goto out; }
         snprintf(key, sizeof key, "%s%s", mount, name);
         norm_key(key);
         if (!strcmp(key, INFO_NAME)) {
@@ -196,9 +238,13 @@ static int load_pak(Addon *a, const wchar_t *path) {
             }
             continue;
         }
+        ents[a->nfiles].off = off; ents[a->nfiles].size = size; ents[a->nfiles].method = method;
+        snprintf(ents[a->nfiles].path, sizeof ents[0].path, "%s", name);
         a->keys[a->nfiles++] = _strdup(key);
     }
-    if (r.bad) { snprintf(a->why, sizeof a->why, "damaged pak (bad index)"); goto out; }
+    if (r.bad) { snprintf(a->why, sizeof a->why, "damaged pak (bad index)"); free(ents); goto out; }
+    classify(a, h, ents);
+    free(ents);
     ok = 1;
 out:
     free(idx);
@@ -213,13 +259,15 @@ static void free_keys(Addon *a) {
     a->keys = NULL;
 }
 
-// ---- conflicts: file path -> add-on that wins it (last in load order) ----
-typedef struct { const char *key; size_t kl; int owner; } Slot;   // key[0..kl): a file path or a package stem
-static uint64_t fnv(const char *s, size_t n) { uint64_t h = 1469598103934665603ull; for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)s[i]) * 1099511628211ull; return h; }
-static Slot *slot_of(Slot *t, size_t cap, const char *k, size_t kl) {
-    for (size_t i = fnv(k, kl) & (cap - 1);; i = (i + 1) & (cap - 1))
-        if (!t[i].key || (t[i].kl == kl && !memcmp(t[i].key, k, kl))) return &t[i];
+// "cosmetic (textures, materials)" / "gameplay (3 files)"
+static const char *addon_class_str(const Addon *a, char *buf, size_t n) {
+    char k[64];
+    if (a->cls.gameplay) snprintf(buf, n, "gameplay (%d file%s)", a->cls.n_gameplay, a->cls.n_gameplay == 1 ? "" : "s");
+    else snprintf(buf, n, "cosmetic%s%s%s", a->cls.kinds ? " (" : "", addonclass_kinds(a->cls.kinds, k, sizeof k), a->cls.kinds ? ")" : "");
+    return buf;
 }
+
+// ---- conflicts: file path -> add-on that wins it (last in load order) ----
 static Conflict *conflict(int loser, int winner) {
     for (int i = 0; i < nC; i++) if (C[i].loser == loser && C[i].winner == winner) return &C[i];
     if (nC == MAX_CONFLICTS) return NULL;
@@ -329,6 +377,7 @@ static void config(void) {
         v = trim(v);
         if (!strcmp(l, "addons")) enabled_cfg = atoi(v) != 0;
         else if (!strcmp(l, "addons_dir") && *v) snprintf(custom, sizeof custom, "%s", v);
+        else if (!strcmp(l, "addons_policy") && addons_policy_set(v)) LOG("addons: bad addons_policy=%s (any|cosmetic|none|match), keeping %s", v, addons_policy_name());
     }
     if (f) fclose(f);
     wchar_t want[MAX_PATH * 2];
@@ -349,6 +398,7 @@ static int is_ascii(const char *s) { for (; *s; s++) if ((unsigned char)*s >= 0x
 int addons_scan(void) {
     InitializeCriticalSection(&cs);
     config();
+    LOG("addons: policy for joiners: %s", addons_policy_name());
     if (!enabled_cfg) { LOG("addons: off (addons=0)"); return 0; }
     DWORD at = GetFileAttributesW(dirw);
     if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) { LOG("addons: no add-ons folder (%s)", dir8); return 0; }
@@ -394,6 +444,13 @@ int addons_scan(void) {
         LOG("addons: %d. %s \"%s\" v%s by %s [%s]: %s, %d file(s), id %s%s%s", pos, a->name, a->title, a->version[0] ? a->version : "-",
             a->author[0] ? a->author : "-", a->category, a->on ? "on" : "off", a->nfiles, a->hash[0] ? a->hash : "-",
             a->valid ? "" : ", NOT LOADED: ", a->why);
+        if (a->valid) {
+            char kinds[80];
+            LOG("addons:    content: %s%s%s", addon_class_str(a, kinds, sizeof kinds), a->cls.gameplay ? ": " : "", a->cls.gameplay ? a->cls.reason : "");
+            int claim_g = !_strnicmp(a->claim, "gameplay", 8), claim_c = !_strnicmp(a->claim, "cosmetic", 8);
+            if ((claim_g || claim_c) && claim_g != a->cls.gameplay)
+                LOG("addons:    its addoninfo says content=%s; the files say %s (the files decide)", a->claim, a->cls.gameplay ? "gameplay" : "cosmetic");
+        }
     }
     find_conflicts();
     for (int i = 0; i < nC; i++) {
@@ -408,6 +465,19 @@ int addons_scan(void) {
     for (int i = 0; i < nA; i++) free_keys(&A[i]);
     LOG("addons: %s: %d add-on(s), %d to mount, %d conflict(s)", dir8, pos, n_mount, nC);
     return n_mount;
+}
+
+// Add-ons mounted in this game, in load order (addons_mp.c: login summary, host policy)
+int addons_active(AddonRef *out, int max) {
+    int k = 0;
+    for (int i = 0; i < nA && k < max; i++) {
+        const Addon *a = &A[i];
+        if (a->mounted <= 0) continue;
+        out[k].title = a->title; out[k].file = a->name; out[k].hash = a->hash;
+        out[k].gameplay = a->cls.gameplay; out[k].kinds = a->cls.kinds; out[k].reason = a->cls.reason;
+        k++;
+    }
+    return k;
 }
 
 void addons_unavailable(const char *why) { snprintf(unavailable, sizeof unavailable, "%s", why); }
@@ -495,13 +565,14 @@ void addons_slash(const char *verb, char *rest, Out *o) {
         for (int i = 0; i < nA; i++) {
             Addon *a = &A[i];
             if (!a->present) continue;
-            out_printf(o, "%d. %s%s%s [%s] %s\n", ++k, a->title, a->version[0] ? " " : "", a->version, state_of(a), a->name);
+            out_printf(o, "%d. %s%s%s [%s%s] %s\n", ++k, a->title, a->version[0] ? " " : "", a->version, state_of(a),
+                       !a->valid ? "" : a->cls.gameplay ? ", gameplay" : ", cosmetic", a->name);
         }
         for (int i = 0; i < nC; i++) {
             if (C[i].nfiles) out_printf(o, "conflict: %s overrides %s (%d file(s))\n", A[C[i].winner].name, A[C[i].loser].name, C[i].nfiles);
             if (C[i].mixed) out_printf(o, "conflict: %s and %s mix parts of one asset: may crash, switch one off\n", A[C[i].loser].name, A[C[i].winner].name);
         }
-        out_printf(o, "/addons on|off <#>  /addons info <#>\n");
+        out_printf(o, "/addons on|off <#>  /addons info <#>  /addons players  /addons policy\n");
         return;
     }
     int num = 0;
@@ -513,6 +584,11 @@ void addons_slash(const char *verb, char *rest, Out *o) {
             out_printf(o, "%s%s%s%s\n", a->author[0] ? "by " : "", a->author, a->author[0] && a->category[0] ? ", " : "", a->category);
         if (a->desc[0]) out_printf(o, "%s\n", a->desc);
         out_printf(o, "[%s] %d file(s)%s%s\n", state_of(a), a->nfiles, a->valid ? "" : ": ", a->valid ? "" : a->why);
+        if (a->valid) {
+            char k[80];
+            out_printf(o, "content: %s%s%s\nid %.8s\n", addon_class_str(a, k, sizeof k), a->cls.gameplay ? ", e.g. " : "",
+                       a->cls.gameplay ? a->cls.reason : "", a->hash);
+        }
         return;
     }
     if (!strcmp(sub, "on") || !strcmp(sub, "off") || !strcmp(sub, "enable") || !strcmp(sub, "disable")) {
@@ -532,5 +608,6 @@ void addons_slash(const char *verb, char *rest, Out *o) {
         if (ok && on && !a->valid) out_printf(o, "note: it can't load: %s\n", a->why);
         return;
     }
-    out_printf(o, "usage: /addons [list]  /addons on|off <#>  /addons info <#>\n");
+    if (addons_mp_slash(sub, arg, o)) return;
+    out_printf(o, "usage: /addons [list]  /addons on|off <#>  /addons info <#>  /addons players  /addons policy [any|cosmetic|none|match]\n");
 }
