@@ -9,6 +9,8 @@
 # Plus dist/SHA256SUMS. The zip is reproducible. CI runs this on a v* tag (.github/workflows/release.yml).
 # b4bcoop-README.txt mirrors README.md's Install / Play / Options / Remove / Troubleshooting sections: keep them in sync.
 set -euo pipefail
+# Info-ZIP reads $ZIP and $ZIPOPT as default options; never let a caller's env change the archive.
+unset ZIP ZIPOPT
 root="$(cd "$(dirname "$0")/.." && pwd)"
 version=$(sed -n 's/^version=//p' "$root/VERSION") protocol=$(sed -n 's/^protocol=//p' "$root/VERSION")
 "$root/native/build.sh" --release >/dev/null
