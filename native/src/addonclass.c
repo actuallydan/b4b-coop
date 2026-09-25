@@ -1,5 +1,5 @@
 // Add-on content classification (#22): cosmetic vs. gameplay-affecting, from the files an add-on overrides.
-// docs/investigations/addons.md §7. tools/modkit/addon.py (classify) implements the same rules for the packer; keep
+// docs/investigations/addons.md §7. modkit/addon.py (classify) implements the same rules for the packer; keep
 // both in sync. Pure C (no engine, no Windows API): runs in DllMain from addons_scan, and in the offline harness.
 //
 // A package (.uasset; B4B: legacy version -7, unversioned, split .uasset/.uexp) is judged by the classes of all its

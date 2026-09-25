@@ -1,7 +1,7 @@
 # Model mods: extracting through the engine's pak layer (#16) and mounting our own paks (#17)
 
 Status 2026-09-24, build 14216215 / CL 1108676, Proton, test instance `launch/multi.sh 1`. Epic #23. Code:
-`native/src/paks.c` (mount + signature exemptions in both builds since #20, the rest dev-only), `tools/b4bpak.py` (pak writer), `tools/modkit/assetcheck` (CUE4Parse checks).
+`native/src/paks.c` (mount + signature exemptions in both builds since #20, the rest dev-only), `modkit/b4bpak.py` (pak writer; `tools/b4bpak.py` forwards to it), `tools/modkit/assetcheck` (CUE4Parse checks).
 
 ## TL;DR
 - **#16 works.** The agent enumerates the pak directory index and reads files through `FPakPlatformFile`, so it
@@ -18,7 +18,7 @@ Status 2026-09-24, build 14216215 / CL 1108676, Proton, test instance `launch/mu
   all three; the retail paks keep every check (a signed mount of an unsigned pak still dies with "Corrupt file").
   The community method, `-fileopenlog`, instead turns signing off for all paks.
 - Correction to #18: the index encryption is plain AES-256-ECB with the community key
-  `0x0208250257E8EA16828509DEBF23D703A5B509FE4F15F33F11BEE4BAB1F97CFD`. For all 61 retail paks, the decrypted index
+  `0x0208…7CFD` (not in this repo: the modkit takes it from the modder, modkit/README.md "The AES key"). For all 61 retail paks, the decrypted index
   matches the footer SHA1 (`tools/b4bpak.py list --aes-key`), and CUE4Parse reads the paks with that key (the
   453/453 comparison below). The key found in the exe by #18 is not the pak key. The encryption is not custom; only the footer and entry layout are.
 

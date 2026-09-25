@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """b4bcoop add-on packer (#20; docs/investigations/addons.md, player side: docs/COMMANDS.md "Add-ons").
+Mod makers run it through `b4bmod pack / check` (modkit/README.md).
 
-An add-on is one .pak (tools/b4bpak.py format: v9, B4B footer, uncompressed, unencrypted) that the agent mounts from
+An add-on is one .pak (modkit/b4bpak.py format: v9, B4B footer, uncompressed, unencrypted) that the agent mounts from
 <game>/b4bcoop-addons/ after the retail paks. Besides the cooked files it holds `b4bcoop-addoninfo.txt` (title,
 author, version, category, description), which the agent shows in /addons.
 
@@ -21,7 +22,7 @@ Never commit or ship game assets: build add-ons under ~/.local/share/b4b-coop/.
 """
 import argparse, hashlib, io, os, re, struct, sys, zipfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import b4bpak  # noqa: E402
 
 INFO = "b4bcoop-addoninfo.txt"
@@ -288,7 +289,7 @@ def safe_name(s):
 
 
 def cmd_pack(a):
-    src = a.src.rstrip("/")
+    src = a.src.rstrip("/\\")
     if os.path.isfile(src):
         _, items = read_pak_files(src)
         items = [(n, d) for n, d in items if n.lower() != INFO]

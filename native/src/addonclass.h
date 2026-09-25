@@ -1,4 +1,4 @@
-// addonclass.c: cosmetic vs. gameplay-affecting add-on content (#22). tools/modkit/addon.py mirrors the rules.
+// addonclass.c: cosmetic vs. gameplay-affecting add-on content (#22). modkit/addon.py mirrors the rules.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

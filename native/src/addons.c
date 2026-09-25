@@ -1,13 +1,13 @@
 // Add-ons (#20, epic #23), L4D style: drop-in paks, no in-game browser. docs/investigations/addons.md.
 //   Folder: <game>\b4bcoop-addons\ (next to Back4Blood.exe; ini addons_dir=<windows path> moves it, addons=0 turns
-//   add-ons off). Each add-on is one .pak written by tools/modkit/addon.py: cooked files plus an optional
+//   add-ons off). Each add-on is one .pak written by modkit/addon.py: cooked files plus an optional
 //   b4bcoop-addoninfo.txt entry (title, author, version, category, description; `key=value` or L4D's
 //   `addontitle "..."`). Any pak in our format loads; without addoninfo its file name is its title.
 //   addonlist.txt in the folder: `<file>.pak=1|0`, load order top to bottom; later add-ons win conflicts. New add-ons
 //   are appended switched on (sorted by name) and the file is rewritten. /addons on|off edits it (applies on restart).
 //   Everything is read in DllMain (addons_scan, before the engine starts) so that paks.c installs no pak hook when
 //   there is nothing to mount; the paks are mounted from the FPakPlatformFile::Initialize hook (addons_mount).
-//   Our pak format only (tools/b4bpak.py): v9, magic 0x18772, plain index; the index SHA1 is verified here (a damaged
+//   Our pak format only (modkit/b4bpak.py): v9, magic 0x18772, plain index; the index SHA1 is verified here (a damaged
 //   index would be a Fatal in the engine) and is the add-on's content id (#22: compare it across a session).
 //   Conflicts: two enabled add-ons with the same file path; logged, listed by /addons, and one chat notice. "Mixed":
 //   one package's files (.uasset/.uexp/.ubulk) end up from different add-ons, which can crash the game.
@@ -26,7 +26,7 @@
 #define ADDON_ORDER 1000          // read order of the first add-on; retail paks are 4 (+100 per patch level)
 #define PAK_MAGIC 0x18772u
 #define PAK_FOOTER 222
-#define ENTRY_HDR 53              // in-data FPakEntry of an uncompressed entry (B4B layout, tools/b4bpak.py)
+#define ENTRY_HDR 53              // in-data FPakEntry of an uncompressed entry (B4B layout, modkit/b4bpak.py)
 #define INFO_NAME "b4bcoop-addoninfo.txt"
 #define LIST_NAME "addonlist.txt"
 #define MAX_CONFLICTS 64
@@ -203,7 +203,7 @@ static int load_pak(Addon *a, const wchar_t *path) {
     uint32_t ver, magic; uint64_t isz, ioff;
     memcpy(&ver, ft, 4); memcpy(&magic, ft + 4, 4); memcpy(&isz, ft + 45, 8); memcpy(&ioff, ft + 53, 8);
     if (magic != PAK_MAGIC || ver != 9) { snprintf(a->why, sizeof a->why, "damaged, or not a Back 4 Blood add-on pak (magic %#x v%u)", magic, ver); goto out; }
-    if (ft[24]) { snprintf(a->why, sizeof a->why, "encrypted pak index: not made with tools/modkit/addon.py"); goto out; }
+    if (ft[24]) { snprintf(a->why, sizeof a->why, "encrypted pak index: not made with modkit/addon.py"); goto out; }
     if (ft[61] || isz > (64u << 20) || ioff + isz > (uint64_t)sz.QuadPart - PAK_FOOTER) { snprintf(a->why, sizeof a->why, "damaged pak (bad index position)"); goto out; }
     idx = malloc(isz ? isz : 1);
     uint8_t hash[20];

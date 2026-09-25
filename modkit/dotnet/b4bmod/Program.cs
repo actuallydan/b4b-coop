@@ -1,7 +1,7 @@
 // b4bmod: no-editor texture and material-instance mods for Back 4 Blood (issues #18/#21, epic #23).
-// Reads cooked packages extracted from the game (agent `dumpassets`), writes edited cooked packages into a mod folder
-// laid out like the game (<out>/Gobi/Content/...), ready for tools/b4bpak.py pack or the add-on packer.
-// Normally run through tools/modkit/b4bmod.py (builds this on first use). docs/investigations/texture-mods.md.
+// Reads cooked packages extracted from the game (`b4bmod extract`, i.e. pakx), writes edited cooked packages into a mod
+// folder laid out like the game (<out>/Gobi/Content/...), ready for the add-on packer (`b4bmod pack`).
+// Normally run through modkit/b4bmod.py (builds this on first use). modkit/docs/textures.md.
 using System.Globalization;
 using B4BMod;
 using UAssetAPI;
@@ -22,7 +22,8 @@ const string Usage = @"b4bmod <command> ...   (assets: /Game/... paths looked up
                                           value: number (scalar), r,g,b[,a] (vector, linear 0-1),
                                           /Game/... texture path, or 'none'
 Checks: texcheck <dir> (every texture re-writes byte-identically?), deps <asset>, props <asset>
-Common: --src <dir containing Gobi/> (default $B4B_EXTRACT or ~/.local/share/b4b-coop/extract).
+Common: --src <dir containing Gobi/> (default $B4B_EXTRACT, else %LOCALAPPDATA%\b4b-coop\extract on Windows,
+~/.local/share/b4b-coop/extract elsewhere).
 Edits read an asset from <outdir> if it is already there, so several edits add up.";
 
 if (args.Length == 0 || args[0] is "-h" or "--help" or "help") { Console.WriteLine(Usage); return 0; }
@@ -66,7 +67,9 @@ class Opts
     public string Pos(int i) => i < Positional.Count ? Positional[i] : throw new UsageException("missing argument");
     public IEnumerable<string> PosFrom(int i) => Positional.Skip(i);
     public string Src => Named.GetValueOrDefault("--src") ?? Environment.GetEnvironmentVariable("B4B_EXTRACT") ??
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local/share/b4b-coop/extract");
+        (OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "b4b-coop", "extract")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local/share/b4b-coop/extract"));
     public string Out => Named.GetValueOrDefault("--out") ?? throw new UsageException("-o <outdir> is required");
 }
 
@@ -101,7 +104,7 @@ static class Commands
             if (File.Exists(inOut)) { Console.WriteLine($"editing {inOut} (already in the mod folder)"); return (inOut, rel); }
         }
         var f = Path.Combine(o.Src, rel);
-        if (!File.Exists(f)) throw new Exception($"{asset}: {f} not found (extract it first: dumpassets, or --src)");
+        if (!File.Exists(f)) throw new Exception($"{asset}: {f} not found (extract it first: b4bmod extract <asset or folder/*>, or --src)");
         return (f, rel);
     }
 

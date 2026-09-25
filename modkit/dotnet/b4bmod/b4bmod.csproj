@@ -5,10 +5,13 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- where `b4bmod setup` put UAssetAPI: <kit>/deps, or vendor/ in the b4b-coop repo (b4bmod.py passes -p:B4BDeps) -->
+    <B4BDeps Condition="'$(B4BDeps)' == ''">$(MSBuildThisFileDirectory)../../deps</B4BDeps>
   </PropertyGroup>
   <ItemGroup>
-    <!-- UAssetAPI (MIT) cloned into gitignored vendor/ by tools/fetch-deps.sh; the rest from NuGet (all MIT/public domain) -->
-    <ProjectReference Include="../../../vendor/UAssetAPI/UAssetAPI/UAssetAPI.csproj" />
+    <!-- UAssetAPI (MIT, github.com/atenfyr/UAssetAPI, pinned commit) fetched by `b4bmod setup`; the rest from NuGet
+         (MIT / public domain) -->
+    <ProjectReference Include="$(B4BDeps)/UAssetAPI/UAssetAPI/UAssetAPI.csproj" />
     <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
     <PackageReference Include="StbImageSharp" Version="2.30.16" />
     <PackageReference Include="StbImageWriteSharp" Version="1.16.7" />

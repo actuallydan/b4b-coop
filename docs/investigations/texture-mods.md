@@ -1,8 +1,8 @@
 # Texture and material mods without the editor (#18 "CLI tier", #21, epic #23)
 
-Status 2026-09-25, build 14216215. Tool: `tools/modkit/b4bmod.py` (front end) + `tools/modkit/b4bmod/` (.NET 10,
+Status 2026-09-25, build 14216215. Tool: `modkit/b4bmod.py` (front end) + `modkit/dotnet/b4bmod/` (.NET 10,
 UAssetAPI for packages, BCnEncoder.Net for BC1/BC3/BC4/BC5/BC7, StbImageSharp for PNG). Packing:
-`tools/b4bpak.py` (dev) or the add-on packer (#20). Mounting: dev ini `modpaks=` (model-mods-paks.md §5).
+`modkit/b4bpak.py` (dev) or the add-on packer (#20). Mounting: dev ini `modpaks=` (model-mods-paks.md §5).
 
 ## TL;DR
 - **Texture pixel mods work in game, verified live** (Proton, `multi.sh 2`, dev ini `modpaks=`): Walker's Elite_00
@@ -13,95 +13,18 @@ UAssetAPI for packages, BCnEncoder.Net for BC1/BC3/BC4/BC5/BC7, StbImageSharp fo
   `Roughness Multiply` 0.9 → 0.5 and `Base Color` repointed to another package's texture. A/B screenshots against the
   unmodded head; the running MI holds the new values (read from memory). The new import needs no extra handling
   beyond the preload dependency the tool adds.
-- No editor needed: `tools/modkit/b4bmod.py` (written for Linux and Windows, run on Linux) finds, lists, exports to
+- No editor needed: `modkit/b4bmod.py` (written for Linux and Windows, run on Linux) finds, lists, exports to
   PNG, re-encodes (BC1/BC3/BC4/BC5/BC7, full mip chain, any power-of-two size) and edits MIs, writing a
   `<moddir>/Gobi/Content/...` folder for `b4bpak.py pack` or the add-on packer (#20).
-- Open: extraction still needs the dev agent (`dumpassets`); a player-side extractor or a shipped listing is next.
+- Extraction: offline from the retail paks since the modkit (#21): `b4bmod extract` (CUE4Parse + the modder's AES
+  key; bytes identical to `dumpassets`). The dev agent's `dumpassets` stays dev-only.
 
-## 1. For mod authors: step by step
-
-### 0. Once
-```
-.venv/bin/python tools/modkit/b4bmod.py setup     # .NET 10 SDK + UAssetAPI into vendor/, builds the tool
-alias b4bmod='.venv/bin/python tools/modkit/b4bmod.py'
-```
-Windows (not tried yet): the same with `py tools\modkit\b4bmod.py`; the setup fetches .NET with PowerShell.
-`find` needs the `cryptography` Python package (`pip install cryptography`).
-
-### 1. Find the asset
-Every game file path is in the pak indexes, which `find` reads offline (cached in `~/.local/share/b4b-coop/listing/`):
-```
-b4bmod find 'Heroes/Walker/.*_SKM$'                    # Walker's meshes: heads, torsos, legs, outfits (Elite_NN)
-b4bmod find 'Heroes/Walker/Meshes/Elite/Elite_00/.*_T$' # textures of one outfit
-b4bmod find 'Weapons/Pistol/HG01/.*_T$'                 # a weapon's textures (default + skins)
-```
-Where things are:
-
-| What | Path | Notes |
-|---|---|---|
-| Survivors (Walker, Holly, Mom, Doc, Hoffman, Evangelo, Jim, Karlee) | `/Game/Characters/Heroes/<Name>/Meshes/` | `Base/Heads|Torsos|Legs/<Piece>_NN/` (pieces), `Elite/Elite_NN/` (outfits), `Shared/` (hair, eyes, lashes) |
-| Later outfits and survivors (Heng, Sharice, Tala, Dan) | `/Game/TU07`, `TU09`, `TU11`, `TU13`, `TU15` `/Characters/Heroes/<Name>/` | same layout |
-| Each piece/outfit | `<folder>/3P_<Hero>_<Piece>_SKM` (third person), `FP_..._SKM` (first-person arms), `Materials/*_MI`, `Textures/*_T` | variants A/B/C = colour variants (own MIs + textures) |
-| Weapons | `/Game/Items/Weapons/<Class>/<Code>/` (`Pistol/HG01..05`, `Assault/AR01..06`, `SMG/SMG01..05`, `Shotgun/SG01..05`, `LMG/LMG01..02`, `Sniper/SNI01..03` (also `Sni01`, `Sin01` folders), `MachineGun/MG01`, `Bow/Bow01`, `Melee/*`, `Knife/Knife01..12`); later skins under `/Game/TUxx/Items/Weapons/...` | `Meshes/<Code>_SK`, `Textures/` (default look), `Skin_Sets/Skin_Default/*_MI`, `Skin_Sets/Skins_*/Skin_<Name>/{Materials,Textures}` (unlockable skins) |
-| Which gun a code is | `/Game/UI/Textures/Common/Items/Weapons/Icon_Weapon_<Code>` | export the icon to PNG and look |
-
-Texture suffixes: `_BC_T` base colour (sRGB), `_N_T` normal map (BC5, only X/Y stored), `_PBR_T` packed
-roughness/metal/AO-style masks (linear), `_MSK_T` / `_MM_T` masks, `_ID_T`, `_DMG_T`. `b4bmod info` tells format,
-size and sRGB.
-
-### 2. Extract it
-The files come out of the game through the agent (dev build, game running; model-mods-paks.md §2):
-```
-b4bmod extract '/Game/Characters/Heroes/Walker/*'      # = tools/b4b.py dumpassets ..., into ~/.local/share/b4b-coop/extract
-```
-Then see what a mesh uses:
-```
-b4bmod tree /Game/Characters/Heroes/Walker/Meshes/Elite/Elite_00/3P_Walker_Elite_00_SKM
-  .../Materials/Walker_Elite_00_A_Body_LOD_MI  [MaterialInstanceConstant]
-    parent: .../Materials/Walker_Elite_00_A_Body_MI  [MaterialInstanceConstant]
-      'Base Color' = .../Textures/Walker_Elite_00_A_Body_BC_T  [Texture2D]  PF_DXT1 4096x4096
-      'Normal Map' = .../Textures/Walker_Elite_00_A_Body_N_T  [Texture2D]  PF_BC5 4096x4096
-      ...
-```
-
-### 3. Paint a texture
-```
-b4bmod export /Game/.../Walker_Elite_00_A_Body_BC_T body.png    # 4096x4096 PNG of the original (mip 0)
-# edit body.png in any paint program, keep the UV layout
-b4bmod texture /Game/.../Walker_Elite_00_A_Body_BC_T body.png -o mymod
-```
-- Output: `mymod/Gobi/Content/.../Walker_Elite_00_A_Body_BC_T.uasset/.uexp/.ubulk`, the cooked texture in the
-  original's pixel format with a full mip chain (colour mips in linear light, normal maps renormalised).
-- Size: the PNG's size is used (power-of-two sides for textures with mips). Smaller saves memory; `--resize` scales to
-  the original size instead.
-- `--quality fast|balanced|best` (BC7/BC1 encoder effort; 4096² BC7 `balanced` takes seconds on 16 cores).
-- Normal maps: paint/bake a normal map (+Y as in UE, i.e. DirectX convention); only red/green are stored.
-
-### 4. Change a material instance
-```
-b4bmod mi /Game/.../Walker_Elite_00_A_Head_MI                       # list its parameters
-b4bmod mi /Game/.../Walker_Elite_00_A_Head_MI \
-    set "Roughness Multiply" 0.5 \
-    set "Base Color" /Game/Characters/Heroes/Mom/Meshes/Elite/Elite_00/Textures/Mom_Elite_00_A_Head_BC_T \
-    set "Detail Colortint (Pores)" 1,0.2,0.2 \
-    -o mymod
-```
-Values: a number (scalar), `r,g,b[,a]` (vector, linear 0-1), a `/Game/...` texture path or `none` (texture),
-`parent <path>` re-parents. A parameter the MI doesn't override yet is added (the parent must have it; `tree`/`mi`
-on the parent shows its names). Static switches can't be changed (they select compiled shaders).
-Edits read the asset from `-o <moddir>` if it's already there, so several commands build one mod.
-
-### 5. Pack and test
-```
-b4bmod pak mymod ~/mods/mymod.pak          # plain pak: tools/b4bpak.py pack
-```
-Dev: `modpaks=<windows path of ~/mods>` in `b4bcoop.ini`, restart the game (mod paks are mounted at startup). The
-add-on system (#20) takes the same `mymod/` folder.
-
-Everyone in a session should run the same mods: textures are cosmetic, but each player sees only their own files.
+## 1. For mod authors
+Moved to the mod maker's kit: **modkit/docs/textures.md** (commands through `modkit/b4bmod.py`; setup and third-party
+pieces in modkit/README.md). Extraction is offline now (`b4bmod extract`, CUE4Parse; no game or dev build needed).
 
 ## 2. Formats (verified)
-Cooked `UTexture2D` is stock 4.25 (`tools/modkit/b4bmod/Texture.cs`). After the tagged properties and the object
+Cooked `UTexture2D` is stock 4.25 (`modkit/dotnet/b4bmod/Texture.cs`). After the tagged properties and the object
 GUID bool: 2 × `FStripDataFlags`, `bCooked` u32 = 1, then per cooked format `FName PixelFormat`, `int64 SkipOffset`
 (**absolute** offset in the combined .uasset+.uexp stream of the next FName), `FTexturePlatformData` {SizeX, SizeY,
 PackedData (NumSlices | bHasOptData<<30 | bIsCubemap<<31), FString PixelFormat, [8 B opt data], FirstMipToSerialize,
@@ -150,9 +73,8 @@ No load errors for any modded package; an unrelated agent crash hit the client o
 during a map load (not a mod issue).
 
 ## 4. Limits and next steps
-- **Extraction** needs the dev agent (`dumpassets`, game running). Players' builds don't have it. Options: ship
-  `dumpassets` in the add-on tooling build, or an offline extractor (CUE4Parse + the pak AES key works, but needs
-  Oodle, which we can't ship; the game links it statically).
+- **Extraction**: solved by the modkit (`b4bmod extract`, offline, CUE4Parse; its managed Oodle decoder means no
+  proprietary library either).
 - Only textures that exist are replaced (same path). New texture paths work as MI references only if the texture
   package is in a mounted pak (tool support is there: `mi ... set <param> /Game/MyMod/...`, untested: needs a
   Texture2D written from scratch, i.e. a template copy renamed; next step).
