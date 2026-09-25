@@ -158,6 +158,9 @@ Referencing strategy (the standard community pattern for cooked UE games):
 | **Total** | **≈ 4–6 weeks**. The CLI tier (texture/material mods) is usable after ~1.5 weeks once #17 can mount a pak. |
 
 ## 6. Next experiments
+Update 2026-09-25: experiments 1 and 2 are done and verified in game (docs/investigations/texture-mods.md,
+`tools/modkit/b4bmod.py`).
+
 1. **(#17 dependency) First in-game load:** mount an uncompressed mod pak holding only the edited
    `Walker_Elite_00_A_Head_MI` and look for a rougher Walker head with Mom's face texture. This tests override
    priority, signing and EDL preload dependencies in one step.
