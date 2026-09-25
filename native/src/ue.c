@@ -33,6 +33,17 @@ UObject *ue_object_at(int32_t i) {
     return *(UObject **)(chunk + (i & 0xFFFF) * 0x18 + 8);
 }
 
+// FWeakObjectPtr {ObjectIndex, SerialNumber}: the object if that slot still holds the same object
+UObject *ue_weak_get(const void *wp) {
+    int32_t idx = ((const int32_t *)wp)[0], serial = ((const int32_t *)wp)[1];
+    if (idx < 0 || idx >= ue_num_objects() || !serial) return NULL;
+    char **chunks = (char **)(*(uint64_t *)(oa() + 0x48) ^ OBJECTS_XOR);
+    char *chunk = chunks[idx >> 16];
+    if (!chunk) return NULL;
+    char *item = chunk + (idx & 0xFFFF) * 0x18;
+    return *(int32_t *)(item + 0x10) == serial ? *(UObject **)(item + 8) : NULL;
+}
+
 const char *ue_name(FName n, char *buf, size_t len) {
     char **blocks = (char **)(ADDR_NAMEPOOL + 0x10);
     const uint8_t *e = (const uint8_t *)blocks[n.idx >> 18] + (n.idx & 0xFFFF) * 2;
