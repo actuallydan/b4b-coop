@@ -21,6 +21,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "overlay.h"
 
 typedef FName *(*FNameCtorFn)(FName *self, const wchar_t *name, int find_type);
 #define ADDR_FNAME_CTOR VA(0x1424BC8E0ull)
@@ -100,11 +101,10 @@ static int is_ours(FName row) { char b[80]; return !strncmp(ue_name(row, b, size
 static UObject *look_mesh(Look *l, int k) {   // loaded on first use (blocking), kept alive by the components using it
     if (!l->path[k][0]) return NULL;
     if (l->mesh[k] && alive(l->mesh[k], l->idx[k])) return l->mesh[k];
-    if (l->tried[k] > 2) return NULL;
-    l->tried[k]++;
-    l->mesh[k] = models_load_asset(l->path[k]);
+    if (l->tried[k] > 2) return NULL;   // failed three times: not in this add-on / broken
+    l->mesh[k] = models_load_asset(l->path[k]);   // again after a map change (garbage-collected when unused)
     l->idx[k] = l->mesh[k] ? U_INDEX(l->mesh[k]) : 0;
-    if (!l->mesh[k]) LOG("wlooks: %s: %s failed to load", l->name, l->path[k]);
+    if (!l->mesh[k] && ++l->tried[k] > 2) LOG("wlooks: %s: %s failed to load", l->name, l->path[k]);
     return l->mesh[k];
 }
 
@@ -468,7 +468,27 @@ void wlooks_status(Out *o) {
         if (wish[w].on) out_printf(o, "your %s: %s%s\n", wish[w].code, wish[w].name, wish[w].gave_up ? " (refused by the host)" : "");
 }
 
+// ~ overlay, Models tab (minimal; the full Models/Add-ons tabs come later): the add-ons' weapon looks, through /model
+static void models_panel(void) {
+    if (n_looks < 0) build_looks();
+    ov_heading("Weapon looks (add-ons)");
+    if (!n_looks) { ov_text_dim("No add-on with weapon looks is installed (modkit: b4bmod weapon --as <name>)."); return; }
+    ov_text_dim("Your weapon of that type shows the add-on's model. Players without the add-on see the normal weapon.");
+    for (int i = 0; i < n_looks; i++) {
+        int on = 0;
+        for (int w = 0; w < MAX_WISH; w++) on |= wish[w].on && !strcmp(wish[w].name, looks[i].name);
+        ov_push_id(i);
+        ov_text("%s (%s)%s", looks[i].title, looks[i].code, on ? "  - yours" : "");
+        ov_same_line();
+        if (ov_button("Use")) ov_run("model %s", looks[i].name);
+        ov_pop_id();
+    }
+    if (ov_button("Reset##wlooks")) ov_run("model reset");
+    ov_tooltip("/model reset: your weapons and survivor back to your own look.");
+}
+
 int wlooks_init(void) {
+    overlay_add_panel("Models", 60, models_panel);
     if (memcmp((void *)ADDR_APPLY, SIG_APPLY, sizeof SIG_APPLY) || memcmp((void *)ADDR_SETROW, SIG_SETROW, sizeof SIG_SETROW)) {
         LOG("wlooks: signature mismatch, no weapon looks");
         return -1;
@@ -501,6 +521,17 @@ int wlooks_cmd(const char *verb, char *rest, Out *o) {
         uint8_t p[16] = {0};
         if (f && ps >= 0) { p[ps] = (uint8_t)atoi(arg); if (pr >= 0) p[pr] = 0; ue_process_event(inv, f, p); }
         out_printf(o, "select slot %s: %s\n", arg, f ? "done" : "no inventory");
+        return 1;
+    }
+    if (sub && !strcmp(sub, "row") && arg) {   // row <item#> <row name|none>: ServerCustomizationRow on my own weapon
+        UObject **it; int n = items_of(my_pawn(), &it), k = atoi(arg);
+        char *rn = strtok(NULL, " ");
+        UObject *mm = k >= 0 && k < n && it[k] ? mm_of(it[k]) : NULL;
+        if (!mm || !rn) { out_printf(o, "usage: wlook row <item#> <row|none>\n"); return 1; }
+        FName nm = {0};
+        if (_stricmp(rn, "none")) nm = make_name(rn);
+        UObject *t = cust_table(it[k]);
+        out_printf(o, "ServerCustomizationRow: %d\n", send_row(mm, t ? t : row_of(mm)->table, nm));
         return 1;
     }
     if (sub && !strcmp(sub, "drop") && arg) {   // ServerDropItem(the item in EquipmentSlots[n], manually dropped)
