@@ -227,11 +227,61 @@ cosmetic, ~25 s. AR02 handed out with `giveitem <slot> row Weapons_DT DF038C6A4E
   the same check failed once before on lane 1 at 13:21, not related).
 - Screenshots: `~/.local/share/b4b-coop/weaponas/shots/` (not committed).
 
+### Floor: a dropped weapon keeps its look (2026-09-25, branch `models-floorlooks`, lane 2)
+- **What a dropped weapon is**: the host destroys the `Item` and spawns an `ItemPickup` (`<Code>_N_Pickup_BP`, the
+  item row's `DroppedLootClass`), replicated. Its `ItemRowsAndQuantities` (replicated, `ItemRowAndQuantity`
+  {row, quantity, attachments, unbolted, clip ammo}) has **no skin**: retail skins don't show on the floor either. It
+  shows `3P_<Code>_SM` on `StaticMeshComponent` (+0x2A8) and `InterpolatedStaticMeshComponent` (+0x2B0), both set.
+  `CreationContext` (+0x310, replicated): 0 dropped from player, 1 loot (world spawns), 3 player item.
+  `GetPreviousOwner` (0x142199930) reads a weak pointer at **+0x320**: set on the host (the dropping hero), **empty on
+  clients**; `Owner`/`Instigator` are empty on both (`wlook pickups`).
+- **Pairing** (`weaponlooks.c`, every machine with the add-on, no protocol): the weapons wearing a look are
+  remembered with their hero and its position (each 1 s check + the ApplyCustomization hook); every frame, one that
+  left its hero's inventory (drop, swap for a pickup) opens a 4 s search (object scan 5x/s) for an `ItemPickup`
+  showing that look's `3P_<Code>_SM`: the one whose PreviousOwner is the hero (host), else the nearest with context 0/3
+  within 3 m of where the hero stood (clients). It gets the look's 3P static mesh on both components (overrides
+  emptied, the originals kept); a 1 s check re-applies if the game sets the mesh again. The row changing on a weapon
+  that stays (`/model reset`, `/models off`) is not a drop. `/models off` (host; clients from the notice) puts the
+  retail meshes back on the floor too. Machines without the add-on never touch the pickup (retail AR02/LMG01).
+- **Picked up by someone else**: the new Item has no skin row; the new owner's client sets its own (retail skin from
+  its profile, or its `/model` wish for that code). So the look follows the **chooser**, not the weapon, like retail
+  skins; the original owner gets it back on its next pickup of that type (its wish). Chosen because the look is a
+  personal choice and the new owner may not have the add-on.
+- Dev: `wlook pickups [mesh substr]` (pickup, mesh, context, Owner/Instigator/PreviousOwner, position, floor look),
+  `wlook use [mesh substr]` (`HeroUseComponent.ForcePressUse` on the nearest pickup = pressing F), `wlook drop <n>`.
+
+### Live results, floor + LMG01 (`multi.sh 3`, lane 2: host + client 2 with `mod_ak47.pak` + `mod_aklmg.pak` via
+`addons_dir=`, client 3 without add-ons; Evansburgh B, then C)
+- `mod_aklmg.pak`: the CC0 AK on **LMG01** (`b4bmod weapon AK.fbx --fp-mesh LMG01 --slot AkMaterial=M249_Receiver_M2_FP
+  --slot Ammunition=M249_Drum_M2_FP ... --as aklmg`, 33 packages, 36 s). It failed first: `LMG01_SK not extracted`
+  (the `--as` copy follows the meshes' imports into the template folder; AR02_SK had been extracted by hand before);
+  fixed: `--as` extracts the template's folder.
+- LMG01 has a **skeletal** 3P weapon: `BaseMesh_3P` [SkeletalMeshComponent] = `3P_LMG01_SKM` (no `BaseStaticMesh_3P`);
+  paired by name as designed: host and client 2 `wlook dump` = `/Game/b4bcoop/weapons/aklmg/3P_LMG01_SKM` + FP
+  `aklmg/LMG01_SKM`; client 3 the retail meshes with row `b4bcoop.weapon.aklmg`. Client 2 sees the host's hero
+  holding the AK-LMG (`floor_ak_client.png`); FP fire + reload on client 2 (`cheatprobe input lmb`, `input 0x52`):
+  73 -> 80 rounds, the look stays through the reload animation (`lmg_reload_strip.png`).
+- Client 2 drops its AK (AR02): host `ak47 on the floor: AR02_1_Pickup_BP_C_... (its dropper, 2 mesh(es))`, client 2
+  `(nearest, 2 mesh(es))`, 10 ms after the drop; client 3 retail (`floor_ak_host.png`, `floor_ak_client.png`,
+  `floor_ak_noaddon.png`).
+- Host picks it up (`wlook use AR02`) while holding the AK-LMG: its LMG drops and gets `aklmg` on the floor on both
+  add-on machines; the host's new AR02 gets the host's own skin row (`B49B419C...`), shown retail. Client 2 picks up
+  the LMG: its own skin (`214B2A48...`). Then `/model aklmg` (client 2) and `/model ak47` (host): applied on all add-on
+  machines.
+- Client 3 (no add-on) drops its own AR02: no look on anyone's floor copy; then picks up the host's dropped AK: its own
+  skin row, retail everywhere.
+- Chapter B -> C (`endmission 1`): client 2's LMG re-applied on host and client 2. A drop in the pre-round saferoom
+  (before `ready`) spawns no pickup at all (the game's; the search ends after 4 s). On C: client 2's dropped LMG
+  `aklmg` on the floor on host + client 2 (`floor_lmg_host.png`), retail on client 3 (`floor_lmg_noaddon.png`).
+- `/models off` (host): both floor copies `back to its own mesh` on the host and on client 2 (from the notice).
+- Screenshots: `~/.local/share/b4b-coop/floorlooks/shots/` (not committed).
+
 ### Limits / open
-- A weapon on the floor (dropped, world pickups) shows the retail model; the dropped-magazine particle too.
+- Clients pair a pickup by position (the host's PreviousOwner doesn't replicate): two heroes dropping the same weapon
+  type on the same spot within the same frame could swap looks (cosmetic). A late joiner doesn't know weapons dropped
+  before it joined. World pickups nobody dropped and the dropped-magazine particle stay retail.
 - While the look is on, players without the add-on see the default weapon, not the owner's skin.
-- One look per weapon code per player; a look for a weapon whose 3P mesh is skeletal (LMG01) is paired the same way
-  (by name) but untested live.
+- One look per weapon code per player.
 - The client test window sometimes stays on the loading screen image (not repainted) although the game runs; views
   from that client were checked with `wlook dump`.
 

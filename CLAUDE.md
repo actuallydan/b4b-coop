@@ -95,7 +95,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     survivor (new-assets.md §8). Dev `mdl ...`. `weaponlooks.c`: add-on weapon looks (addoninfo `weapon=`,
     `b4bmod weapon --as`), made-up skin row `b4bcoop.weapon.<name>` in the weapon's replicated
     `ItemMeshManagementComponent.CustomizationRow`, meshes swapped by every machine with the add-on, others see the
-    default weapon; `~` Models tab; dev `wlook dump|swap|select|drop|row` (new-assets.md §9).
+    default weapon; a dropped weapon keeps its look on the floor (pickup's `3P_<Code>_SM`, paired by dropper/position),
+    the next owner's own choice applies; `~` Models tab; dev `wlook dump|swap|select|drop|row|pickups|use` (new-assets.md §9).
     docs/investigations/model-swap.md, player page docs/commands-models.md.
   - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
     /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's

@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
@@ -798,6 +799,32 @@ int wlooks_cmd(const char *verb, char *rest, Out *o) {
         if (pf >= 0) p[pf] = 1;
         ue_process_event(inv, f, p);
         out_printf(o, "dropped item %d\n", k);
+        return 1;
+    }
+    if (sub && !strcmp(sub, "use")) {   // use [mesh substr]: press Use on the nearest weapon pickup (ForcePressUse)
+        UObject *pawn = my_pawn(), *best = NULL;
+        float me[3], bd = 1e30f;
+        if (!c_pickup) c_pickup = ue_find_class("ItemPickup");
+        if (!pawn || !actor_loc(pawn, me) || !c_pickup) { out_printf(o, "no pawn\n"); return 1; }
+        for (int32_t i = 0, n = ue_num_objects(); i < n; i++) {
+            UObject *x = ue_object_at(i);
+            char m[96];
+            float l[3];
+            if (!is_live(x) || !ue_is_a(x, c_pickup) || !pickup_mesh(x, m, sizeof m) || (arg && !strstr(m, arg))) continue;
+            if (actor_loc(x, l) && dist2(l, me) < bd) { bd = dist2(l, me); best = x; }
+        }
+        UFunction *g = fn_of(pawn, "GetHeroUseComponent");
+        uint8_t q[16] = {0};
+        if (g) ue_process_event(pawn, g, q);
+        UObject *huc = *(UObject **)q, *uc = best ? ue_get_ptr(best, "UsableComponent") : NULL;
+        UFunction *f = fn_of(huc, "ForcePressUse");
+        int32_t pa = parm_off(f, "Actor"), pu = parm_off(f, "UsableComponent");
+        if (!best || !uc || !f || pa < 0 || pu < 0 || UFN_PARMSSIZE(f) > 32) { out_printf(o, "no pickup / use component\n"); return 1; }
+        uint8_t p[32] = {0};
+        *(UObject **)(p + pa) = best; *(UObject **)(p + pu) = uc;
+        ue_process_event(huc, f, p);
+        char a[96];
+        out_printf(o, "ForcePressUse %s (%.0f cm away)\n", ue_obj_name(best, a, sizeof a), sqrtf(bd));
         return 1;
     }
     if (sub && !strcmp(sub, "pickups")) {   // weapon pickups: mesh, who dropped it (Owner/Instigator/PreviousOwner), floor look
