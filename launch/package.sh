@@ -25,7 +25,8 @@ ini="$out/Gobi/Binaries/Win64/b4bcoop.ini"
 cat > "$ini" <<'INI'
 ; b4bcoop settings. Everything here is optional: with no changes you host automatically in offline Fort Hope,
 ; and your Steam friends join you with "Join Game" in their Steam friends list.
-; To turn a setting on, remove the ';' at the start of its line.
+; To turn a setting on, remove the ';' at the start of its line. Saved changes apply within a couple of
+; seconds, also while you play (host, join, host_ip, netguard: restart the game).
 
 ; Don't host: your offline game stays private.
 ;host=0
@@ -83,6 +84,7 @@ Only the host's Steam friends can join. Type /help in the game's chat for the ch
 All chat commands and options, with examples: b4bcoop-COMMANDS.txt (next to this file).
 
 OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, remove the ';' in front of a line.
+Saved changes apply within a couple of seconds, also while you play (host, join, host_ip: restart the game).
   host=0             don't host; your offline game stays private
   teamsize=5         (host) 5 survivors instead of 4
   flashlight_key=L   the flashlight toggle key (off turns it off)

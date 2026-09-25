@@ -51,6 +51,13 @@ int joinpolicy_config(const char *key, const char *v) {
     return 0;
 }
 
+// live reload (cmds_ini_poll): allow_joins / allow_steamids replace the current setting (removed = the default)
+int joinpolicy_live(const char *key, const char *v) {
+    if (!strcmp(key, "allow_joins")) { anyone = 0; if (v) joinpolicy_config(key, v); return 1; }
+    if (!strcmp(key, "allow_steamids")) { n_allow = 0; if (v) joinpolicy_config(key, v); return 1; }
+    return 0;
+}
+
 void joinpolicy_init(void) {
     LOG("joinpolicy: joins from %s, %d allowlisted SteamID(s)%s", anyone ? "anyone" : "Steam friends only", n_allow,
         allow_self ? "" : ", own SteamID NOT allowed (allow_self=0, dev)");
