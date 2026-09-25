@@ -47,8 +47,8 @@ version.**
 or accept their Steam invite. It works with your game closed or running: the game starts if needed, signs in
 Offline and joins them.
 
-Only the host's **Steam friends** can join. Type `/help` in the game's chat for the chat commands (`/players`,
-`/kick`, `/leave`, ...).
+Only the host's **Steam friends** can join. Press **`~`** in game for the b4bcoop window: players (kick, ban, lock),
+join/leave, camera, flashlight, keys, cheats. The same things work as chat commands (`/help` in the game's chat).
 
 ## Options
 All optional. Open `Gobi\Binaries\Win64\b4bcoop.ini` in a text editor and remove the `;` in front of a line to turn

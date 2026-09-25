@@ -56,8 +56,13 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.
-  - `overlay.cpp` the `~` power-user window (#26): Dear ImGui over the game's D3D12 swap chain, game input blocked while
-    open; ini `overlay=0`, `overlay_key`, `overlay_scale`. docs/investigations/overlay.md. **It replaces the chat
+  - `overlay.cpp` the `~` power-user window (#26): Dear ImGui over the game's D3D12 swap chain (frame built on the game
+    thread, rendered from a snapshot on Present), game input and hotkeys blocked while open; ini `overlay=0`,
+    `overlay_key`, `overlay_scale`. Panels: `overlay.h` (`overlay_add_panel` from a module's init + C `ov_*` widgets;
+    actions `ov_run` = the chat path `admin_slash`, settings `ov_setting` = ini live handler + writer; `ov_begin_perm`
+    greys out host/cheat controls). Tabs live next to their module (presence.c Session, admin.c Players,
+    thirdperson.c Camera, flashlight.c Flashlight, cheats.c Cheats). Dev `overlay open|close|status|tab|press|set|
+    locate|mouse|log`; e2e has a smoke check. docs/investigations/overlay.md (parity checklist). **It replaces the chat
     commands:** port every chat command into it; once it has them all, new features get overlay controls (+ ini keys)
     only, not new chat commands. Don't remove existing chat commands (keep `/say`).
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
