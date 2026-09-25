@@ -77,6 +77,11 @@ These change **your own save, permanently**. They never touch another player's s
 | `/supply <+N>` | Adds supply points to your save (1-100000). | `/supply +1000` |
 | `/unlockall` | Unlocks every item in the supply lines you don't have yet (not burn cards, which are consumables, and not DLC items). `/unlockall check` only counts them. | `/unlockall check`, `/unlockall` |
 
+Before the first `/supply` or `/unlockall` of a game session, your save is copied next to itself as
+`PlayerProfileSettings-b4bcoop-backup-<date>-<time>.sav` (and `.json`), in
+`%LOCALAPPDATA%\Back4Blood\Steam\Saved\SaveGames`; the reply shows the full path. To go back, quit the game and
+copy the backup over `PlayerProfileSettings.sav`. If the backup can't be made, nothing is changed.
+
 ## Not included, and why
 
 - **Game's own developer cheats**: `God`, `GiveUnlock`, `GiveSupplyPoints`, `Heal` and the other built-in cheat
