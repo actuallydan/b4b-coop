@@ -35,6 +35,11 @@ int flashlight_live(const char *key, const char *val);
 int joinpolicy_live(const char *key, const char *val);
 int presence_live(const char *key, const char *val);
 int teamsize_live(const char *key, const char *val);
+int overlay_live(const char *key, const char *val);
+// overlay.cpp: the `~` power-user window (#26 spike; Dear ImGui over the game's D3D12 swap chain)
+int overlay_init(void);
+void overlay_tick(float dt);
+int overlay_is_open(void);
 int cmds_game_focused(void);           // the game window is in front (hotkeys)
 int cmds_hotkey_down(int vk);          // game thread: the key is held, through the game's input (not while typing in chat)
 int flashlight_init(void);
