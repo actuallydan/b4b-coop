@@ -111,3 +111,7 @@ int joinpolicy_cmd(const char *verb, char *rest, Out *o);   // dev builds
 int rewardguard_init(void);
 void rewardguard_tick(float dt);
 int rewardguard_cmd(const char *verb, char *rest, Out *o);  // dev builds: `rewardguard`, host `rewardtest ...`
+
+// paks.c (dev builds only): engine pak layer, model mods (docs/investigations/model-mods-paks.md)
+void paks_early_init(void);                                // DllMain: hook FPakPlatformFile::Initialize, ini modpaks=
+int paks_cmd(const char *verb, char *rest, Out *o);        // `paks`, `mountpak`, `dumpassets`; 1 if handled

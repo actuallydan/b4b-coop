@@ -24,6 +24,10 @@ mounting (#17) are covered elsewhere; this covers authoring and cooking.
   (`*.sig`, "No signature file %s for pak %s"), and the pak format is modified. That is #17. On the content side,
   the unknown 8-byte skeletal-mesh trailer and the master materials and physics assets (only in the encrypted paks,
   #16) block new skeletal meshes.
+- **Update (#16/#17, model-mods-paks.md):** both pak blockers are solved. The index is plain AES-256-ECB with the
+  community key `0x0208…7CFD` (all 61 index SHA1s match), not a custom scheme, so the key at 0x14187CF20 is
+  something else. The agent extracts any file, masters and PAs included, through the engine and mounts our
+  unsigned paks with per-pak signature exemptions.
 
 ## 1. Engine and format versions
 

@@ -171,6 +171,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
 #endif
         LOG("b4bcoop %s (protocol %d)", B4B_VERSION, B4B_PROTOCOL);
         netguard_init();   // before any game code runs: hooks name resolution / TCP connect / EOS (netguard.c)
+#ifndef B4B_RELEASE
+        paks_early_init(); // before the engine creates FPakPlatformFile (paks.c: mod paks, asset extraction)
+#endif
         CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
     }
     return TRUE;
