@@ -23,6 +23,7 @@
 #include "log.h"
 #include "cmds.h"
 #include "MinHook.h"
+#include "overlay.h"
 
 #define ADDR_PVC_UPDATE VA(0x141C27250ull)
 static const uint8_t SIG_PVC_UPDATE[] = {0x48,0x8b,0xc4,0x57,0x41,0x54,0x48,0x83,0xec,0x68,0x48,0x83,0xb9,0xf8,0x01,0x00,
@@ -399,20 +400,49 @@ int thirdperson_live(const char *key, const char *v) {
     return 1;
 }
 static void ini_pair(const char *k, const char *v, void *ctx) { (void)ctx; thirdperson_live(k, v); }
-void thirdperson_get(TpSettings *s) {
-    s->on = tp_on; s->aimfix = aim_fix; s->dist = tp_dist; s->side = tp_side; s->height = tp_height; s->fov = tp_fov;
+int thirdperson_hotkey(void) { return tp_key; }
+
+// ~ overlay tab (overlay.h): the view is an action (like /thirdperson, not saved); camera settings and keys are
+// b4bcoop.ini settings, applied live through thirdperson_live and saved when an edit ends.
+static void tp_slider(const char *label, const char *key, float cur, float lo, float hi) {
+    float v = cur;
+    ov_width(14);
+    if (ov_slider(label, &v, lo, hi, "%.0f")) ov_setting_f(key, v, 0);
+    if (ov_edit_done()) ov_setting_f(key, v, 1);
 }
-void thirdperson_apply(const TpSettings *s) {
-    tp_dist = clampf(s->dist, 50, 600); tp_side = clampf(s->side, -150, 150); tp_height = clampf(s->height, -100, 150);
-    tp_fov = s->fov > 0 ? clampf(s->fov, 60, 130) : 0;
-    aim_fix = s->aimfix != 0;
-    if (tp_fov <= 0) tune(0);
-    if (tp_on) tune(1);
-    if (!s->on != !tp_on) { static Out tmp; out_reset(&tmp); cmd_thirdperson(s->on ? "on" : "off", &tmp); }
+static void tp_panel(void) {
+    int on = tp_on;
+    if (ov_checkbox("Third person##view", &on)) ov_run(on ? "thirdperson on" : "thirdperson off");
+    ov_tooltip("Your own over-the-shoulder camera (like /thirdperson). Aiming with right mouse is first person.");
+    const char *iv = cmds_ini_value("thirdperson");
+    int start = iv && atoi(iv) != 0;
+    if (ov_checkbox("Start the game in third person##start", &start)) {
+        int bad = cmds_ini_set("thirdperson", start ? "1" : NULL);
+        overlay_note(bad ? "could not write b4bcoop.ini" : start ? "b4bcoop.ini: thirdperson=1" : "b4bcoop.ini: thirdperson back to the default (off)");
+    }
+    int k = tp_key;
+    if (ov_key("Toggle key##thirdperson_key", &k)) ov_setting_key("thirdperson_key", k);
+    ov_heading("Camera");
+    tp_slider("Distance##distance", "thirdperson_distance", tp_dist, 50, 600);
+    tp_slider("Side (- left, + right)##side", "thirdperson_side", tp_side, -150, 150);
+    tp_slider("Height##height", "thirdperson_height", tp_height, -100, 150);
+    tp_slider("FOV (0 = the game's)##fov", "thirdperson_fov", tp_fov, 0, 130);
+    if (ov_button("Swap shoulder")) ov_setting_f("thirdperson_side", -tp_side, 1);
+    ov_same_line();
+    if (ov_button("Reset camera")) {
+        static const char *K[] = {"thirdperson_distance", "thirdperson_side", "thirdperson_height", "thirdperson_fov"};
+        for (int i = 0; i < 4; i++) ov_setting(K[i], NULL, 1);
+    }
+    int fix = aim_fix;
+    if (ov_checkbox("Aim correction##aimfix", &fix)) ov_setting("thirdperson_aimfix", fix ? "1" : "0", 1);
+    ov_tooltip("Turns your hero's aim onto the crosshair point, so shots land under it with a side/height offset.");
+    ov_text_dim("Ctrl+click a slider to type a value. Camera changes apply at once and are saved to b4bcoop.ini.");
 }
+
 int thirdperson_init(void) {
     cmds_ini_each(ini_pair, NULL);
     tp_started = 1;
+    overlay_add_panel("Camera", 30, tp_panel);
     LOG("thirdperson: start %s, key=0x%02x, distance %.0f side %.0f height %.0f fov %.0f aimfix %d", tp_on ? "on" : "off",
         tp_key, tp_dist, tp_side, tp_height, tp_fov, aim_fix);
     return 0;

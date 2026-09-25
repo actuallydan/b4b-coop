@@ -1,11 +1,40 @@
 # b4b-coop: commands & options
 
-Everything you can type in the game's chat and set in `b4bcoop.ini`, for the current release. You don't need any of
-it to play: install, press Play, and your Steam friends can **Join Game** on you (see the README).
+Everything b4b-coop lets you change, for the current release: the **`~` window** (the easy way), the same things as
+chat commands, and `b4bcoop.ini`. You don't need any of it to play: install, press Play, and your Steam friends can
+**Join Game** on you (see the README).
 
-Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](#commands-for-everyone) ·
-[Host-only commands](#host-only-commands) · [Cheats](#cheats-sandbox) · [b4bcoop.ini options](#b4bcoopini-options) ·
+Contents: [The ~ window](#the--window) · [Chat commands](#how-to-use-chat-commands) ·
+[Commands for everyone](#commands-for-everyone) · [Host-only commands](#host-only-commands) ·
+[Cheats](#cheats-sandbox) · [b4bcoop.ini options](#b4bcoopini-options) ·
 [Launch options & troubleshooting](#launch-options--troubleshooting)
+
+## The ~ window
+
+Press **`~`** (the key left of `1`) in game: a see-through window opens over the game with a tab for each topic.
+Every chat command below has a button, box or slider there, with the same rules (a control the host alone may use is
+greyed out on a client: hover it to see why; cheats need **Cheats on** first). Replies show in the log at the bottom
+of the window, and also in your chat.
+
+- While it is open, the mouse moves the window's own cursor and your hero doesn't move, shoot or react to keys
+  (your flashlight and third-person keys too). `~` or `Esc` closes it.
+- Settings you change here (camera, keys, flashlight, who may join, the window's text size) apply at once and are
+  saved to `b4bcoop.ini`: only the settings you touched. Editing `b4bcoop.ini` while the game runs updates the window.
+- A key binding: click the key's button, then press the new key (`Esc` cancels, `Backspace` = no key). Mouse buttons
+  4/5 and the middle button work too.
+
+| Tab | What's in it | Chat equivalent |
+|---|---|---|
+| **Session** | Version and protocol, your Steam ID (Copy), Join a host by Steam ID, Host, Leave; your Steam friends in Back 4 Blood with **Join** (like Steam's Join Game) and **Invite** (while you host); "Show Join Game to Steam friends" (`presence`); host: who may join (Steam friends / anyone, always-allowed Steam IDs) | `/join`, `/host`, `/leave`; ini `presence`, `allow_joins`, `allow_steamids` |
+| **Players** | Everyone in the game with ping and Steam ID; host: **Kick**, **Ban** per player, a message to everyone (**Say**), **Locked**, bots (game default/on/off), team size, **Ready everyone**, **Ready post-round vote**, **Restart mission**, the ban list with **Unban** / **Unban all** | `/players`, `/ping`, `/kick`, `/ban`, `/say`, `/lock`, `/unlock`, `/bots`, `/teamsize`, `/ready`, `/ready vote`, `/restart`, `/bans`, `/unban` |
+| **Camera** | Third person on/off, start the game in third person, its key, sliders for distance, side, height and FOV (Ctrl+click a slider to type a number), Swap shoulder, Reset camera, aim correction | `/thirdperson ...`; ini `thirdperson*` |
+| **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky` |
+| **Cheats** | Host: **Cheats on**, a player picker (`me`, everyone, a player) for the buttons marked `*`, then every cheat: god, heal, revive, infinite ammo, copper, cards, fly, noclip, walk, teleport, free camera, size, horde, kill all ridden, freeze, director phases, spawn, game speed, win, lose, and your own save's supply points / unlock all | every `/cheats` command |
+| **Settings** | The window's text size and key, the flashlight and third-person keys | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key` |
+| **Help** | Your version, a box to run any chat command (without the `/`) | `/help` |
+
+Buttons that change something for everyone or permanently (Ban, Restart, Leave, Win, Lose, Unlock all, Add supply
+points, Unban all) need a second click within 3 seconds ("Sure?"). `overlay=0` in `b4bcoop.ini` turns the window off.
 
 ## How to use chat commands
 
@@ -93,11 +122,7 @@ own offline Fort Hope while playing alone. Replies:
 - `you are in someone's session: /leave first`
 - `go back to Fort Hope first`
 
-**The `~` window (experimental)**: press `~` (the key left of `1`) in game for a small settings window over the game:
-third person on/off, aim correction, and sliders for distance, side, height and FOV, applied at once; **Save to
-b4bcoop.ini** keeps them. While it is open the mouse moves its own cursor and your hero doesn't move or shoot; `~` or
-`Esc` closes it. `overlay=0` in `b4bcoop.ini` turns it off, `overlay_key=` picks another key, `overlay_scale=` sizes it
-(default `1.25`).
+**Every command here is also in the `~` window** ([above](#the--window)).
 
 ## Host-only commands
 
@@ -297,8 +322,8 @@ Rules:
 | `thirdperson_height` | `0` | `-100`-`150` | Camera height offset (`/thirdperson height`) |
 | `thirdperson_fov` | `0` (game's) | `60`-`130` | Third-person field of view (`/thirdperson fov`) |
 | `thirdperson_aimfix` | `1` | `0`, `1` | `0`: no aim correction, shots land beside the crosshair by the camera offset |
-| `overlay` | `1` | `0`, `1` | `0`: no `~` settings window |
-| `overlay_key` | `~` | a letter, a digit, a key code, or `off` | The key that opens the `~` window |
+| `overlay` | `1` | `0`, `1` | `0`: no `~` window |
+| `overlay_key` | `~` | a letter, a digit or a key code | The key that opens the `~` window |
 | `overlay_scale` | `1.25` | `0.5`-`4` | Size of the `~` window's text |
 | `allow_joins` | `friends` | `friends`, `anyone` | Host: who may join |
 | `allow_steamids` | none | Steam IDs | Host: these players may always join |

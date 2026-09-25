@@ -20,6 +20,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "overlay.h"
 
 #define ADDR_PRELOGIN  VA(0x1419FE9C0ull)  // void AGobiGameMode::PreLogin(this, const <parsed options>& Options (TArray,
                                            //   options_str), const FString& Address, const FUniqueNetIdRepl& UniqueId,
@@ -679,6 +680,104 @@ void admin_slash(char *line, Out *o) {
     } else run_admin(verb, rest, o);
 }
 
+// ~ overlay tab (overlay.h): the /players list with per-player Kick/Ban, and every host command. Each control runs the
+// chat command (ov_run -> admin_slash), so permissions and replies are the chat's.
+static void players_panel(void) {
+    static double t_bans;
+    static int shown_bans;
+    UObject **pa; int n = player_array(&pa);
+    UObject *me = ue_local_pc(), *my_ps = me ? ue_get_ptr(me, "PlayerState") : NULL;
+    int client = is_client();
+    const char *why;
+    int host_ok = ov_allowed(CMD_HOST, &why);
+    if (!n) ov_text_dim("No players (not in a game).");
+    else if (ov_table_begin("players", 4)) {
+        static const char *H[] = {"#", "Player", "Ping / Steam ID", ""};
+        ov_table_header(H, 4);
+        for (int i = 0; i < n; i++) {
+            char nm[64], key[80], bn[64];
+            UObject *ps = pa[i], *owner = ue_get_ptr(ps, "Owner");
+            ps_name(ps, nm, sizeof nm);
+            int is_bot = !client ? !is_pc(owner) : !nm[0];   // a client: a nameless player state is a bot (or an NPC ally)
+            if (is_bot && !nm[0] && !bot_name(ps, nm, sizeof nm)) snprintf(nm, sizeof nm, "-");
+            (void)bn;
+            ov_push_id(i);
+            ov_table_next(); ov_text("%d", i);
+            ov_table_next(); ov_text("%s%s%s", nm, ps == my_ps ? " (you)" : "", is_bot ? " [bot]" : "");
+            ov_table_next();
+            if (!client && !is_bot) {
+                ps_key(ps, key, sizeof key);
+                if (ps != my_ps) ov_text("%d ms  %s", ps_ping_ms(ps), key); else ov_text("%s", key);
+            } else if (ps == my_ps && client) ov_text("%d ms to the host", ps_ping_ms(ps));
+            ov_table_next();
+            if (!is_bot && ps != my_ps) {
+                ov_begin_disabled(!host_ok, why);
+                char lab[32];
+                snprintf(lab, sizeof lab, "Kick##%d", i);
+                if (ov_button(lab)) ov_run("kick #%d", i);
+                ov_same_line();
+                snprintf(lab, sizeof lab, "Ban##%d", i);
+                if (ov_button_confirm(lab, "Sure? Ban")) ov_run("ban #%d", i);
+                ov_end_disabled();
+            }
+            ov_pop_id();
+        }
+        ov_table_end();
+    }
+    if (ov_button("Ping")) ov_run("ping");
+    ov_same_line();
+    if (ov_button("List in the log (/players)")) ov_run("players");
+
+    ov_heading("Host");
+    ov_begin_perm(CMD_HOST);
+    static char msg[200];
+    ov_width(18);
+    int send = ov_input_text("##say", msg, sizeof msg, "message to everyone (/say)");
+    ov_same_line();
+    if ((ov_button("Say") || send) && msg[0]) { ov_run("say %s", msg); msg[0] = 0; }
+    int lk = locked;
+    if (ov_checkbox("Locked: no new players##lock", &lk)) ov_run(lk ? "lock" : "unlock");
+    ov_tooltip("Players who are in the session now can still come back (map changes).");
+    ov_text("Bots in empty slots (from the next map):");
+    if (ov_radio("game default##bots", bots_mode < 0)) ov_run("bots default");
+    ov_same_line();
+    if (ov_radio("on##bots", bots_mode == 1)) ov_run("bots on");
+    ov_same_line();
+    if (ov_radio("off##bots", bots_mode == 0)) ov_run("bots off");
+    static int ts;
+    if (!ts) ts = teamsize_get() ? teamsize_get() : 4;
+    ov_width(8);
+    ov_input_int("Team size##teamsize", &ts, 1, 8);
+    ov_same_line();
+    if (ov_button("Apply##teamsize")) ov_run("teamsize %d", ts);
+    ov_tooltip("From the next map. 5+ players: see teamsize in the commands reference.");
+    ov_same_line();
+    ov_text_dim("now %d", teamsize_get() ? teamsize_get() : 4);
+    if (ov_button("Ready everyone")) ov_run("ready");
+    ov_same_line();
+    if (ov_button("Ready post-round vote")) ov_run("ready vote");
+    ov_same_line();
+    if (ov_button_confirm("Restart mission", "Sure? Restart")) ov_run("restart");
+    ov_tooltip("Fails the mission on purpose; the game retries it (refused when that would end the run).");
+    ov_heading("Bans");
+    if (ov_table_begin("bans", 3)) {
+        if (GetTickCount64() / 1000.0 - t_bans > 1.0) { bans_load(); t_bans = GetTickCount64() / 1000.0; shown_bans = n_bans; }
+        for (int i = 0; i < shown_bans && i < n_bans; i++) {
+            char lab[32];
+            ov_table_next(); ov_text("%s", bans[i].name[0] ? bans[i].name : "?");
+            ov_table_next(); ov_text("%s", bans[i].key);
+            ov_table_next();
+            snprintf(lab, sizeof lab, "Unban##%d", i);
+            if (ov_button(lab)) { ov_run("unban #%d", i); t_bans = 0; }
+        }
+        ov_table_end();
+    }
+    if (!n_bans) ov_text_dim("No bans.");
+    else if (ov_button_confirm("Unban all", "Sure? Unban all")) { ov_run("unban all"); t_bans = 0; }
+    ov_end_perm();
+    (void)host_ok;
+}
+
 #ifndef B4B_RELEASE
 // Agent CLI (dev builds): kick ban unban bans lock unlock bots say restart, plus `slash <text>` (run a chat command
 // directly, without the chat box) and `who` (the /players listing).
@@ -701,6 +800,7 @@ int admin_init(void) {
     else if (MH_CreateHook((void *)ADDR_PRELOGIN, (void *)prelogin_detour, (void **)&orig_prelogin) != MH_OK ||
              MH_EnableHook((void *)ADDR_PRELOGIN) != MH_OK) { LOG("admin: PreLogin hook failed"); orig_prelogin = NULL; }
     bans_load();
+    overlay_add_panel("Players", 20, players_panel);
     LOG("admin: login gate %s, %d ban(s) in %s", orig_prelogin ? "on" : "OFF", n_bans, bans_path());
     return 0;
 }

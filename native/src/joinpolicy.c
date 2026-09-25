@@ -58,6 +58,14 @@ int joinpolicy_live(const char *key, const char *v) {
     return 0;
 }
 
+// for the overlay: allow_joins=anyone, and the allowlist as "id,id"
+void joinpolicy_get(int *any, char *ids, size_t n) {
+    *any = anyone;
+    size_t k = 0;
+    ids[0] = 0;
+    for (int i = 0; i < n_allow && k + 24 < n; i++) k += snprintf(ids + k, n - k, "%s%llu", i ? "," : "", (unsigned long long)allow[i]);
+}
+
 void joinpolicy_init(void) {
     LOG("joinpolicy: joins from %s, %d allowlisted SteamID(s)%s", anyone ? "anyone" : "Steam friends only", n_allow,
         allow_self ? "" : ", own SteamID NOT allowed (allow_self=0, dev)");

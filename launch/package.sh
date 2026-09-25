@@ -80,8 +80,9 @@ PLAY
 4. Start missions from the war table as usual. Everyone in your game follows you in.
 JOIN A FRIEND: in the Steam friends list, right-click your friend while they are in Back 4 Blood >
 Join Game, or accept their Steam invite. Works with your game closed or running.
-Only the host's Steam friends can join. Type /help in the game's chat for the chat commands.
-All chat commands and options, with examples: b4bcoop-COMMANDS.txt (next to this file).
+Only the host's Steam friends can join. Press ~ in game for the b4bcoop window (players, join/leave,
+camera, flashlight, keys, cheats); the same things work as chat commands (/help in the game's chat).
+The window, all chat commands and options, with examples: b4bcoop-COMMANDS.txt (next to this file).
 
 OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, remove the ';' in front of a line.
 Saved changes apply within a couple of seconds, also while you play (host, join, host_ip: restart the game).
