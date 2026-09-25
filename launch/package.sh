@@ -88,7 +88,8 @@ OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, r
   More options and details: b4bcoop-COMMANDS.txt.
 
 ADD-ONS (textures, models): put the add-on's .pak in a b4bcoop-addons folder next to Back4Blood.exe and
-restart the game; /addons lists them. Details: b4bcoop-COMMANDS.txt, "Add-ons".
+restart the game; /addons lists them. Only you see your add-ons. Hosts let in players with cosmetic add-ons
+only, by default (addons_policy=). Details: b4bcoop-COMMANDS.txt, "Add-ons".
 
 REMOVE: delete these files from the game folder.
 1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt, and

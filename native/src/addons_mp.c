@@ -178,9 +178,11 @@ int addons_login_check(const char *value, const char *name, const char *key, cha
     }
     if (!err[0]) return 0;
     LOG("addons: login %s (%s) refused: %s [summary %s]", name, key, err, value && *value ? value : "none");
-    static char told[16][80]; static int n_told;   // one host notice per player per session (clients retry)
-    for (int i = 0; i < n_told; i++) if (!strcmp(told[i], key)) return 1;
-    if (n_told < 16) snprintf(told[n_told++], sizeof told[0], "%s", key);
+    static char told[16][96]; static int n_told;   // one host notice per player and policy per session (clients retry)
+    char tk[96];
+    snprintf(tk, sizeof tk, "%s|%d", key, policy);
+    for (int i = 0; i < n_told; i++) if (!strcmp(told[i], tk)) return 1;
+    if (n_told < 16) snprintf(told[n_told++], sizeof told[0], "%s", tk);
     chat_local("%s could not join: %s.", name && *name ? name : "A player", why);
     return 1;
 }
