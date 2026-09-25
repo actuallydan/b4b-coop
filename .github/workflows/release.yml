@@ -1,6 +1,7 @@
 # Release: on a v* tag, build the player package from this commit with the pinned toolchain (zig 0.15.2, MinHook
 # 8af6b4a; tools/fetch-deps.sh checks both), then publish dist/b4bcoop-<version>.zip + SHA256SUMS as a GitHub release
-# with a signed build provenance attestation. The tag must be v<version> from VERSION.
+# with a signed build provenance attestation. The tag must be v<version> from VERSION. The release body = notes from
+# tools/relnotes.py (commits since the previous v* tag) + the provenance/checksum text.
 # Verify a download: gh attestation verify b4bcoop-<version>.zip -R actuallydan/b4b-coop
 name: release
 
@@ -27,6 +28,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0   # full history + tags: the release notes cover <previous v* tag>..<this tag>
+
+      - name: Generate the release notes (tools/relnotes.py, CLAUDE.md "Commit messages")
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          tools/relnotes.py "$TAG" > relnotes.md
+          cat relnotes.md
 
       - name: Fetch the pinned toolchain (zig 0.15.2 + MinHook)
         run: tools/fetch-deps.sh --build
@@ -82,7 +91,8 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
-          cat > notes.md <<EOF
+          { cat relnotes.md; printf '\n---\n\n'; } > notes.md
+          cat >> notes.md <<EOF
           Built by GitHub Actions from commit ${GITHUB_SHA} (tag ${TAG}), workflow \`.github/workflows/release.yml\`.
 
           Check your download:

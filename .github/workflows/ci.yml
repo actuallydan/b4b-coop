@@ -1,5 +1,5 @@
 # CI: build the dev and player DLLs with the pinned toolchain on every push and pull request, and check that the player
-# build carries no dev code. Releases are built by release.yml.
+# build carries no dev code; check new commit messages (tools/relnotes.py --check). Releases are built by release.yml.
 name: ci
 
 on:
@@ -11,6 +11,33 @@ permissions:
   contents: read
 
 jobs:
+  commits:
+    # Commit-message convention (CLAUDE.md "Commit messages"): subjects become the public release notes.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check new commit subjects and Release-note trailers
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+               && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..$AFTER"
+          else   # new branch or force push: what it adds on top of main
+            range="origin/main..$AFTER"
+          fi
+          tools/relnotes.py --check "$range"
+
   build:
     runs-on: ubuntu-latest
     steps:
