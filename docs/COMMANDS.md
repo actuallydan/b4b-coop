@@ -4,7 +4,8 @@ Everything you can type in the game's chat and set in `b4bcoop.ini`, for the cur
 it to play: install, press Play, and your Steam friends can **Join Game** on you (see the README).
 
 Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](#commands-for-everyone) ·
-[Host-only commands](#host-only-commands) · [Cheats](#cheats-sandbox) · [b4bcoop.ini options](#b4bcoopini-options) ·
+[Host-only commands](#host-only-commands) · [Cheats](#cheats-sandbox) · [Add-ons](#add-ons) ·
+[b4bcoop.ini options](#b4bcoopini-options) ·
 [Launch options & troubleshooting](#launch-options--troubleshooting)
 
 ## How to use chat commands
@@ -35,6 +36,9 @@ Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](
 | `/model <name>` | Changes how your survivor looks, this game session only | `/model karlee_elite_03`, `/model holly` |
 | `/model list [survivor\|npc]` | The looks you can use | `/model list`, `/model list walker` |
 | `/model reset` | Back to your own look | `/model reset` |
+| `/addons` | Lists your add-ons, on/off, and conflicts | `/addons` |
+| `/addons on\|off <#>` | Switches an add-on on or off from the next game start | `/addons off 2` |
+| `/addons info <#>` | Title, author, version, description of an add-on | `/addons info 1` |
 
 **`/help`**: the first line is your version, e.g. `b4bcoop 0.3.0 (protocol 1)`. The host also sees the host-only
 commands; a client sees `(/kick /ban /lock ... are for the host)`.
@@ -229,6 +233,48 @@ copy the backup over `PlayerProfileSettings.sav`. If the backup can't be made, n
 - **Reviving dead heroes**: dead heroes are rescued from the rescue closets as usual; `/revive` gets downed heroes up.
 - **Spawning bosses** (the Abomination, sleepers): they are scripted into their maps and don't work spawned anywhere.
 
+## Add-ons
+
+Add-ons change how the game looks (textures, models, UI), Left 4 Dead style: drop a file in a folder, restart. There
+is no in-game browser. Add-ons are **only on your PC**: other players don't need them and don't see them (for now,
+don't use add-ons that change gameplay, like collision or hitboxes, in a session with others).
+
+**Install:** an add-on is one `.pak` file. Put it in the `b4bcoop-addons` folder in the game folder (next to
+`Back4Blood.exe`; create the folder if it isn't there). An add-on zip already contains that folder: extract it into
+the game folder. Restart the game. **Remove:** delete the `.pak` file.
+
+**On/off and load order:** the game writes `b4bcoop-addons\addonlist.txt`, one line per add-on:
+```
+holly_magenta.pak=1
+holly_green.pak=0
+```
+`=1` on, `=0` off. New add-ons are added at the bottom, switched on. The game loads them top to bottom: when two
+add-ons change the same file, **the one further down wins**. Move lines to change that. `/addons on|off` edits this
+file for you. All changes apply the next time the game starts.
+
+**`/addons`**: the list with numbers, the state of each (`on`, `off`, `on after restart`, `off after restart`,
+`on, NOT LOADED`) and conflicts:
+```
+2 add-on(s), load order (a later one wins):
+1. Holly magenta portrait 1.0 [on] holly_magenta.pak
+2. Holly green portrait 1.0 [on] holly_green.pak
+conflict: holly_green.pak overrides holly_magenta.pak (2 file(s))
+```
+`<#>` in `/addons on|off|info` is that number, the file name or the title (or a unique part of it).
+
+Messages (in your chat after the game starts):
+- `Add-on conflict: "B" overrides "A". /addons`: both change the same files; B wins (it is further down the list).
+  Fine if that's what you want; otherwise switch one off or reorder `addonlist.txt`.
+- `Add-ons "A" and "B" mix parts of one asset (may crash): switch one off.`: each add-on replaces a different part of
+  the same asset, which can crash the game. Switch one off.
+- `N add-on(s) could not be loaded`: `/addons info <#>` says why: `damaged ... download it again`, `not a Back 4
+  Blood add-on pak` (made for another game, or not with b4bcoop's tool), `rename it ... to plain letters` (file or
+  folder name with accents or other special characters).
+- `Add-ons are off: unsupported game build`: your Back 4 Blood version isn't the one this b4bcoop supports.
+
+Only install add-ons from people you trust. Making add-ons: `tools/modkit/addon.py` in the source repository
+(`docs/investigations/addons.md`).
+
 ## b4bcoop.ini options
 
 **Where:** `Gobi\Binaries\Win64\b4bcoop.ini` in the game folder (Steam → right-click **Back 4 Blood** → **Manage** →
@@ -340,6 +386,8 @@ join=steam:7656119XXXXXXXXXX
 | `presence_addr` | your LAN address | With `host_ip=1`: the address friends' **Join Game** connects to, e.g. `presence_addr=203.0.113.5:7777` (your public IP) |
 | `netguard_eos` | `1` | `0`: don't switch off the Epic Online Services network layer (troubleshooting only) |
 | `netguard_allow` | none | With `netguard=block`: host names to let through anyway, comma-separated, `*.example.com` for a whole domain (troubleshooting only) |
+| `addons` | `1` | `0`: load no add-ons at all (troubleshooting) |
+| `addons_dir` | `<game>\b4bcoop-addons` | Another add-ons folder, a full Windows path, e.g. `addons_dir=D:\b4b-addons` |
 
 ## Launch options & troubleshooting
 

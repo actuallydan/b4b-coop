@@ -87,8 +87,12 @@ OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, r
                      forwarding (UDP 7777) and triggers the Windows Firewall prompt.
   More options and details: b4bcoop-COMMANDS.txt.
 
+ADD-ONS (textures, models): put the add-on's .pak in a b4bcoop-addons folder next to Back4Blood.exe and
+restart the game; /addons lists them. Details: b4bcoop-COMMANDS.txt, "Add-ons".
+
 REMOVE: delete these files from the game folder.
-1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt
+1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt, and
+   the b4bcoop-addons folder (only there if you installed add-ons).
 2. In Gobi\Binaries\Win64: X3DAudio1_7.dll, b4bcoop.ini, all b4bcoop-*.log files, and b4bcoop-bans.txt
    (only there if you banned someone).
 3. Left over from older versions, if present, in Gobi\Binaries\Win64: dwmapi.dll, "Play B4B co-op.cmd",

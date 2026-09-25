@@ -48,10 +48,16 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
     never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
     (hand a pickup, e.g. a duffel bag, to a hero), `duffelreward <slot> <product guid> [delta]`.
-  - `paks.c` (dev builds only, model mods #23) the engine's pak layer: `dumpassets <glob> [outdir]` extracts files as
-    the engine reads them (IterateDirectory + OpenRead on FPakPlatformFile), `paks`, `mountpak <path> [order]`; ini
-    `modpaks=<windows dir>` mounts our unsigned paks right after the retail ones (order 1000+), exempted by identity
-    from the three signature paths. Pak writer: `tools/b4bpak.py`. docs/investigations/model-mods-paks.md.
+  - `paks.c` (model mods #23) the engine's pak layer. Both builds: mounts our unsigned paks right after the retail
+    ones, exempted by identity from the three signature paths (player builds hook nothing when there is no add-on).
+    Dev only: `dumpassets <glob> [outdir]` extracts files as the engine reads them (IterateDirectory + OpenRead on
+    FPakPlatformFile), `paks`, `mountpak <path> [order]`, ini `modpaks=<windows dir>` (raw paks, order 3000+). Pak
+    writer: `tools/b4bpak.py`. docs/investigations/model-mods-paks.md.
+  - `addons.c` add-ons (#20): `<game>\b4bcoop-addons\*.pak` (ini `addons_dir=`, `addons=0`), read in DllMain:
+    `addonlist.txt` on/off + load order (later wins, read order 1000+), embedded `b4bcoop-addoninfo.txt`, index SHA1
+    checked, conflicts (same file; "mixed" = one package from two add-ons) logged + one chat notice; chat
+    `/addons [on|off|info <#>]` (applies on restart). Packer `tools/modkit/addon.py pack|info|check`.
+    Client-side only, no protocol bump. docs/investigations/addons.md.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
   - `lineup.c` post-round/pre-round/character-select lineup with 5+ heroes (#8): spawns an extra mannequin when the

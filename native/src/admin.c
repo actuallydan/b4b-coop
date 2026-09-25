@@ -606,11 +606,12 @@ static const struct { const char *name; int admin; const char *usage; } CMDS[] =
     {"bans", 1, "/bans"}, {"lock", 1, "/lock"}, {"unlock", 1, "/unlock"}, {"teamsize", 1, "/teamsize N"},
     {"restart", 1, "/restart"}, {"ready", 1, "/ready [vote]"}, {"bots", 1, "/bots on|off|default"}, {"say", 1, "/say <message>"},
     {"model", 0, "/model list|<name>|reset"}, {"models", 0, "/models [on|off]"},
+    {"addons", 0, "/addons [on|off|info <#>]"}, {"addon", 0, "/addons [on|off|info <#>]"},
 };
 #define N_CMDS ((int)(sizeof CMDS / sizeof CMDS[0]))
 
 static void help(Out *o) {
-    out_printf(o, "b4bcoop %s (protocol %d)\n/join steam:<id64>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n/model list|<name>|reset\n",
+    out_printf(o, "b4bcoop %s (protocol %d)\n/join steam:<id64>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n/model list|<name>|reset\n/addons [on|off|info <#>]\n",
                coop_version(), coop_protocol());
     if (is_client()) { out_printf(o, "(/kick /ban /lock ... are for the host)\n"); return; }
     out_printf(o, "host: /kick /ban <name|#>  /unban  /bans\n/lock  /unlock  /teamsize N  /bots on|off\n"
@@ -651,6 +652,7 @@ void admin_slash(char *line, Out *o) {
     else if (!strcmp(verb, "ping")) ping(o);
     else if (!strcmp(verb, "flashlight")) cmd_flashlight(rest && *rest ? rest : "toggle", o);
     else if (!strcmp(verb, "model") || !strcmp(verb, "models")) models_slash(verb, rest, o);
+    else if (!strcmp(verb, "addons") || !strcmp(verb, "addon")) addons_slash(verb, rest, o);
     else if (!strcmp(verb, "join")) {
         if (!rest || !*rest) { out_printf(o, "usage: %s\n", CMDS[i].usage); return; }
         out_printf(o, "joining %s ...\n", rest);

@@ -61,6 +61,9 @@ it on. Every option, with defaults and examples: [docs/COMMANDS.md](docs/COMMAND
 - `host_ip=1`: **advanced**, only if you know you need it: host and join by IP address instead of through Steam. Needs
   port forwarding (UDP 7777) and triggers the Windows Firewall prompt. Everyone in the game needs it.
 
+Add-ons (textures, models): put the add-on's `.pak` in a `b4bcoop-addons` folder next to `Back4Blood.exe` and
+restart; `/addons` lists them. Details: [docs/COMMANDS.md](docs/COMMANDS.md#add-ons).
+
 All chat commands and options: [docs/COMMANDS.md](docs/COMMANDS.md).
 
 ## Uninstall
@@ -69,7 +72,8 @@ Delete these files from the game folder (Steam → right-click Back 4 Blood → 
     - `xinput1_3.dll`
     - `b4bcoop-README.txt`
     - `b4bcoop-COMMANDS.txt`
-    - `b4bcoop-LICENSE.txt`.
+    - `b4bcoop-LICENSE.txt`
+    - the `b4bcoop-addons` folder (only there if you installed add-ons).
 2. In `Gobi\Binaries\Win64`:
     - `X3DAudio1_7.dll`
     - `b4bcoop.ini`

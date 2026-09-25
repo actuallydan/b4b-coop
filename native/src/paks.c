@@ -1,17 +1,20 @@
-// Dev builds only: the engine's own pak layer (model mods, epic #23; spikes #16 extract, #17 mount).
-// docs/investigations/model-mods-paks.md.
+// The engine's pak layer (model mods, epic #23; spikes #16 extract, #17 mount; add-ons #20).
+// docs/investigations/model-mods-paks.md, docs/investigations/addons.md.
+// Both builds (add-ons, addons.c):
 //  - FPakPlatformFile::Initialize is hooked from DllMain (before the engine creates the platform file chain); after
-//    the retail paks are mounted we mount our own mod paks (ini `modpaks=<windows dir>`: every *.pak in it) with a
-//    higher read order than any retail pak, so their files win. Our paks (unsigned, no .sig) are exempted from the
-//    three signature paths, by pak identity only: FPakPlatformFile::bSigned cleared for just their Mount call (sync
-//    FPakFile reader), GetPakSignatureFile returns "none" for them without the pak-corrupt broadcast, and the
-//    precacher skips its chunk-hash check for their async reads. Retail paks keep every check.
+//    the retail paks are mounted we mount the enabled add-on paks with a higher read order than any retail pak, so
+//    their files win. Our paks (unsigned, no .sig) are exempted from the three signature paths, by pak identity only
+//    (the exact paths we passed to Mount): FPakPlatformFile::bSigned cleared for just their Mount call (sync FPakFile
+//    reader), GetPakSignatureFile returns "none" for them without the pak-corrupt broadcast, and the precacher skips
+//    its chunk-hash check for their async reads. Retail paks keep every check. Player builds install no hook at all
+//    when there is no add-on to mount.
+// Dev builds only:
+//  - ini `modpaks=<windows dir>`: every *.pak in it is mounted raw (no add-on metadata, after the add-ons).
 //  - `paks` lists mounted paks (read order, file); `mountpak <path> [order] [signed]` mounts one at runtime (game
 //    thread; `signed` = no exemption, like a retail pak: an unsigned pak then dies with "Corrupt file").
 //  - `dumpassets <glob> [outdir]` enumerates the pak directory index (IPlatformFile::IterateDirectory) and writes
 //    every matching file as the engine reads it (IPlatformFile::OpenRead: decrypted, decompressed) to outdir
 //    (default ~/.local/share/b4b-coop/extract). Runs on a worker thread; `dumpassets status` shows progress.
-#ifndef B4B_RELEASE
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +60,8 @@
 #define PAKDATA_SIZE      0x98
 #define PAKDATA_NAME      0x2C                   // FName Name (RegisterPakFile 0x14390451E)
 #define PAKDATA_SIGS      0x88                   // TSharedPtr<const FPakSignatureFile> Signatures (object pointer)
-#define MOD_ORDER 1000        // retail: 4 (+100 per _P patch level); higher read order wins in FindFileInPakFiles
+#define MODPAKS_ORDER 3000    // dev modpaks=; add-ons use ADDON_ORDER 1000+ (addons.c). Retail: 4 (+100 per _P
+                              // patch level); higher read order wins in FindFileInPakFiles
 
 static const uint8_t SIG_INIT[] = {0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x48,0x89,0x7c,0x24,0x20,0x55,
                                    0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57};
@@ -79,7 +83,7 @@ static GetPakSigFn orig_getpaksig;
 static volatile LONG g_sig_skips;
 typedef void (*PrecacheCbFn)(void *lambda, uint8_t *canceled, void **request);
 static PrecacheCbFn orig_precache_cb;
-#define MAX_MODPAKS 32
+#define MAX_MODPAKS (MAX_ADDONS + 32)
 static char g_modpak_names[MAX_MODPAKS][520];   // lower-case, backslashes: what we passed to Mount
 static volatile LONG g_nmodpaks, g_exempt_reads;
 
@@ -95,7 +99,9 @@ typedef void (*DtorFn)(void *fh, uint32_t flags);
 static InitFn orig_init;
 static void *g_pf;              // the FPakPlatformFile
 static int g_ok;                // signatures verified
-static char g_modpaks[520];     // ini modpaks=<windows dir>
+#ifndef B4B_RELEASE
+static char g_modpaks[520];     // ini modpaks=<windows dir> (dev)
+#endif
 
 #define VT(o) (*(void ***)(o))
 
@@ -120,6 +126,7 @@ static int mount_pak(const wchar_t *path, uint32_t order, int keep_signed) {
     return ok;
 }
 
+#ifndef B4B_RELEASE
 static void mount_dir(const char *dir) {
     wchar_t pat[600];
     swprintf(pat, 600, L"%hs\\*.pak", dir);
@@ -130,10 +137,14 @@ static void mount_dir(const char *dir) {
     do {
         wchar_t full[800];
         swprintf(full, 800, L"%hs\\%ls", dir, fd.cFileName);
-        mount_pak(full, MOD_ORDER + n++, 0);
+        mount_pak(full, MODPAKS_ORDER + n++, 0);
     } while (FindNextFileW(h, &fd));
     FindClose(h);
 }
+#endif
+
+// Add-ons (addons.c): only from the Initialize hook, right after the retail paks.
+int paks_mount_unsigned(const wchar_t *path, uint32_t order) { return pf_ok() && mount_pak(path, order, 0); }
 
 static int is_mod_pak(char *path) {   // path is folded in place (lower case, backslashes)
     for (char *c = path; *c; c++) *c = (char)tolower(*c == '/' ? '\\' : *c);
@@ -185,10 +196,14 @@ static uint8_t init_detour(void *pf, void *inner, const wchar_t *cmdline) {
     g_pf = pf;
     LOG("paks: FPakPlatformFile::Initialize -> %d (pf %p, bSigned %d, %d paks)", r, pf, *((uint8_t *)pf + PAKPF_BSIGNED),
         ((TArray *)((char *)pf + PAKPF_PAKFILES))->num);
+    if (r && pf_ok()) addons_mount();
+#ifndef B4B_RELEASE
     if (r && g_modpaks[0]) mount_dir(g_modpaks);
+#endif
     return r;
 }
 
+#ifndef B4B_RELEASE
 static void load_config(void) {
     FILE *f = fopen(cmds_config_path(), "r");
     char line[600];
@@ -199,20 +214,28 @@ static void load_config(void) {
     if (f) fclose(f);
 }
 
-// DllMain (dev builds): hook before the engine builds its platform file chain.
+#endif
+
+// DllMain: hook before the engine builds its platform file chain.
 void paks_early_init(void) {
     g_base_delta = (uint64_t)GetModuleHandleW(NULL) - 0x140000000ull;
+    int n = addons_scan();   // b4bcoop.ini addons keys, the add-ons folder, addonlist.txt
+#ifdef B4B_RELEASE
+    if (!n) return;          // nothing to mount: the engine's pak code stays untouched
+#else
+    load_config();
+#endif
     if (memcmp((void *)ADDR_PAKPF_INIT, SIG_INIT, sizeof SIG_INIT) || memcmp((void *)ADDR_PAKPF_MOUNT, SIG_MOUNT, sizeof SIG_MOUNT) ||
         ((void **)ADDR_PAKPF_VTBL)[4] != (void *)ADDR_PAKPF_INIT || ((void **)ADDR_PAKPF_VTBL)[VT_OPENREAD] != (void *)ADDR_PAKPF_OPENREAD ||
         ((void **)ADDR_PAKPF_VTBL)[VT_ITERDIR] != (void *)ADDR_PAKPF_ITERDIR ||
         memcmp((void *)ADDR_PRECACHE_CB, SIG_PRECACHE_CB, sizeof SIG_PRECACHE_CB) ||
         memcmp((void *)ADDR_GETPAKSIG, SIG_GETPAKSIG, sizeof SIG_GETPAKSIG) ||
         memcmp((void *)ADDR_DOSIGCHECK_MID, SIG_DOSIGCHECK_MID, sizeof SIG_DOSIGCHECK_MID)) {
-        LOG("paks: signature mismatch, pak tools off");
+        LOG("paks: signature mismatch (unsupported game build), add-ons off");
+        addons_unavailable("unsupported game build");
         return;
     }
     g_ok = 1;
-    load_config();
     MH_STATUS st = MH_Initialize();
     if ((st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED) ||
         MH_CreateHook((void *)ADDR_PAKPF_INIT, (void *)init_detour, (void **)&orig_init) != MH_OK ||
@@ -220,10 +243,19 @@ void paks_early_init(void) {
         MH_CreateHook((void *)ADDR_PRECACHE_CB, (void *)precache_cb_detour, (void **)&orig_precache_cb) != MH_OK ||
         MH_EnableHook((void *)ADDR_PRECACHE_CB) != MH_OK ||
         MH_CreateHook((void *)ADDR_GETPAKSIG, (void *)getpaksig_detour, (void **)&orig_getpaksig) != MH_OK ||
-        MH_EnableHook((void *)ADDR_GETPAKSIG) != MH_OK) { LOG("paks: hook failed"); return; }
-    LOG("paks: FPakPlatformFile::Initialize hooked%s%s", g_modpaks[0] ? ", modpaks=" : "", g_modpaks);
+        MH_EnableHook((void *)ADDR_GETPAKSIG) != MH_OK) {
+        LOG("paks: hook failed, add-ons off");
+        addons_unavailable("hook failed");
+        return;
+    }
+#ifdef B4B_RELEASE
+    LOG("paks: FPakPlatformFile::Initialize hooked (%d add-on(s) to mount)", n);
+#else
+    LOG("paks: FPakPlatformFile::Initialize hooked (%d add-on(s) to mount)%s%s", n, g_modpaks[0] ? ", modpaks=" : "", g_modpaks);
+#endif
 }
 
+#ifndef B4B_RELEASE
 // ---- dumpassets ----
 typedef struct { wchar_t **v; int n, cap; } WList;
 static void wl_add(WList *l, const wchar_t *s) {
@@ -359,7 +391,7 @@ int paks_cmd(const char *verb, char *rest, Out *o) {
     if (!strcmp(verb, "paks")) { cmd_paks(o); return 1; }
     if (!strcmp(verb, "mountpak")) {
         if (!pf_ok()) { out_printf(o, "pak platform file not found\n"); return 1; }
-        char path[520] = "", sig[16] = ""; unsigned order = MOD_ORDER + 50;
+        char path[520] = "", sig[16] = ""; unsigned order = MODPAKS_ORDER + 500;
         if (!rest || sscanf(rest, "%519s %u %15s", path, &order, sig) < 1) {
             out_printf(o, "usage: mountpak <windows path> [order] [signed]\n"); return 1;
         }
