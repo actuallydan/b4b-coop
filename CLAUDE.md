@@ -155,6 +155,12 @@ sampler). `--full` adds a vanilla
 clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
 screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
 
+## Branches
+- `main`: shippable. Releases are tagged from here.
+- `models`: ALL model/content-mod work (epic #23: spikes #16-#18, Tier 0 #19, add-on system #20-#22). Agents branch
+  from `models` and merge back into `models`; nothing model-related lands on `main` until the epic is DONE. Never
+  commit game assets, extracted files or paks (copyright); extracted content lives under `~/.local/share/b4b-coop/`.
+
 ## Gotchas
 - UE4SS does not work on this game (obfuscated engine) — don't go back to it.
 - Wine reparents the game to systemd: `/proc/<pid>/mem` is unreadable (yama=1). Use the Windows-side tools.
