@@ -447,12 +447,13 @@ have:
     return 1;
 }
 
-void wlooks_reset(Out *o) {
+// code NULL: every weapon type (/model reset); else only that weapon type (Models tab, per weapon)
+void wlooks_reset_code(const char *code, Out *o) {
     UObject **it;
     int n = items_of(my_pawn(), &it), k = 0;
     for (int w = 0; w < MAX_WISH; w++) {
         Wish *x = &wish[w];
-        if (!x->on) continue;
+        if (!x->on || (code && _stricmp(x->code, code))) continue;
         x->on = 0; k++;
         for (int i = 0; i < n; i++) {
             if (!is_live(it[i]) || !item_code(it[i], x->code)) continue;
@@ -463,8 +464,13 @@ void wlooks_reset(Out *o) {
             send_row(mm, same && x->prev.table ? x->prev.table : r->table, same ? x->prev.row : (FName){0, 0});
         }
     }
-    if (k && o) out_printf(o, "weapons back to your own skins\n");
+    if (k && o) {
+        if (code) out_printf(o, "your %s back to your own skin\n", code);
+        else out_printf(o, "weapons back to your own skins\n");
+    }
+    if (!k && o && code) out_printf(o, "your %s has no add-on look\n", code);
 }
+void wlooks_reset(Out *o) { wlooks_reset_code(NULL, o); }
 
 void wlooks_list(Out *o) {
     if (n_looks < 0) build_looks();
@@ -491,27 +497,68 @@ void wlooks_status(Out *o) {
         if (wish[w].on) out_printf(o, "your %s: %s%s\n", wish[w].code, wish[w].name, wish[w].gave_up ? " (refused by the host)" : "");
 }
 
-// ~ overlay, Models tab (minimal; the full Models/Add-ons tabs come later): the add-ons' weapon looks, through /model
-static void models_panel(void) {
+// ~ overlay, Models tab (models.c draws the tab): the add-ons' weapon looks by weapon type, through /model
+static int carries(const char *code) {   // this player's hero holds a weapon of that type now
+    UObject **it;
+    int n = items_of(my_pawn(), &it);
+    for (int i = 0; i < n; i++) if (is_live(it[i]) && item_code(it[i], code)) return 1;
+    return 0;
+}
+void wlooks_panel(int blocked, const char *why) {
     if (n_looks < 0) build_looks();
     ov_heading("Weapon looks (add-ons)");
-    if (!n_looks) { ov_text_dim("No add-on with weapon looks is installed (modkit: b4bmod weapon --as <name>)."); return; }
-    ov_text_dim("Your weapon of that type shows the add-on's model. Players without the add-on see the normal weapon.");
+    if (!n_looks) { ov_text_dim("No add-on with weapon looks is loaded (mod maker's kit: b4bmod weapon --as <name>)."); return; }
+    ov_text_dim("Your weapon of that type shows the add-on's model, also every one you pick up later. Players without "
+                "the add-on see the normal weapon.");
+    int done[MAX_LOOKS] = {0};
     for (int i = 0; i < n_looks; i++) {
-        int on = 0;
-        for (int w = 0; w < MAX_WISH; w++) on |= wish[w].on && !strcmp(wish[w].name, looks[i].name);
+        if (done[i]) continue;
+        const char *code = looks[i].code;
+        Wish *mine = NULL;
+        for (int w = 0; w < MAX_WISH; w++) if (wish[w].on && !_stricmp(wish[w].code, code)) mine = &wish[w];
         ov_push_id(i);
-        ov_text("%s (%s)%s", looks[i].title, looks[i].code, on ? "  - yours" : "");
+        ov_text("%s", code);
         ov_same_line();
-        if (ov_button("Use")) ov_run("model %s", looks[i].name);
+        if (mine && mine->gave_up) ov_text_warn("%s: refused by the host", mine->name);
+        else if (mine) ov_text_dim("yours: %s%s", mine->name, carries(code) ? "" : " (applies when you carry one)");
+        else ov_text_dim("your own skin");
+        ov_same_line();
+        ov_begin_disabled(!mine, "No add-on look on this weapon type.");
+        char rl[40];
+        snprintf(rl, sizeof rl, "Reset##w:%s", code);
+        if (ov_button(rl)) {
+            static Out o;
+            out_reset(&o);
+            wlooks_reset_code(code, &o);
+            if (o.len) overlay_note(o.buf);
+        }
+        ov_tooltip("This weapon type back to your own skin (/model reset does all weapons and your survivor).");
+        ov_end_disabled();
+        if (ov_table_begin("wl", 3)) {
+            for (int j = i; j < n_looks; j++) {
+                if (_stricmp(looks[j].code, code)) continue;
+                done[j] = 1;
+                ov_push_id(j);
+                ov_table_next();
+                ov_begin_disabled(blocked, why);
+                char lab[48];
+                snprintf(lab, sizeof lab, "Use##%s", looks[j].name);
+                if (ov_button(lab)) ov_run("model %s", looks[j].name);
+                ov_tooltip("/model <name>");
+                ov_end_disabled();
+                ov_same_line();
+                ov_text("%s%s", looks[j].name, mine && !strcmp(mine->name, looks[j].name) ? "  (yours)" : "");
+                ov_table_next(); ov_text("%s", looks[j].title);
+                ov_table_next(); ov_text_dim("add-on: %s", looks[j].addon);
+                ov_pop_id();
+            }
+            ov_table_end();
+        }
         ov_pop_id();
     }
-    if (ov_button("Reset##wlooks")) ov_run("model reset");
-    ov_tooltip("/model reset: your weapons and survivor back to your own look.");
 }
 
 int wlooks_init(void) {
-    overlay_add_panel("Models", 60, models_panel);
     if (memcmp((void *)ADDR_APPLY, SIG_APPLY, sizeof SIG_APPLY) || memcmp((void *)ADDR_SETROW, SIG_SETROW, sizeof SIG_SETROW)) {
         LOG("wlooks: signature mismatch, no weapon looks");
         return -1;
