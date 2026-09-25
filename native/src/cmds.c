@@ -267,6 +267,158 @@ const char *cmds_config_path(void) {
     return path;
 }
 
+// ---- b4bcoop.ini: shared reader, live reload, writer ----
+// Every `name=value` line that is not a comment (';' or '#' first), name at the start of the line, spaces after '='
+// skipped. fn gets each pair in file order; returns the number of pairs (-1: no file).
+int cmds_ini_each(void (*fn)(const char *key, const char *val, void *ctx), void *ctx) {
+    FILE *f = fopen(cmds_config_path(), "r");
+    if (!f) return -1;
+    char line[700];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
+        char *v = strchr(line, '='); if (!v || line[0] == '#' || line[0] == ';') continue;
+        *v++ = 0;
+        while (*v == ' ') v++;
+        fn(line, v, ctx);
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+// Live reload: the game thread checks the file's time stamp and size once a second; on a change every key whose value
+// differs from the last read (or that was removed: val NULL = back to the default) goes to the modules' *_live
+// handlers. A key no handler takes live is logged and named in chat ("restart the game"). Only changed keys are
+// applied, so an unrelated edit doesn't undo what a chat command changed this session.
+typedef struct { char key[40], val[600]; } IniKV;
+typedef struct { IniKV kv[64]; int n; } IniSet;
+static IniSet ini_last = {.n = -1};  // n -1: not read yet
+static FILETIME ini_mtime;
+static DWORD ini_size;
+static int ini_exists;
+
+static void ini_collect(const char *k, const char *v, void *ctx) {
+    IniSet *t = ctx;
+    if (strlen(k) >= sizeof t->kv[0].key) return;
+    for (int i = 0; i < t->n; i++) if (!strcmp(t->kv[i].key, k)) { snprintf(t->kv[i].val, sizeof t->kv[i].val, "%s", v); return; }
+    if (t->n >= 64) return;
+    snprintf(t->kv[t->n].key, sizeof t->kv[0].key, "%s", k);
+    snprintf(t->kv[t->n].val, sizeof t->kv[0].val, "%s", v);
+    t->n++;
+}
+static void ini_read_all(IniSet *t) { t->n = 0; cmds_ini_each(ini_collect, t); }
+static const IniKV *ini_find(const IniSet *t, const char *k) {
+    for (int i = 0; i < t->n; i++) if (!strcmp(t->kv[i].key, k)) return &t->kv[i];
+    return NULL;
+}
+static int ini_stat(FILETIME *mt, DWORD *sz) {
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExA(cmds_config_path(), GetFileExInfoStandard, &a)) { memset(mt, 0, sizeof *mt); *sz = 0; return 0; }
+    *mt = a.ftLastWriteTime; *sz = a.nFileSizeLow;
+    return 1;
+}
+// the modules that can take a key while the game runs: 1 = applied
+static int ini_apply_live(const char *key, const char *val) {
+    return thirdperson_live(key, val) || flashlight_live(key, val) || joinpolicy_live(key, val) ||
+           presence_live(key, val) || teamsize_live(key, val);
+}
+static void ini_snapshot(void) {
+    ini_read_all(&ini_last);
+    ini_exists = ini_stat(&ini_mtime, &ini_size);
+}
+void cmds_ini_poll(float dt) {
+    static float acc;
+    static IniSet now;
+    if (ini_last.n < 0) { ini_snapshot(); return; }
+    if ((acc += dt) < 1.f) return;
+    acc = 0;
+    FILETIME mt; DWORD sz;
+    static FILETIME pend_mt; static DWORD pend_sz; static int pending;
+    int ex = ini_stat(&mt, &sz);
+    if (!ex || (!CompareFileTime(&mt, &ini_mtime) && sz == ini_size)) { pending = 0; return; }   // gone: keep settings
+    // changed: apply once it has been stable for a poll (an editor may still be writing it)
+    if (!pending || CompareFileTime(&mt, &pend_mt) || sz != pend_sz) { pending = 1; pend_mt = mt; pend_sz = sz; return; }
+    pending = 0;
+    ini_read_all(&now);
+    char applied[300] = "", restart[300] = "";
+    for (int pass = 0; pass < 2; pass++) {   // pass 0: new or changed keys, pass 1: removed keys
+        const IniSet *from = pass ? &ini_last : &now, *other = pass ? &now : &ini_last;
+        for (int i = 0; i < from->n; i++) {
+            const IniKV *e = &from->kv[i], *o = ini_find(other, e->key);
+            if (pass ? o != NULL : (o && !strcmp(o->val, e->val))) continue;
+            const char *val = pass ? NULL : e->val;
+            int ok = ini_apply_live(e->key, val);
+            LOG("config: %s %s%s -> %s", e->key, pass ? "removed" : o ? "changed to " : "added: ", val ? val : "",
+                ok ? "applied" : "needs a game restart");
+            char *dst = ok ? applied : restart;
+            size_t l = strlen(dst);
+            if (l < 250) snprintf(dst + l, sizeof applied - l, "%s%s", l ? ", " : "", e->key);
+        }
+    }
+    ini_last = now;
+    ini_mtime = mt; ini_size = sz; ini_exists = ex;
+    if (applied[0]) chat_local("b4bcoop.ini: applied %s", applied);
+    if (restart[0]) chat_local("b4bcoop.ini: %s changed; restart the game for that", restart);
+}
+
+// Writer: set key=val in b4bcoop.ini, keeping everything else (comments, order, line endings). The first active
+// `key=` line is replaced; else a commented `;key=`/`#key=` line is replaced by the active one (it keeps its place
+// next to its explanation); else the line is appended. val NULL comments the active line out (back to the default).
+// Written to <ini>.tmp and moved over the ini. The reload snapshot is updated, so the write doesn't come back as an
+// edit. Returns 0 on success.
+int cmds_ini_set(const char *key, const char *val) {
+    const char *path = cmds_config_path();
+    char tmp[620];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    size_t kl = strlen(key);
+    if (!kl || kl >= 40 || strpbrk(key, "=\r\n") || (val && strpbrk(val, "\r\n"))) return -1;
+    FILE *f = fopen(path, "rb");
+    char *buf = NULL;
+    long len = 0;
+    if (f) {
+        fseek(f, 0, SEEK_END); len = ftell(f); fseek(f, 0, SEEK_SET);
+        if (len < 0 || len > (1 << 20)) { fclose(f); return -1; }
+        buf = malloc(len + 1);
+        if (!buf || fread(buf, 1, len, f) != (size_t)len) { fclose(f); free(buf); return -1; }
+        buf[len] = 0;
+        fclose(f);
+    }
+    const char *eol = buf && strstr(buf, "\r\n") ? "\r\n" : buf ? "\n" : "\r\n";
+    // find the active line, else the first commented one
+    long act = -1, com = -1;
+    for (long i = 0; buf && i < len; ) {
+        long e = i;
+        while (e < len && buf[e] != '\n') e++;
+        const char *l = buf + i;
+        if (!strncmp(l, key, kl) && l[kl] == '=' && act < 0) act = i;
+        else if ((l[0] == ';' || l[0] == '#') && !strncmp(l + 1, key, kl) && l[kl + 1] == '=' && com < 0) com = i;
+        i = e + 1;
+    }
+    long at = act >= 0 ? act : com;
+    FILE *w = fopen(tmp, "wb");
+    if (!w) { free(buf); return -1; }
+    if (at >= 0) {
+        long e = at;
+        while (e < len && buf[e] != '\n' && buf[e] != '\r') e++;   // the line's end, before its CR/LF
+        fwrite(buf, 1, at, w);
+        if (val) fprintf(w, "%s=%s", key, val);
+        else if (act >= 0) fprintf(w, ";%.*s", (int)(e - at), buf + at);   // comment the active line out
+        else fwrite(buf + at, 1, e - at, w);                               // nothing active: leave the comment
+        fwrite(buf + e, 1, len - e, w);
+    } else {
+        if (buf) fwrite(buf, 1, len, w);
+        if (val) fprintf(w, "%s%s=%s%s", len && buf[len - 1] != '\n' ? eol : "", key, val, eol);
+    }
+    int bad = ferror(w);
+    fclose(w);
+    free(buf);
+    if (bad || !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) { DeleteFileA(tmp); return -1; }
+    ini_snapshot();
+    LOG("config: wrote %s%s%s", key, val ? "=" : " (commented out)", val ? val : "");
+    return 0;
+}
+
 // Hotkeys (flashlight_key, thirdperson_key): a letter/digit (0 = the 0 key), or a VK code like
 // 0x4C; off, none or empty = no key.
 int cmds_parse_key(const char *v) {
@@ -283,6 +435,59 @@ int cmds_game_focused(void) {
     HWND w = GetForegroundWindow();
     if (w) GetWindowThreadProcessId(w, &pid);
     return pid == GetCurrentProcessId();
+}
+
+// Hotkey state through the game's own input (PlayerController.IsInputKeyDown): a key typed into the chat box or a
+// menu never reaches it, and nothing depends on the window's focus or on GetAsyncKeyState, which under Wine can report
+// a stale key right after the window is raised (thirdperson_key fired once by itself). Keys without an FKey name
+// here, or no PlayerController yet, fall back to GetAsyncKeyState while the game window is in front.
+static const char *vk_key_name(int vk, char *b, size_t n) {
+    static const char *digits[] = {"Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"};
+    static const struct { int vk; const char *name; } other[] = {
+        {0xC0, "Tilde"}, {VK_TAB, "Tab"}, {VK_CAPITAL, "CapsLock"}, {VK_INSERT, "Insert"}, {VK_DELETE, "Delete"},
+        {VK_HOME, "Home"}, {VK_END, "End"}, {VK_PRIOR, "PageUp"}, {VK_NEXT, "PageDown"}, {VK_MBUTTON, "MiddleMouseButton"},
+        {VK_XBUTTON1, "ThumbMouseButton"}, {VK_XBUTTON2, "ThumbMouseButton2"}, {VK_BACK, "BackSpace"}, {VK_PAUSE, "Pause"}};
+    if (vk >= 'A' && vk <= 'Z') { snprintf(b, n, "%c", vk); return b; }
+    if (vk >= '0' && vk <= '9') return digits[vk - '0'];
+    if (vk >= VK_F1 && vk <= VK_F12) { snprintf(b, n, "F%d", vk - VK_F1 + 1); return b; }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) { snprintf(b, n, "NumPad%s", digits[vk - VK_NUMPAD0]); return b; }
+    for (size_t i = 0; i < sizeof other / sizeof *other; i++) if (other[i].vk == vk) return other[i].name;
+    return NULL;
+}
+typedef FName *(*CmdsFNameCtorFn)(FName *self, const wchar_t *name, int find_type);
+int cmds_hotkey_down(int vk) {
+    static struct { int vk; FName name; } names[8];
+    static int n_names;
+    static UFunction *fn; static int32_t o_key = -1, o_ret = -1, psize;
+    UObject *pc = ue_local_pc();
+    char nb[16];
+    const char *kn = vk_key_name(vk, nb, sizeof nb);
+    if (pc && kn && !fn) {
+        UClass *c = ue_find_class("PlayerController");
+        fn = c ? ue_find_function(c, "IsInputKeyDown") : NULL;
+        FField *k = fn ? ue_find_prop((UStruct *)fn, "Key") : NULL, *r = fn ? ue_find_prop((UStruct *)fn, "ReturnValue") : NULL;
+        if (k && r && UFN_PARMSSIZE(fn) <= 64) { o_key = FP_OFFSET(k); o_ret = FP_OFFSET(r); psize = UFN_PARMSSIZE(fn); }
+    }
+    if (pc && kn && o_key >= 0) {
+        int i = 0;
+        while (i < n_names && names[i].vk != vk) i++;
+        if (i == n_names) {
+            if (n_names == 8) n_names = i = 0;
+            wchar_t w[16];
+            for (int j = 0; j < 16; j++) if (!(w[j] = (wchar_t)kn[j])) break;
+            w[15] = 0;
+            memset(&names[i].name, 0, sizeof names[i].name);
+            ((CmdsFNameCtorFn)VA(0x1424BC8E0ull))(&names[i].name, w, 1 /*FNAME_Add*/);   // FName::FName(TCHAR*)
+            names[i].vk = vk;
+            n_names++;
+        }
+        uint8_t p[64];
+        memset(p, 0, psize);
+        *(FName *)(p + o_key) = names[i].name;   // FKey {FName KeyName, TSharedPtr<FKeyDetails>}: looked up by name
+        ue_process_event(pc, fn, p);
+        return p[o_ret] != 0;
+    }
+    return (GetAsyncKeyState(vk) & 0x8000) && cmds_game_focused();
 }
 
 // join= without host_ip=1: drop IP targets on other machines (they would only be refused), tell the player once.
@@ -487,6 +692,7 @@ void cmds_tick(float dt) {
     cheats_tick(dt);
     thirdperson_tick(dt);
     models_tick(dt);
+    cmds_ini_poll(dt);
 }
 
 #ifndef B4B_RELEASE
@@ -517,6 +723,13 @@ void cmds_run(char *line, Out *o) {
     else if (!strcmp(verb, "leave")) { coop_leave(); out_printf(o, "leaving\n"); }
     else if (!strcmp(verb, "exec") && rest) cmd_exec(rest, o);
     else if (!strcmp(verb, "netguard")) netguard_cmd(rest, o);
+    else if (!strcmp(verb, "ini")) {   // dev: `ini` (last read), `ini set <key> <value>`, `ini unset <key>`
+        char *a = rest ? strtok(rest, " ") : NULL, *k = a ? strtok(NULL, " ") : NULL, *v = k ? strtok(NULL, "") : NULL;
+        if (a && k && (!strcmp(a, "set") && v ? 1 : !strcmp(a, "unset")))
+            out_printf(o, "%s\n", cmds_ini_set(k, !strcmp(a, "set") ? v : NULL) ? "write failed" : "written");
+        out_printf(o, "%s:\n", cmds_config_path());
+        for (int i = 0; i < ini_last.n; i++) out_printf(o, "  %s=%s\n", ini_last.kv[i].key, ini_last.kv[i].val);
+    }
     else if (!strcmp(verb, "find") && rest) {
         char *needle = strtok(rest, " "), *m = strtok(NULL, " ");
         cmd_find(needle, m ? atoi(m) : 50, o);

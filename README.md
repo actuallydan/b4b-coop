@@ -52,7 +52,9 @@ Only the host's **Steam friends** can join. Type `/help` in the game's chat for 
 
 ## Options
 All optional. Open `Gobi\Binaries\Win64\b4bcoop.ini` in a text editor and remove the `;` in front of a line to turn
-it on. Every option, with defaults and examples: [docs/COMMANDS.md](docs/COMMANDS.md#b4bcoopini-options).
+it on. Saved changes apply within a couple of seconds, also while you play (`host`, `join`, `host_ip` and the network
+options need a game restart). Every option, with defaults and examples:
+[docs/COMMANDS.md](docs/COMMANDS.md#b4bcoopini-options).
 - `host=0`: don't host; your offline game stays private.
 - `teamsize=5`: (host) 5 survivors instead of 4.
 - `flashlight_key=L`: the key for the manual flashlight toggle (`off` turns it off).

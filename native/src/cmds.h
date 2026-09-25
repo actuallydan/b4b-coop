@@ -23,7 +23,20 @@ int burncards_init(void);
 int cmds_auto_host(void);
 const char *cmds_config_path(void);    // b4bcoop.ini, or B4B_COOP_CONFIG
 int cmds_parse_key(const char *v);     // ini hotkey value -> VK code (0 = no key)
+// b4bcoop.ini: every active name=value pair in file order (-1: no file); the writer (update/insert/comment out one
+// key, keeps comments and line endings; val NULL = comment it out; 0 = ok); the live reload poll (game thread).
+int cmds_ini_each(void (*fn)(const char *key, const char *val, void *ctx), void *ctx);
+int cmds_ini_set(const char *key, const char *val);
+void cmds_ini_poll(float dt);
+// Live reload handlers (cmds_ini_poll): a key that changed while the game runs, val NULL = removed (back to the
+// default). 1 = the key is theirs and was applied.
+int thirdperson_live(const char *key, const char *val);
+int flashlight_live(const char *key, const char *val);
+int joinpolicy_live(const char *key, const char *val);
+int presence_live(const char *key, const char *val);
+int teamsize_live(const char *key, const char *val);
 int cmds_game_focused(void);           // the game window is in front (hotkeys)
+int cmds_hotkey_down(int vk);          // game thread: the key is held, through the game's input (not while typing in chat)
 int flashlight_init(void);
 void flashlight_tick(float dt);
 void cmd_flashlight(const char *arg, Out *o);
@@ -32,6 +45,9 @@ int thirdperson_init(void);                              // ini thirdperson=1 (s
 void thirdperson_tick(float dt);
 void cmd_thirdperson(const char *arg, Out *o);          // on|off|status, NULL = toggle
 int thirdperson_cmd(const char *verb, char *rest, Out *o);   // dev builds: `thirdperson [on|off|view [1|2|3]]`
+typedef struct { int on, aimfix; float dist, side, height, fov; } TpSettings;   // the /thirdperson settings (for a settings UI)
+void thirdperson_get(TpSettings *s);
+void thirdperson_apply(const TpSettings *s);             // game thread: like the chat command (clamped, applied at once)
 int testing_cmd(const char *verb, char *rest, Out *o); // testing.c (dev builds): test commands; 1 if handled
 int teamsize_init(void);
 int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled (also chat /teamsize)

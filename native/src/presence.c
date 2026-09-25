@@ -453,6 +453,14 @@ const char *presence_persona(uint64_t id) {
     return n && *n ? n : "?";
 }
 
+// live reload: presence=0/1 (presence_addr needs a restart)
+int presence_live(const char *key, const char *v) {
+    if (strcmp(key, "presence")) return 0;
+    advertise = v ? atoi(v) : 1;
+    next_check = 0;
+    return 1;
+}
+
 #ifndef B4B_RELEASE
 // ---- commands (dev builds) ----
 static void print_rp(Out *o, uint64_t id) {

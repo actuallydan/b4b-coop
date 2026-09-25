@@ -66,9 +66,8 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 - The **N** key toggles it too (see `thirdperson_key`).
 - Moments where the game itself switches to a view from behind (healing, being grabbed or pounced, ...) are left to
   the game.
-- There is no third-person crosshair: the normal centre-of-screen one is used. With the camera straight behind
-  your hero (the default), shots land exactly under it, but your hero's head covers it; aim with right mouse for
-  precise shots.
+- There is no third-person crosshair: the normal centre-of-screen one is used, and shots land under it (see **Aim**
+  below). Aim with right mouse for precise shots.
 - Camera settings (only your view, applied at once, kept for every map until the game quits; put them in
   `b4bcoop.ini` to keep them):
 
@@ -80,10 +79,11 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 | `/thirdperson fov <n>` | the game's | `60`-`130`, `0` = the game's | Field of view in third person |
 | `/thirdperson reset` | | | Back to these defaults |
 
-- **Aim with a side or height offset**: your shots still come from your hero's eyes, not from the camera, so they
-  land that many units beside (or below) the point under the crosshair: `side 40` = 40 cm to the left of it, at
-  every range (a lot up close, little far away). The command reminds you. Aiming with right mouse is always exact;
-  `side 0` also puts shots exactly under the crosshair, but your hero's head then covers it.
+- **Aim**: your shots come from your hero's eyes, not from the camera. With a side or height offset b4bcoop turns
+  your hero's aim towards whatever is under the crosshair, so shots land there (also as a client: the host takes your
+  hits as your game saw them). Something right beside your hero that only the camera sees past can still stop a
+  shot. `thirdperson_aimfix=0` turns this off: shots then land `side`/`height` units beside the crosshair point, at
+  every range. Aiming with right mouse is always exact.
 
 **`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope.
 - `<id>` is the host's 17-digit Steam ID. The host finds it in Steam: click your account name at the top right →
@@ -350,7 +350,8 @@ the releases, `modkit/` in the source repository); players don't need it.
 **Browse local files**). The zip puts it there.
 
 **How to edit:** open it in a text editor (Notepad on Windows, Kate/KWrite on Steam Deck Desktop Mode). Every setting
-is off until you remove the `;` at the start of its line. Save, then restart the game: settings are read at start.
+is off until you remove the `;` at the start of its line. Save: the game picks the change up within about two seconds,
+also while you play, and says so in your chat (`b4bcoop.ini: applied thirdperson_distance`).
 
 ```ini
 ; before: off
@@ -363,6 +364,12 @@ Rules:
 - One setting per line, `name=value`, the name at the very start of the line, lowercase, no space before `=`.
 - A line starting with `;` or `#` is ignored.
 - No `b4bcoop.ini` at all = all defaults.
+- **Applied while the game runs:** `thirdperson`, `thirdperson_key`, `thirdperson_distance`, `thirdperson_side`,
+  `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `flashlight_key`, `flashlight_sticky`,
+  `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map). Only the lines you changed count: an edit
+  doesn't undo what you set with a chat command this session. Deleting or commenting out a line = back to its default.
+- **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
+  `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.
 - **Updating b4bcoop** (extracting a new zip) replaces `b4bcoop.ini` with a fresh one: note your changes first.
   Bans (`b4bcoop-bans.txt`) are kept.
 
@@ -380,6 +387,7 @@ Rules:
 | `thirdperson_side` | `40` | `-150`-`150` | Over-the-shoulder offset, negative = left (`/thirdperson side`) |
 | `thirdperson_height` | `0` | `-100`-`150` | Camera height offset (`/thirdperson height`) |
 | `thirdperson_fov` | `0` (game's) | `60`-`130` | Third-person field of view (`/thirdperson fov`) |
+| `thirdperson_aimfix` | `1` | `0`, `1` | `0`: no aim correction, shots land beside the crosshair by the camera offset |
 | `allow_joins` | `friends` | `friends`, `anyone` | Host: who may join |
 | `allow_steamids` | none | Steam IDs | Host: these players may always join |
 | `presence` | `1` | `0`, `1` | `0`: friends don't see **Join Game** on you |

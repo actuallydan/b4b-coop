@@ -174,8 +174,8 @@ void flashlight_tick(float dt) {
     static int was_down; static float cooldown;
     if (!hotkey) return;
     if (cooldown > 0) cooldown -= dt;
-    int down = (GetAsyncKeyState(hotkey) & 0x8000) != 0;
-    if (down && !was_down && cooldown <= 0 && cmds_game_focused()) {
+    int down = cmds_hotkey_down(hotkey);
+    if (down && !was_down && cooldown <= 0) {
         UObject *c = local_light();
         if (c) { request_toggle(c); LOG("flashlight: hotkey toggle (was %d)", HLC_VISIBLE(c)); }
         cooldown = 0.25f;
@@ -183,21 +183,16 @@ void flashlight_tick(float dt) {
     was_down = down;
 }
 
-// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; off disables), flashlight_sticky=1
-static void load_config(void) {
-    FILE *f = fopen(cmds_config_path(), "r");
-    if (!f) return;
-    char line[300];
-    while (fgets(line, sizeof line, f)) {
-        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
-        char *v = strchr(line, '='); if (!v || line[0] == '#' || line[0] == ';') continue;
-        *v++ = 0;
-        while (*v == ' ') v++;
-        if (!strcmp(line, "flashlight_sticky")) sticky = atoi(v);
-        else if (!strcmp(line, "flashlight_key")) hotkey = cmds_parse_key(v);
-    }
-    fclose(f);
+// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; off disables), flashlight_sticky=1. Both
+// also change live (cmds_ini_poll; val NULL = removed: the default).
+int flashlight_live(const char *key, const char *v) {
+    if (!strcmp(key, "flashlight_sticky")) sticky = v ? atoi(v) : 1;
+    else if (!strcmp(key, "flashlight_key")) hotkey = v ? cmds_parse_key(v) : 'L';
+    else return 0;
+    return 1;
 }
+static void ini_pair(const char *k, const char *v, void *ctx) { (void)ctx; flashlight_live(k, v); }
+static void load_config(void) { cmds_ini_each(ini_pair, NULL); }
 
 int flashlight_init(void) {
     load_config();
