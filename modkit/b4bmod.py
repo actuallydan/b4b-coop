@@ -30,6 +30,8 @@
   weapon <model> --fp-mesh <FP SKM | code like AR02> -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
          [--forward +x] [--up +z] [--part REGEX=BONE]...   the 3P/static/magazine meshes are found in the FP mesh's
          folder (override: --3p-mesh <SKM>, --static <SM>..., --mag-static <SM>, each also `none`; --no-infer)
+         [--as <name>]                    --as: ADD a weapon look instead of replacing the weapon (new packages under
+                                          /Game/b4bcoop/weapons/<name>/; players put it on their weapon with /model <name>)
                                           your model (FBX, glTF, OBJ, .blend; rigged or not) fitted onto the game's
                                           meshes in Blender, with LODs and textures; then packed into <moddir>.pak.
                                           --pak NAME.pak, --title/--author/--version/--description, --zip, --install,

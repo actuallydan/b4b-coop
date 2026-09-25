@@ -1,8 +1,8 @@
 # New assets under new paths: add-ons that add instead of replace (design, #20/#21, epic #23)
 
-Status 2026-09-25, build 14216215. Package side (`b4bmod rename`, §2, §5) and added survivor outfits (§8:
-`b4bmod survivor --as`, addoninfo `outfit=`, `/model <outfit>`) work live; weapons (§6) and the customization
-screen are not built. Today every add-on replaces game files at their paths: a survivor model *is*
+Status 2026-09-25, build 14216215. Package side (`b4bmod rename`, §2, §5), added survivor outfits (§8:
+`b4bmod survivor --as`, addoninfo `outfit=`, `/model <outfit>`) and added weapon looks (§9: `b4bmod weapon --as`,
+addoninfo `weapon=`, `/model <look>`) work live; the customization screens are not used. Today every add-on replaces game files at their paths: a survivor model *is*
 Mom's Elite 04 for whoever has the add-on. Goal: an add-on that brings an **extra** outfit (or weapon look) at its own
 paths, selectable next to the game's, with nothing of the game's replaced.
 
@@ -144,7 +144,7 @@ row) is gameplay content (data tables, blueprints) and out of scope for cosmetic
 - Without the add-on you see the wearer's base pieces, not their equipped Elite outfit (the set holds one outfit
   handle; the made-up row takes it).
 - Same name in two different add-ons (or versions) = each player sees their own version.
-- Weapons (`--as` for `b4bmod weapon`, skins as made-up rows, §6): not done.
+- Weapons: §9.
 
 ### Customization screen (not built; Dan undecided)
 It would take: a real `CharacterCustomizationRow` (0x320) inserted into `<Hero>_Customization_DT.RowMap` at runtime on
@@ -157,3 +157,81 @@ then the profile: `EquipCharacterCustomizationSetCommand` saves the row into
 (`GetProfileCustomization` drops locked/invalid sets to the default skin: needs a live check), and remote players
 without the add-on would get a GUID row the game can't find (same fallback as now, but through the game's path
 instead of ours). The campaign-run hook would have to treat these rows like made-up ones.
+
+## 9. Added weapon looks (2026-09-25, branch `models-weapon-as`, build 14216215, Proton, lane 1)
+### Design
+- **What "adding" means for a weapon**: a player picks a look for one retail weapon (the item, stats, animations,
+  pickups stay the game's); only the weapon actor that player carries shows the add-on's meshes. Not a new item, not a
+  skin in the customization screen (that needs a real `WeaponCustomizationRow`, Products/unlock checks, an icon and a
+  profile entry: `AppliedWeaponSkins` / `ApplyWeaponSkinCommand`).
+- **What replicates**: every weapon actor (`Item`) has an `ItemMeshManagementComponent` (Item +0x770) whose
+  `CustomizationRow` (+0x258, FDataTableRowHandle of the weapon's `<Code>_Customization_DT`) is its skin, set by the
+  owning client with the server RPC `ServerCustomizationRow` (exec thunk 0x142197CE0; `_Validate` 0x1418BBE60 = true;
+  `_Implementation` **0x1418BBE90**, vtable 0x14547C7B0 +0x500: copies table+row, applies, **no check**). The property
+  replicates to everyone **except the owner** (seen live: the host's write never reached the owning client), so the
+  owner sets its own copy (as the game does) and runs `OnRep_CustomizationRow`.
+- **ApplyCustomization 0x1418BA5D0** (called by the implementation, the OnRep thunk 0x142197CB0 when +0x27F is set,
+  and the first-person mesh setup 0x1418BBD50): a row the table doesn't have takes the no-skin path (+0x27F = 1,
+  0x1418BABA0: empties the 3P components' `OverrideMaterials`, meshes untouched). So a **made-up row**
+  `b4bcoop.weapon.<name>` shows the default weapon on every machine without the add-on or without b4bcoop: never
+  invisible. The FP skin materials are set once at FP mesh setup; ApplyCustomization leaves them.
+- **Putting the look on** (`weaponlooks.c`, every machine): for a weapon whose row names a look of a mounted add-on,
+  each mesh component in the item's `FirstPersonMeshComponents` / `ThirdPersonMeshComponents` whose mesh has the name
+  of one of the look's meshes (the add-on's copies keep the template's names: `AR02_SKM`, `3P_AR02_SM`,
+  `3P_AR02_SKM`) gets the add-on's mesh (SetSkeletalMesh/SetStaticMesh, overrides emptied). Hooked right after
+  ApplyCustomization (instant on OnRep, pickups, FP setup) plus a 1 s tick. When the row stops being ours, the retail
+  mesh and the FP materials (kept at swap time) go back **before** the game applies the new skin.
+- **Chooser**: `/model <look>` (and the `~` Models tab, `Use`) = a wish per weapon code; the owner's agent sends
+  `ServerCustomizationRow(<Code>_Customization_DT, b4bcoop.weapon.<name>)` for every item of that code in its
+  inventory (`Inventory.EquipmentSlots`, class `<Code>_<n>_BP_C`) whose row differs, and remembers the row it
+  replaced; `/model reset` sends that row back.
+- **Host rules**: hook on the implementation: a `b4bcoop.*` row from a remote player is refused when malformed,
+  under `/models off` or `addons_policy=none` (notice `The host turned weapon looks off (/models).` /
+  `(addons_policy=none).`, the client's agent then reverts its own copy). `/models off` resets every look to no skin
+  and tells the owners (the reset doesn't replicate to them).
+- **Saves**: the campaign run keeps items as `ItemRowAndQuantity` {row, quantity, attachments, unbolted, clip ammo}:
+  no skin, so nothing to swap out. The profile is only written by the customization screen (`ApplyWeaponSkinCommand`).
+- **Protocol: no bump.** A retail host (any b4bcoop version) accepts the row (no validation); clients without the
+  add-on see the default weapon. The host rules are host-side only.
+- modkit: `b4bmod weapon <model> --fp-mesh <code> --as <name>` runs the weapon pipeline into a staging folder
+  (skins `keep`, no dropped magazine, only `3P_*` static meshes), then copies FP mesh, 3P static mesh, 3P skeletal mesh
+  (if any) with their textures and the weapon folder's material instances (`Skin_Sets/Skin_Default/*`) to
+  `/Game/b4bcoop/weapons/<name>/` (same rename pass as outfits, `as_copy`), and writes
+  `weapon=<name>|<code>|<FP>|<3P SM>|<3P SKM>|<title>`. `addon.py` checks and keeps the lines; `addons.c` parses them
+  (`addons_weapons()`).
+
+### Live results (`multi.sh 2`, add-ons via `addons_dir=`)
+Add-on `mod_ak47.pak`: CC0 AK (loafbrr) on AR02, `--as ak47`, 22 packages / 52 files under `/Game/b4bcoop/weapons/ak47/`,
+cosmetic, ~25 s. AR02 handed out with `giveitem <slot> row Weapons_DT DF038C6A4ED79AB7FDCF9CAB8D742DC7`.
+- Fort Hope and mission Evansburgh B, both with the add-on, both `/model ak47`: `wlooks: Hergmgurk puts ak47 on
+  AR02_1_BP_C_...` (host), `... wears ak47 (2 mesh(es))` on both machines; `wlook dump`: `BaseSkeletalMesh_1P` =
+  `/Game/b4bcoop/weapons/ak47/AR02_SKM`, `BaseStaticMesh_3P` = `.../3P_AR02_SM`, overrides 0; bots' AR02 retail.
+  Screenshots: FP AK on host and client, client's hero holding the 3P AK seen by the host
+  (`m_host_sees_client_full.png`), host's hero with the AK seen by the client (`m_client_sees_host_full.png`).
+- Weapon swap (quick swap to melee and back, `wlook swap`): the AK is back as soon as it is drawn
+  (`swap_strip_host.png`); the meshes are never reset by a swap (no re-apply logged).
+- Drop + pick up (client `wlook drop 0`, host `giveitem 1 <pickup#>`): the new AR02 gets the look in one try on both.
+- Chapter transition B -> C (`ready`, `endmission 1`): re-sent and re-applied on the new map (first run: not
+  re-applied, the mesh loader stopped after 3 loads across GC; fixed: only failures count). Campaign run saved while
+  on: no `b4bcoop` in either profile `.json`.
+- `/model reset` (client): row back to the skin it had (`B49B419C...`), FP overrides 10, 3P 4 as before.
+- `/models off` (host): `2 look(s) reset`, the client's own copy reverted via the notice; its next `/model ak47`
+  refused (`models are off`). `/addons policy none`: refused with the notice, the client back to its skin;
+  `cosmetic` again: accepted.
+- Client **without** the add-on (`addons_none`): `/model list weapons` = none, `/model ak47` = `no model`; it sees
+  the host's AR02 as the retail gun with row `b4bcoop.weapon.ak47` (`noaddon_client_sees_host_retail.png`), host
+  still sees its own AK; after the chapter transition likewise.
+- `~` window, Models tab: the look with **Use** (`overlay press Use` -> `/model ak47` applied) and **Reset**
+  (`overlay_models_tab.png`).
+- `tools/e2e.py --quick`: 14/14 (a first run had 13/14: 3 UDP sockets of the client on 0.0.0.0 in one ss sample;
+  the same check failed once before on lane 1 at 13:21, not related).
+- Screenshots: `~/.local/share/b4b-coop/weaponas/shots/` (not committed).
+
+### Limits / open
+- A weapon on the floor (dropped, world pickups) shows the retail model; the dropped-magazine particle too.
+- While the look is on, players without the add-on see the default weapon, not the owner's skin.
+- One look per weapon code per player; a look for a weapon whose 3P mesh is skeletal (LMG01) is paired the same way
+  (by name) but untested live.
+- The client test window sometimes stays on the loading screen image (not repainted) although the game runs; views
+  from that client were checked with `wlook dump`.
+

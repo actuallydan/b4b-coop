@@ -1,0 +1,611 @@
+// Added weapon looks (add-ons with `weapon=` lines, modkit `b4bmod weapon --as <name>`): a new model/look for a retail
+// weapon that only the players who pick it (/model <name>) carry, instead of replacing the weapon for everyone.
+// Design and results: docs/investigations/new-assets.md §9.
+//
+// How a weapon's look travels: every weapon actor (Item) has an ItemMeshManagementComponent whose replicated
+// CustomizationRow (+0x258, an FDataTableRowHandle of the weapon's <Code>_Customization_DT) is the equipped skin. The
+// owning client sets it with the server RPC ServerCustomizationRow, whose implementation (0x1418BBE90) copies it
+// without any check and applies it (0x1418BA5D0). A row the table doesn't have takes the "no skin" path: the
+// components' material overrides are emptied, meshes stay as they are (the weapon's default look).
+// So the look is a made-up row "b4bcoop.weapon.<name>" in that component: the game on every machine shows the default
+// weapon for it (players without the add-on or without b4bcoop), and every b4bcoop machine that has the add-on puts
+// the add-on's meshes on the weapon's first/third-person mesh components (paired with the retail meshes by object
+// name: the add-on's copies keep the template's names). Nothing is written to any profile or campaign save (the
+// campaign run keeps items as {row, quantity, attachments, ammo}, no skin).
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "MinHook.h"
+#include "ue.h"
+#include "log.h"
+#include "cmds.h"
+#include "overlay.h"
+
+typedef FName *(*FNameCtorFn)(FName *self, const wchar_t *name, int find_type);
+#define ADDR_FNAME_CTOR VA(0x1424BC8E0ull)
+// UItemMeshManagementComponent::ApplyCustomization(this): the row's skin (or the no-skin path); called by the
+// ServerCustomizationRow implementation, OnRep_CustomizationRow and the first-person mesh init
+#define ADDR_APPLY VA(0x1418BA5D0ull)
+static const uint8_t SIG_APPLY[] = {0x48,0x89,0x4c,0x24,0x08,0x55,0x57,0x41,0x56,0x48,0x8d,0x6c,0x24,0xf0,0x48,0x81,
+                                    0xec,0x10,0x01,0x00,0x00,0x4c,0x8b,0xf1};
+// ServerCustomizationRow_Implementation(this, const FDataTableRowHandle *row) (vtable +0x500; _Validate: true)
+#define ADDR_SETROW VA(0x1418BBE90ull)
+static const uint8_t SIG_SETROW[] = {0x40,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0x02,0x48,0x8b,0xda,0x48,0x89,0x81,0x58,
+                                     0x02,0x00,0x00,0x48,0x8b,0x42,0x08,0x48};
+
+typedef struct { UObject *table; FName row; FString display; } RowHandle;   // FDataTableRowHandle in this build (0x20)
+#define WROW_PREFIX "b4bcoop.weapon."
+#define REFUSED "The host turned weapon looks off"
+
+static int fname_eq(FName a, FName b) { return a.idx == b.idx && a.num == b.num; }
+static FName make_name(const char *s) {
+    wchar_t w[256]; int k = 0;
+    for (; s[k] && k < 255; k++) w[k] = (wchar_t)(unsigned char)s[k];
+    w[k] = 0;
+    FName n = {0};
+    ((FNameCtorFn)ADDR_FNAME_CTOR)(&n, w, 1);
+    return n;
+}
+static int is_live(UObject *o) { return o && !(U_FLAGS(o) & 0x30); }
+static int alive(UObject *o, int32_t idx) { return o && ue_object_at(idx) == o && is_live(o); }
+static UFunction *fn_of(UObject *o, const char *name) { return o ? ue_find_function(U_CLASS(o), name) : NULL; }
+static int32_t parm_off(UFunction *f, const char *p) { FField *x = f ? ue_find_prop(f, p) : NULL; return x ? FP_OFFSET(x) : -1; }
+static int is_client(void) {
+    UObject *w = ue_world(), *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
+    return nd && ue_get_ptr(nd, "ServerConnection");
+}
+
+// ---- the add-ons' looks ----
+enum { M_FP, M_SM, M_SKM, NM };
+typedef struct {
+    char name[33], code[16], title[64], addon[96], path[NM][200];
+    UObject *mesh[NM]; int32_t idx[NM]; int tried[NM];
+} Look;
+#define MAX_LOOKS 64
+static Look looks[MAX_LOOKS];
+static int n_looks = -1;
+static void build_looks(void) {
+    AddonWeapon a[MAX_LOOKS];
+    n_looks = addons_weapons(a, MAX_LOOKS);
+    for (int i = 0; i < n_looks; i++) {
+        Look *l = &looks[i];
+        memset(l, 0, sizeof *l);
+        snprintf(l->name, sizeof l->name, "%s", a[i].name); snprintf(l->code, sizeof l->code, "%s", a[i].code);
+        snprintf(l->title, sizeof l->title, "%s", a[i].title); snprintf(l->addon, sizeof l->addon, "%s", a[i].addon);
+        snprintf(l->path[M_FP], 200, "%s", a[i].fp); snprintf(l->path[M_SM], 200, "%s", a[i].sm3p);
+        snprintf(l->path[M_SKM], 200, "%s", a[i].skm3p);
+        LOG("wlooks: add-on weapon look %s for %s (\"%s\", %s): %s %s %s", l->name, l->code, l->title, l->addon,
+            l->path[0], l->path[1], l->path[2]);
+    }
+}
+static Look *look_by_name(const char *name) {
+    if (n_looks < 0) build_looks();
+    for (int i = 0; i < n_looks; i++) if (!_stricmp(looks[i].name, name)) return &looks[i];
+    return NULL;
+}
+// "b4bcoop.weapon.<name>" with a well-formed name: 1, name copied to out
+static int wrow_name(FName row, char *out, size_t n) {
+    char b[80];
+    ue_name(row, b, sizeof b);
+    if (_strnicmp(b, WROW_PREFIX, sizeof WROW_PREFIX - 1)) return 0;
+    const char *nm = b + sizeof WROW_PREFIX - 1;
+    size_t l = strlen(nm);
+    if (!l || l > 32 || !islower((unsigned char)*nm)) return 0;
+    for (const char *c = nm; *c; c++) if (!islower((unsigned char)*c) && !isdigit((unsigned char)*c) && *c != '_') return 0;
+    if (out) snprintf(out, n, "%s", nm);
+    return 1;
+}
+static int is_ours(FName row) { char b[80]; return !strncmp(ue_name(row, b, sizeof b), "b4bcoop.", 8); }
+static UObject *look_mesh(Look *l, int k) {   // loaded on first use (blocking), kept alive by the components using it
+    if (!l->path[k][0]) return NULL;
+    if (l->mesh[k] && alive(l->mesh[k], l->idx[k])) return l->mesh[k];
+    if (l->tried[k] > 2) return NULL;   // failed three times: not in this add-on / broken
+    l->mesh[k] = models_load_asset(l->path[k]);   // again after a map change (garbage-collected when unused)
+    l->idx[k] = l->mesh[k] ? U_INDEX(l->mesh[k]) : 0;
+    if (!l->mesh[k] && ++l->tried[k] > 2) LOG("wlooks: %s: %s failed to load", l->name, l->path[k]);
+    return l->mesh[k];
+}
+
+// ---- weapons ----
+// An Item of weapon <code>: its class is <Code>_<n>_BP_C / <Code>_BP_C (pickups are separate actors)
+static int item_code(UObject *item, const char *code) {
+    char b[128];
+    size_t n = strlen(code);
+    ue_obj_name(U_CLASS(item), b, sizeof b);
+    return !_strnicmp(b, code, n) && b[n] == '_' && !strstr(b, "Pickup");
+}
+static UObject *mm_of(UObject *item) { return item ? ue_get_ptr(item, "MeshManagementComponent") : NULL; }
+static RowHandle *row_of(UObject *mm) {
+    int32_t off = mm ? ue_prop_offset(mm, "CustomizationRow") : -1;
+    return off >= 0 ? (RowHandle *)((char *)mm + off) : NULL;
+}
+static UObject *cust_table(UObject *item) {   // ItemRow.WeaponCustomizationTable (ItemRow +0x70)
+    int32_t off = ue_prop_offset(item, "ItemRow");
+    return off >= 0 ? *(UObject **)((char *)item + off + 0x70) : NULL;
+}
+static int items_of(UObject *pawn, UObject ***out) {   // Inventory.EquipmentSlots
+    UObject *inv = pawn ? ue_get_ptr(pawn, "Inventory") : NULL;
+    int32_t off = inv ? ue_prop_offset(inv, "EquipmentSlots") : -1;
+    if (off < 0) return 0;
+    TArray *a = (TArray *)((char *)inv + off);
+    *out = (UObject **)a->data;
+    return a->data ? a->num : 0;
+}
+
+// ---- putting the meshes on ----
+static UClass *c_skc, *c_smc;
+static void classes(void) {
+    if (!c_skc) c_skc = ue_find_class("SkeletalMeshComponent");
+    if (!c_smc) c_smc = ue_find_class("StaticMeshComponent");
+}
+static UObject *comp_mesh(UObject *c) { return ue_get_ptr(c, ue_is_a(c, c_skc) ? "SkeletalMesh" : "StaticMesh"); }
+static void set_comp_mesh(UObject *c, UObject *mesh, int clear_overrides) {
+    int sk = ue_is_a(c, c_skc);
+    UFunction *f = fn_of(c, sk ? "SetSkeletalMesh" : "SetStaticMesh");
+    int32_t pm = parm_off(f, "NewMesh"), pr = parm_off(f, "bReinitPose");
+    if (!f || pm < 0 || UFN_PARMSSIZE(f) > 32) return;
+    int32_t om = clear_overrides ? ue_prop_offset(c, "OverrideMaterials") : -1;   // a skin's don't fit our mesh
+    if (om >= 0) ((TArray *)((char *)c + om))->num = 0;
+    uint8_t p[32] = {0};
+    *(UObject **)(p + pm) = mesh;
+    if (pr >= 0) p[pr] = 1;
+    ue_process_event(c, f, p);
+}
+// Components we changed, with what they had: put back when the weapon's row is no longer a look of ours.
+// The first-person skin's materials are set once when the weapon's FP mesh is set up (ApplyCustomization leaves them),
+// so they are kept here and put back with the mesh.
+#define MAX_MATS 16
+typedef struct { UObject *comp, *orig, *item; int32_t ci, oi, ii; char look[33]; UObject *mat[MAX_MATS]; int32_t mi[MAX_MATS]; int nmat; } Swap;
+#define MAX_SWAPS 96
+static Swap swaps[MAX_SWAPS];
+static Swap *swap_of(UObject *c) {
+    for (int i = 0; i < MAX_SWAPS; i++) if (swaps[i].comp == c && alive(c, swaps[i].ci)) return &swaps[i];
+    return NULL;
+}
+static void note_swap(UObject *c, UObject *orig, UObject *item, const char *look) {
+    Swap *s = swap_of(c);
+    if (!s) for (int i = 0; i < MAX_SWAPS && !s; i++) if (!swaps[i].comp || !alive(swaps[i].comp, swaps[i].ci)) s = &swaps[i];
+    if (!s) return;
+    if (s->comp != c) {   // first swap keeps the retail mesh and its material overrides
+        s->orig = orig; s->oi = orig ? U_INDEX(orig) : 0;
+        int32_t om = ue_prop_offset(c, "OverrideMaterials");
+        TArray *a = om >= 0 ? (TArray *)((char *)c + om) : NULL;
+        s->nmat = 0;
+        for (int i = 0; a && i < a->num && i < MAX_MATS; i++) {
+            UObject *m = ((UObject **)a->data)[i];
+            s->mat[i] = m; s->mi[i] = m ? U_INDEX(m) : 0; s->nmat = i + 1;
+        }
+    }
+    s->comp = c; s->ci = U_INDEX(c); s->item = item; s->ii = U_INDEX(item);
+    snprintf(s->look, sizeof s->look, "%s", look);
+}
+static int n_applied;
+// Every mesh component of the item's first/third-person sets whose mesh has the name of one of the look's meshes
+// (the retail one it was copied from, or ours already) gets ours.
+static void apply_look(UObject *item, UObject *mm, Look *l) {
+    classes();
+    static const char *arrs[2] = {"FirstPersonMeshComponents", "ThirdPersonMeshComponents"};
+    int changed = 0;
+    for (int a = 0; a < 2; a++) {
+        int32_t off = ue_prop_offset(mm, arrs[a]);
+        TArray *arr = off >= 0 ? (TArray *)((char *)mm + off) : NULL;
+        for (int i = 0; arr && i < arr->num; i++) {
+            UObject *c = ((UObject **)arr->data)[i];
+            if (!is_live(c) || (!ue_is_a(c, c_skc) && !ue_is_a(c, c_smc))) continue;
+            UObject *cur = comp_mesh(c);
+            if (!cur) continue;
+            char cn[128], mn[128];
+            ue_obj_name(cur, cn, sizeof cn);
+            for (int k = 0; k < NM; k++) {
+                if (!l->path[k][0]) continue;
+                const char *base = strrchr(l->path[k], '.');
+                if (!base || _stricmp(base + 1, cn)) continue;
+                UObject *m = look_mesh(l, k);
+                if (!m || m == cur) break;
+                if (strcmp(ue_obj_name(U_CLASS(m), mn, sizeof mn), ue_is_a(c, c_skc) ? "SkeletalMesh" : "StaticMesh")) break;
+                Swap *s = swap_of(c);
+                note_swap(c, s ? s->orig : cur, item, l->name);
+                set_comp_mesh(c, m, 1);
+                changed++;
+                break;
+            }
+        }
+    }
+    if (changed) {
+        n_applied++;
+        char b[96];
+        LOG("wlooks: %s wears %s (%d mesh(es))", ue_obj_name(item, b, sizeof b), l->name, changed);
+    }
+}
+// Components whose weapon no longer carries that look (only == item: that weapon's): their retail mesh back, before
+// the game applies the new skin (ApplyCustomization hook) so its material overrides stay.
+static void restore_stale(UObject *only) {
+    for (int i = 0; i < MAX_SWAPS; i++) {
+        Swap *s = &swaps[i];
+        if (!s->comp || (only && s->item != only)) continue;
+        if (!alive(s->comp, s->ci) || !alive(s->item, s->ii)) { memset(s, 0, sizeof *s); continue; }
+        RowHandle *r = row_of(mm_of(s->item));
+        char nm[40];
+        if (r && wrow_name(r->row, nm, sizeof nm) && !strcmp(nm, s->look) && look_by_name(nm)) continue;
+        if (s->orig && alive(s->orig, s->oi)) {
+            classes();
+            set_comp_mesh(s->comp, s->orig, 0);
+            UFunction *sm = s->nmat ? fn_of(s->comp, "SetMaterial") : NULL;
+            int32_t pe = parm_off(sm, "ElementIndex"), pm = parm_off(sm, "Material");
+            int32_t om = ue_prop_offset(s->comp, "OverrideMaterials");
+            TArray *cur = om >= 0 ? (TArray *)((char *)s->comp + om) : NULL;
+            for (int k = 0; sm && pe >= 0 && pm >= 0 && k < s->nmat && UFN_PARMSSIZE(sm) <= 32; k++) {
+                if (cur && k < cur->num && ((UObject **)cur->data)[k]) continue;   // the new skin set this one
+                if (!s->mat[k] || !alive(s->mat[k], s->mi[k])) continue;
+                uint8_t p[32] = {0};
+                *(int32_t *)(p + pe) = k; *(UObject **)(p + pm) = s->mat[k];
+                ue_process_event(s->comp, sm, p);
+            }
+            char b[96], c[64];
+            LOG("wlooks: %s %s back to its own mesh", ue_obj_name(s->item, b, sizeof b), ue_obj_name(s->comp, c, sizeof c));
+        }
+        memset(s, 0, sizeof *s);
+    }
+}
+static void check_item(UObject *item) {
+    UObject *mm = mm_of(item);
+    RowHandle *r = row_of(mm);
+    char nm[40];
+    if (!r || !wrow_name(r->row, nm, sizeof nm)) return;
+    Look *l = look_by_name(nm);
+    if (l && item_code(item, l->code)) apply_look(item, mm, l);
+}
+
+// ApplyCustomization hook: re-apply right after the game (skin change, first-person mesh init, OnRep)
+typedef void (*ApplyFn)(UObject *mm);
+static ApplyFn orig_apply;
+static void apply_detour(UObject *mm) {
+    UObject *it = U_OUTER(mm);
+    if (is_live(it)) restore_stale(it);
+    orig_apply(mm);
+    RowHandle *r = row_of(mm);
+    if (r && is_ours(r->row) && n_looks > 0) {
+        UObject *item = U_OUTER(mm);
+        if (is_live(item)) check_item(item);
+    }
+}
+
+// ---- this player's choices ----
+typedef struct {
+    int on; char name[33], code[16];
+    UObject *item; int32_t ii;   // the weapon we last set (retry counters / previous row per weapon)
+    RowHandle prev;              // its row before ours (its skin), sent back by /model reset
+    int tries, gave_up; float wait;
+} Wish;
+#define MAX_WISH 8
+static Wish wish[MAX_WISH];
+
+static UObject *my_pawn(void) { UObject *pc = ue_local_pc(); return pc ? ue_get_ptr(pc, "Pawn") : NULL; }
+static int send_row(UObject *mm, UObject *table, FName row) {
+    UFunction *f = fn_of(mm, "ServerCustomizationRow");
+    int32_t po = parm_off(f, "ClientCustomizationRow");
+    if (!f || po < 0 || UFN_PARMSSIZE(f) > 64) return -1;
+    uint8_t p[64] = {0};
+    RowHandle *h = (RowHandle *)(p + po);
+    h->table = table; h->row = row;
+    ue_process_event(mm, f, p);   // host: runs here; client: to the host (our weapon, our connection)
+    // The row replicates to everyone but the owner (seen live): a client sets its own copy, like the game does
+    RowHandle *r = is_client() ? row_of(mm) : NULL;
+    UFunction *rep = r ? fn_of(mm, "OnRep_CustomizationRow") : NULL;
+    if (r) {
+        r->table = table; r->row = row;
+        uint8_t q[16] = {0};
+        if (rep) ue_process_event(mm, rep, q);   // applies it (when the weapon's meshes are set up)
+    }
+    return 0;
+}
+static void tick_wishes(float dt) {
+    UObject **it, *pawn = my_pawn();
+    int n = items_of(pawn, &it);
+    for (int w = 0; w < MAX_WISH; w++) {
+        Wish *x = &wish[w];
+        if (!x->on) continue;
+        for (int i = 0; i < n; i++) {
+            UObject *item = it[i];
+            if (!is_live(item) || !item_code(item, x->code)) continue;
+            UObject *mm = mm_of(item);
+            RowHandle *r = row_of(mm);
+            if (!r) continue;
+            char nm[40];
+            if (wrow_name(r->row, nm, sizeof nm) && !strcmp(nm, x->name)) { x->tries = 0; continue; }
+            if (x->item != item || !alive(item, x->ii)) {   // a new weapon (pickup, respawn, new map)
+                x->item = item; x->ii = U_INDEX(item); x->tries = 0; x->gave_up = 0; x->wait = 1;
+                memset(&x->prev, 0, sizeof x->prev);
+                if (!is_ours(r->row)) { x->prev.table = r->table; x->prev.row = r->row; }
+            }
+            if (x->gave_up || (x->wait -= dt) > 0) continue;
+            if (x->tries >= 10) { x->gave_up = 1; LOG("wlooks: %s not applied after %d tries, giving up for this weapon", x->name, x->tries); continue; }
+            if (!is_ours(r->row) && !(r->table == x->prev.table && fname_eq(r->row, x->prev.row))) { x->prev.table = r->table; x->prev.row = r->row; }
+            char row[80];
+            snprintf(row, sizeof row, WROW_PREFIX "%s", x->name);
+            UObject *t = cust_table(item);
+            if (send_row(mm, t ? t : r->table, make_name(row))) continue;
+            x->tries++; x->wait = x->tries < 3 ? 3 : 10;
+            char b[96];
+            LOG("wlooks: sent %s for %s (try %d)", x->name, ue_obj_name(item, b, sizeof b), x->tries);
+        }
+    }
+}
+
+static float acc;
+void wlooks_tick(float dt) {
+    if (n_looks < 0) build_looks();
+    int any = 0;
+    for (int w = 0; w < MAX_WISH; w++) any |= wish[w].on;
+    if (any) tick_wishes(dt);
+    if ((acc += dt) < 1.0f) return;   // safety net; the ApplyCustomization hook does it at once
+    acc = 0;
+    restore_stale(NULL);
+    if (!n_looks) return;
+    UObject *p[32];
+    int np = models_hero_pawns(p, 32);
+    for (int k = 0; k < np; k++) {
+        UObject **it;
+        int n = items_of(p[k], &it);
+        for (int i = 0; i < n; i++) if (is_live(it[i])) check_item(it[i]);
+    }
+}
+
+// ---- host: who may use them ----
+typedef void (*SetRowFn)(UObject *mm, RowHandle *row);
+static SetRowFn orig_setrow;
+static UObject *owner_pc(UObject *mm, UObject **pawn_out) {   // component -> item -> owner pawn -> controller
+    UObject *item = U_OUTER(mm), *pawn = item ? ue_get_ptr(item, "Owner") : NULL;
+    static UClass *pcc;
+    if (!pcc) pcc = ue_find_class("PlayerController");
+    if (pawn_out) *pawn_out = pawn;
+    for (int d = 0; pawn && d < 3; d++) {   // owner chains: pawn, or controller directly
+        if (pcc && ue_is_a(pawn, pcc)) return pawn;
+        UObject *c = ue_get_ptr(pawn, "Controller");
+        if (c && pcc && ue_is_a(c, pcc)) return c;
+        pawn = ue_get_ptr(pawn, "Owner");
+    }
+    return NULL;
+}
+static void setrow_detour(UObject *mm, RowHandle *row) {
+    char nm[40], rn[96];
+    if (row && is_ours(row->row)) {
+        UObject *pawn, *pc = owner_pc(mm, &pawn);
+        int mine = pc && pc == ue_local_pc();
+        const char *why = NULL, *tell = REFUSED " (/models).";
+        if (!wrow_name(row->row, nm, sizeof nm)) why = "not a weapon look";
+        else if (!mine && models_locked()) why = "models are off";
+        else if (!mine && !strcmp(addons_policy_name(), "none"))
+            why = "addons_policy=none", tell = REFUSED " (addons_policy=none).";
+        UObject *ps = pc ? ue_get_ptr(pc, "PlayerState") : NULL;
+        char who[64] = "?";
+        if (ps) admin_ps_name(ps, who, sizeof who);
+        if (why) {
+            LOG("wlooks: refused %s from %s: %s", ue_name(row->row, rn, sizeof rn), who, why);
+            static ULONGLONG last; static UObject *last_pc;
+            if (pc && !mine && (pc != last_pc || GetTickCount64() - last > 3000)) { admin_notice_to(pc, tell); last_pc = pc; last = GetTickCount64(); }
+            return;
+        }
+        char b[96];
+        LOG("wlooks: %s puts %s on %s", who, nm, ue_obj_name(U_OUTER(mm), b, sizeof b));
+    }
+    orig_setrow(mm, row);
+}
+
+// /models off: every weapon of the hero team with a look of ours back to no skin (the owner's skin comes back with
+// their next weapon); clients' agents put the retail meshes back when the row replicates.
+int wlooks_lock_reset(void) {
+    if (!orig_setrow || is_client()) return 0;
+    UObject *p[32];
+    int np = models_hero_pawns(p, 32), done = 0;
+    for (int k = 0; k < np; k++) {
+        UObject **it;
+        int n = items_of(p[k], &it);
+        for (int i = 0; i < n; i++) {
+            UObject *mm = is_live(it[i]) ? mm_of(it[i]) : NULL;
+            RowHandle *r = row_of(mm);
+            if (!r || !wrow_name(r->row, NULL, 0)) continue;
+            RowHandle none = {0};
+            none.table = r->table;
+            orig_setrow(mm, &none);
+            done++;
+            // the row doesn't replicate to the weapon's owner: tell their agent, which puts its own skin back
+            UObject *pc = owner_pc(mm, NULL);
+            if (pc && pc != ue_local_pc()) admin_notice_to(pc, REFUSED " (/models).");
+        }
+    }
+    for (int w = 0; w < MAX_WISH; w++) wish[w].on = 0;
+    restore_stale(NULL);
+    if (done) LOG("wlooks: /models off, %d weapon look(s) reset", done);
+    return done;
+}
+
+void wlooks_host_notice(const char *text) {
+    if (strncmp(text, REFUSED, sizeof REFUSED - 1)) return;
+    LOG("wlooks: refused by the host");
+    wlooks_reset(NULL);   // our own copy of the row (the host's reset doesn't reach the owner): back to our skins
+}
+
+// ---- /model ----
+int wlooks_pick(const char *name, Out *o) {
+    Look *l = look_by_name(name);
+    if (!l) return 0;
+    int k = 0;
+    for (int w = 0; w < MAX_WISH; w++) if (wish[w].on && !_stricmp(wish[w].code, l->code)) { k = w; goto have; }
+    for (k = 0; k < MAX_WISH && wish[k].on; k++) {}
+    if (k == MAX_WISH) { out_printf(o, "too many weapon looks (/model reset)\n"); return 1; }
+    memset(&wish[k], 0, sizeof wish[k]);
+have:
+    wish[k].on = 1; wish[k].tries = 0; wish[k].gave_up = 0; wish[k].wait = 0;
+    snprintf(wish[k].name, sizeof wish[k].name, "%s", l->name);
+    snprintf(wish[k].code, sizeof wish[k].code, "%s", l->code);
+    out_printf(o, "your %s now looks like %s (/model reset to undo; players without that add-on see the %s)\n",
+               l->code, l->title, l->code);
+    LOG("wlooks: /model %s (%s)", l->name, l->code);
+    return 1;
+}
+
+void wlooks_reset(Out *o) {
+    UObject **it;
+    int n = items_of(my_pawn(), &it), k = 0;
+    for (int w = 0; w < MAX_WISH; w++) {
+        Wish *x = &wish[w];
+        if (!x->on) continue;
+        x->on = 0; k++;
+        for (int i = 0; i < n; i++) {
+            if (!is_live(it[i]) || !item_code(it[i], x->code)) continue;
+            UObject *mm = mm_of(it[i]);
+            RowHandle *r = row_of(mm);
+            if (!r || !is_ours(r->row)) continue;
+            int same = x->item == it[i] && alive(it[i], x->ii);
+            send_row(mm, same && x->prev.table ? x->prev.table : r->table, same ? x->prev.row : (FName){0, 0});
+        }
+    }
+    if (k && o) out_printf(o, "weapons back to your own skins\n");
+}
+
+void wlooks_list(Out *o) {
+    if (n_looks < 0) build_looks();
+    if (!n_looks) { out_printf(o, "no add-on weapon looks (add-ons with weapons: /addons)\n"); return; }
+    out_printf(o, "add-on weapon looks (seen by players who have the add-on; others see the normal weapon):\n");
+    for (int i = 0; i < n_looks; i++)
+        out_printf(o, " %s: %s for the %s%s%s%s\n", looks[i].name, looks[i].title, looks[i].code,
+                   strcmp(looks[i].addon, looks[i].title) ? " (" : "", strcmp(looks[i].addon, looks[i].title) ? looks[i].addon : "",
+                   strcmp(looks[i].addon, looks[i].title) ? ")" : "");
+}
+void wlooks_overview(Out *o) {
+    if (n_looks < 0) build_looks();
+    if (!n_looks) return;
+    char line[200];
+    size_t k = snprintf(line, sizeof line, "add-on weapon looks (/model list weapons):");
+    for (int i = 0; i < n_looks; i++) {
+        if (k + strlen(looks[i].name) + 2 > 90) { out_printf(o, "%s\n", line); k = snprintf(line, sizeof line, " "); }
+        k += snprintf(line + k, sizeof line - k, " %s", looks[i].name);
+    }
+    out_printf(o, "%s\n", line);
+}
+void wlooks_status(Out *o) {
+    for (int w = 0; w < MAX_WISH; w++)
+        if (wish[w].on) out_printf(o, "your %s: %s%s\n", wish[w].code, wish[w].name, wish[w].gave_up ? " (refused by the host)" : "");
+}
+
+// ~ overlay, Models tab (minimal; the full Models/Add-ons tabs come later): the add-ons' weapon looks, through /model
+static void models_panel(void) {
+    if (n_looks < 0) build_looks();
+    ov_heading("Weapon looks (add-ons)");
+    if (!n_looks) { ov_text_dim("No add-on with weapon looks is installed (modkit: b4bmod weapon --as <name>)."); return; }
+    ov_text_dim("Your weapon of that type shows the add-on's model. Players without the add-on see the normal weapon.");
+    for (int i = 0; i < n_looks; i++) {
+        int on = 0;
+        for (int w = 0; w < MAX_WISH; w++) on |= wish[w].on && !strcmp(wish[w].name, looks[i].name);
+        ov_push_id(i);
+        ov_text("%s (%s)%s", looks[i].title, looks[i].code, on ? "  - yours" : "");
+        ov_same_line();
+        if (ov_button("Use")) ov_run("model %s", looks[i].name);
+        ov_pop_id();
+    }
+    if (ov_button("Reset##wlooks")) ov_run("model reset");
+    ov_tooltip("/model reset: your weapons and survivor back to your own look.");
+}
+
+int wlooks_init(void) {
+    overlay_add_panel("Models", 60, models_panel);
+    if (memcmp((void *)ADDR_APPLY, SIG_APPLY, sizeof SIG_APPLY) || memcmp((void *)ADDR_SETROW, SIG_SETROW, sizeof SIG_SETROW)) {
+        LOG("wlooks: signature mismatch, no weapon looks");
+        return -1;
+    }
+    if (MH_CreateHook((void *)ADDR_APPLY, (void *)apply_detour, (void **)&orig_apply) != MH_OK ||
+        MH_EnableHook((void *)ADDR_APPLY) != MH_OK) { orig_apply = NULL; LOG("wlooks: apply hook failed"); return -1; }
+    if (MH_CreateHook((void *)ADDR_SETROW, (void *)setrow_detour, (void **)&orig_setrow) != MH_OK ||
+        MH_EnableHook((void *)ADDR_SETROW) != MH_OK) { orig_setrow = NULL; LOG("wlooks: row hook failed (no host rules)"); }
+    return 0;
+}
+
+#ifndef B4B_RELEASE
+// wlook dump: every hero's weapons, their skin row and mesh components
+static UObject *my_inv(void) { UObject *p = my_pawn(); return p ? ue_get_ptr(p, "Inventory") : NULL; }
+int wlooks_cmd(const char *verb, char *rest, Out *o) {
+    (void)verb;
+    classes();
+    char *sub = rest ? strtok(rest, " ") : NULL, *arg = sub ? strtok(NULL, " ") : NULL;
+    UObject *inv = sub ? my_inv() : NULL;
+    if (sub && !strcmp(sub, "swap")) {   // the quick-swap key (last weapon)
+        UFunction *f = fn_of(inv, "OnInputWeaponQuickSwap");
+        uint8_t p[16] = {0};
+        if (f) ue_process_event(inv, f, p);
+        out_printf(o, "quick swap: %s\n", f ? "done" : "no inventory");
+        return 1;
+    }
+    if (sub && !strcmp(sub, "select") && arg) {   // SelectEquipmentSlot(slot, false): 0 primary, 1 secondary
+        UFunction *f = fn_of(inv, "SelectEquipmentSlot");
+        int32_t ps = parm_off(f, "EquipmentSlot"), pr = parm_off(f, "bInRequest");
+        uint8_t p[16] = {0};
+        if (f && ps >= 0) { p[ps] = (uint8_t)atoi(arg); if (pr >= 0) p[pr] = 0; ue_process_event(inv, f, p); }
+        out_printf(o, "select slot %s: %s\n", arg, f ? "done" : "no inventory");
+        return 1;
+    }
+    if (sub && !strcmp(sub, "row") && arg) {   // row <item#> <row name|none>: ServerCustomizationRow on my own weapon
+        UObject **it; int n = items_of(my_pawn(), &it), k = atoi(arg);
+        char *rn = strtok(NULL, " ");
+        UObject *mm = k >= 0 && k < n && it[k] ? mm_of(it[k]) : NULL;
+        if (!mm || !rn) { out_printf(o, "usage: wlook row <item#> <row|none>\n"); return 1; }
+        FName nm = {0};
+        if (_stricmp(rn, "none")) nm = make_name(rn);
+        UObject *t = cust_table(it[k]);
+        out_printf(o, "ServerCustomizationRow: %d\n", send_row(mm, t ? t : row_of(mm)->table, nm));
+        return 1;
+    }
+    if (sub && !strcmp(sub, "drop") && arg) {   // ServerDropItem(the item in EquipmentSlots[n], manually dropped)
+        UObject **it; int n = items_of(my_pawn(), &it), k = atoi(arg);
+        UFunction *f = fn_of(inv, "ServerDropItem");
+        int32_t pi = parm_off(f, "Item"), pm = parm_off(f, "bManuallyDropped"), pf = parm_off(f, "bForce");
+        if (!f || pi < 0 || k < 0 || k >= n || !it[k] || UFN_PARMSSIZE(f) > 64) { out_printf(o, "no item %d\n", k); return 1; }
+        uint8_t p[64] = {0};
+        *(UObject **)(p + pi) = it[k];
+        if (pm >= 0) p[pm] = 1;
+        if (pf >= 0) p[pf] = 1;
+        ue_process_event(inv, f, p);
+        out_printf(o, "dropped item %d\n", k);
+        return 1;
+    }
+    UObject *p[32];
+    int np = models_hero_pawns(p, 32);
+    char a[128], b[300], c[128];
+    for (int k = 0; k < np; k++) {
+        UObject **it;
+        int n = items_of(p[k], &it);
+        out_printf(o, "#%d %s: %d item(s)\n", k, ue_obj_name(p[k], a, sizeof a), n);
+        for (int i = 0; i < n; i++) {
+            UObject *item = it[i];
+            if (!is_live(item)) { out_printf(o, "  [%d] -\n", i); continue; }
+            UObject *mm = mm_of(item), *t = cust_table(item), *own = ue_get_ptr(item, "Owner");
+            RowHandle *r = row_of(mm);
+            out_printf(o, "  [%d] %s class=%s owner=%s custtable=%s row=%s/%s\n", i, ue_obj_name(item, a, sizeof a),
+                       ue_obj_name(U_CLASS(item), c, sizeof c), own ? ue_obj_name(own, b, 64) : "-",
+                       t ? ue_obj_name(t, b + 64, 64) : "-", r && r->table ? ue_obj_name(r->table, b + 128, 64) : "-",
+                       r ? ue_name(r->row, b + 192, 100) : "-");
+            static const char *arrs[2] = {"FirstPersonMeshComponents", "ThirdPersonMeshComponents"};
+            for (int q = 0; mm && q < 2; q++) {
+                int32_t off = ue_prop_offset(mm, arrs[q]);
+                TArray *arr = off >= 0 ? (TArray *)((char *)mm + off) : NULL;
+                for (int j = 0; arr && j < arr->num; j++) {
+                    UObject *x = ((UObject **)arr->data)[j];
+                    if (!is_live(x)) continue;
+                    int32_t om = ue_prop_offset(x, "OverrideMaterials");
+                    UObject *m = (ue_is_a(x, c_skc) || ue_is_a(x, c_smc)) ? comp_mesh(x) : NULL;
+                    out_printf(o, "     %s %s [%s] mesh=%s overrides=%d\n", q ? "3P" : "FP", ue_obj_name(x, a, sizeof a),
+                               ue_obj_name(U_CLASS(x), c, sizeof c), m ? ue_full_path(m, b, sizeof b) : "-",
+                               om >= 0 ? ((TArray *)((char *)x + om))->num : -1);
+                }
+            }
+        }
+    }
+    out_printf(o, "looks: %d, applied %d time(s)\n", n_looks, n_applied);
+    for (int w = 0; w < MAX_WISH; w++) if (wish[w].on) out_printf(o, "wish %s (%s) tries=%d gave_up=%d\n", wish[w].name, wish[w].code, wish[w].tries, wish[w].gave_up);
+    return 1;
+}
+#else
+int wlooks_cmd(const char *verb, char *rest, Out *o) { (void)verb; (void)rest; (void)o; return 0; }
+#endif

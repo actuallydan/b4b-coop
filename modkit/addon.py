@@ -4,8 +4,8 @@ Mod makers run it through `b4bmod pack / check` (modkit/README.md).
 
 An add-on is one .pak (modkit/b4bpak.py format: v9, B4B footer, uncompressed, unencrypted) that the agent mounts from
 <game>/b4bcoop-addons/ after the retail paks. Besides the cooked files it holds `b4bcoop-addoninfo.txt` (title,
-author, version, category, description; `outfit=` lines for added outfits, `b4bmod survivor --as`), which the agent
-shows in /addons.
+author, version, category, description; `outfit=` / `weapon=` lines for added outfits and weapon looks, `b4bmod
+survivor|weapon --as`), which the agent shows in /addons.
 
   addon.py pack <src> [-o OUT.pak] [--name N] [--title T] [--author A] [--version V] [--category C]
                 [--description D] [--zip]
@@ -56,8 +56,8 @@ def parse_info(text):
             k = k[5:]
         if k in KEYS:
             out[k] = v
-        elif k == "outfit":   # added outfits (several lines): name|survivor|3P mesh|FP mesh|title
-            out.setdefault("outfit", []).append(v)
+        elif k in ("outfit", "weapon"):   # added outfits / weapon looks (several lines each)
+            out.setdefault(k, []).append(v)
     return out
 
 
@@ -78,6 +78,19 @@ def check_outfits(info, names):
             pkg = p.split(".")[0]
             if not pkg.startswith("/Game/") or f"gobi/content/{pkg[6:]}.uasset".lower() not in have:
                 errs.append(f"outfit {f[0]}: {p} is not in this add-on")
+    for v in info.get("weapon", []):   # name|weapon code|FP mesh|3P static mesh|3P skeletal mesh|title
+        f = v.split("|")
+        if len(f) < 3 or not OUTFIT_RX.match(f[0]) or not re.fullmatch(r"[A-Za-z0-9]{1,15}", f[1]):
+            errs.append(f"weapon={v}: expected <name>|<weapon code>|<FP mesh>|<3P static mesh>|<3P skeletal mesh>|<title>")
+            continue
+        if not any(f[2:5]):
+            errs.append(f"weapon {f[0]}: no mesh")
+        for p in f[2:5]:
+            if not p:
+                continue
+            pkg = p.split(".")[0]
+            if not pkg.startswith("/Game/") or f"gobi/content/{pkg[6:]}.uasset".lower() not in have:
+                errs.append(f"weapon {f[0]}: {p} is not in this add-on")
     return errs
 
 
@@ -235,7 +248,7 @@ def class_label(gameplay, kinds, reasons):
 
 def info_text(info):
     return "".join(f"{k}={info[k]}\r\n" for k in KEYS if info.get(k)) + \
-        "".join(f"outfit={v}\r\n" for v in info.get("outfit", []))
+        "".join(f"{k}={v}\r\n" for k in ("outfit", "weapon") for v in info.get(k, []))
 
 
 def read_pak_files(path):
@@ -356,6 +369,8 @@ def cmd_pack(a):
             print(f"  {k}: {info[k]}")
     for v in info.get("outfit", []):
         print(f"  outfit: {v.split('|')[0]} (in game: /model {v.split('|')[0]})")
+    for v in info.get("weapon", []):
+        print(f"  weapon look: {v.split('|')[0]} for the {v.split('|')[1] if '|' in v else '?'} (in game: /model {v.split('|')[0]})")
     if a.zip:
         zpath = os.path.splitext(out)[0] + ".zip"
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
@@ -386,6 +401,8 @@ def cmd_info(a):
         print(f"  {k}: {info.get(k, '')}")
     for v in info.get("outfit", []):
         print(f"  outfit: {v}")
+    for v in info.get("weapon", []):
+        print(f"  weapon: {v}")
     print(f"  class (from the files): {class_label(gameplay, kinds, reasons)}")
     for r in reasons:
         print("    gameplay-affecting:", r)

@@ -30,6 +30,7 @@ of the window, and also in your chat.
 | **Camera** | Third person on/off, start the game in third person, its key, sliders for distance, side, height and FOV (Ctrl+click a slider to type a number), Swap shoulder, Reset camera, aim correction | `/thirdperson ...`; ini `thirdperson*` |
 | **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky` |
 | **Cheats** | Host: **Cheats on**, a player picker (`me`, everyone, a player) for the buttons marked `*`, then every cheat: god, heal, revive, infinite ammo, copper, cards, fly, noclip, walk, teleport, free camera, size, horde, kill all ridden, freeze, director phases, spawn, game speed, win, lose, and your own save's supply points / unlock all | every `/cheats` command |
+| **Models** | Weapon looks your add-ons add: **Use** puts one on your weapon of that type, **Reset** (more to come) | `/model <weapon look>`, `/model reset` |
 | **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`), every player's add-ons | `/addons`, `/addons on\|off`, `/addons info`, `/addons players`, `/addons policy`; ini `addons`, `addons_policy` |
 | **Settings** | The window's text size and key, the flashlight and third-person keys | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key` |
 | **Help** | Your version, a box to run any chat command (without the `/`) | `/help` |
@@ -64,7 +65,7 @@ points, Unban all) need a second click within 3 seconds ("Sure?"). `overlay=0` i
 | `/leave` | Leaves the host's game, back to your own Fort Hope | `/leave` |
 | `/host` | Starts hosting your Fort Hope (only needed with `host=0`) | `/host` |
 | `/model <name>` | Changes how your survivor looks, this game session only | `/model karlee_elite_03`, `/model holly` |
-| `/model list [survivor\|npc\|outfits]` | The looks you can use (`outfits`: those your add-ons add) | `/model list`, `/model list walker` |
+| `/model list [survivor\|npc\|outfits\|weapons]` | The looks you can use (`outfits`, `weapons`: those your add-ons add) | `/model list`, `/model list walker` |
 | `/model reset` | Back to your own look | `/model reset` |
 | `/addons` | Lists your add-ons, on/off, and conflicts | `/addons` |
 | `/addons on\|off <#>` | Switches an add-on on or off from the next game start | `/addons off 2` |
@@ -122,8 +123,9 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 
 **`/model`**: wear another survivor's outfit (`/model walker_elite_07`), a whole survivor's look (`/model holly`),
 single pieces (`/model holly_head_03`), a Fort Hope NPC (`/model vanessa`) or an outfit one of your add-ons adds
-(`/model list outfits`). Everyone sees survivor outfits; NPC looks only players with b4bcoop; add-on outfits only
-players with the same add-on (the others see your survivor). Kept through map changes, death and respawn; nothing is saved. `/model` alone shows
+(`/model list outfits`), or put an add-on's model on your weapon (`/model list weapons`, e.g. `/model ak47` for your
+AR02; also the `~` window's Models tab). Everyone sees survivor outfits; NPC looks only players with b4bcoop; add-on
+outfits and weapon looks only players with the same add-on (the others see your survivor, the normal weapon). Kept through map changes, death and respawn; nothing is saved. `/model` alone shows
 what you wear. All names, examples and limits: `docs/commands-models.md`.
 
 **`/leave`**: only while in someone else's game (else `you are not in someone else's session`).

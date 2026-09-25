@@ -110,7 +110,7 @@ b4bmod survivor mymodel.fbx ^
 - **Other players**: those with the same add-on see your outfit; those without it (or without b4bcoop) see your
   survivor in their base pieces (head, torso, legs of your profile), never an empty or broken model. The host lets it
   through without having the add-on; a host with `/models off` or `addons_policy=none` refuses it.
-- Weapons: `--as` is for survivors only so far.
+- Weapons: see "Add a weapon look" below.
 - Picking it in the game's customization screen is not supported (only `/model`).
 
 ## Make a weapon model
@@ -149,6 +149,30 @@ b4bmod survivor mymodel.fbx ^
 5. **Check**: the log prints the scale, where the muzzle went and which object became which part; `blender/preview.py`
    (as above) on `<work>/fitfp/lod0.glb`.
 6. **Install and test** as above; the weapon is the same item (AR02) with your look.
+
+## Add a weapon look
+The weapon pipeline above **replaces** the weapon for everyone who has your add-on. Add `--as <name>` and it **adds** a
+look instead: the game's AR02 stays as it is, and a player who wants your model on their AR02 types `/model <name>`
+(or presses Use in the `~` window's Models tab).
+```
+b4bmod weapon ak.fbx --fp-mesh AR02 ^
+    --slot AkMaterial=AR02_Reciever_M --slot Ammunition=AR02_Mag_M ^
+    --tex AkMaterial=Textures/AK_1/AK_1_ --tex Ammunition=Textures/Ammunition/Ammunition_ ^
+    --as ak47 -o mymod --title "AK-47" --zip
+```
+- `<name>`: as for outfits (lower-case letters, digits, `_`, up to 32; unique, and not the name of an outfit).
+- The files go to `mymod/Gobi/Content/b4bcoop/weapons/<name>/`: the first-person mesh, the third-person static mesh
+  (`3P_<Code>_SM`, what other players see), the 3P skeletal mesh if the weapon has one, your textures and the
+  weapon's default material instances pointed at them. `mymod/addoninfo.txt` gets
+  `weapon=ak47|AR02|/Game/b4bcoop/weapons/ak47/AR02_SKM.AR02_SKM|/Game/.../3P_AR02_SM.3P_AR02_SM|/Game/.../3P_AR02_SKM.3P_AR02_SKM|AK-47`
+  (name | weapon code | first-person mesh | 3P static mesh | 3P skeletal mesh | title). Keep the copies' names: the
+  mod finds the weapon's meshes by those names. Several looks in one add-on: one run each, same `-o mymod`.
+- Left as the game's: weapon skins (your look replaces the skin while it is on), world pickups and a dropped weapon
+  (a weapon lying on the floor shows the normal AR02), the dropped magazine. Those flags (`--skins`,
+  `--mag-static`, the pickup static mesh) are ignored with `--as`.
+- **Other players**: those with the same add-on see your model in your hands (third person); everyone else sees the
+  normal weapon, never an empty hand. The host lets it through without having the add-on; `/models off` or
+  `addons_policy=none` on the host turn it off.
 
 ## Doing the fitting yourself (`mesh import`)
 If you'd rather fit and skin the model in Blender by hand (or `b4bmod survivor` can't map your rig), import it onto

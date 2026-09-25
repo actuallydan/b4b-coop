@@ -159,6 +159,47 @@ int addons_outfits(AddonOutfit *out, int max) {
     return k;
 }
 
+// ---- added weapon looks: addoninfo `weapon=<name>|<code>|<FP mesh>|<3P static mesh>|<3P skeletal mesh>|<title>`
+// (modkit: b4bmod weapon --as; docs/investigations/new-assets.md §9). weaponlooks.c puts them on the chooser's weapon
+// of that code (/model <name>). Mesh fields may be empty (at least one set). ----
+#define MAX_WEAPONS 64
+typedef struct { Addon *addon; char name[33], code[16], fp[200], sm3p[200], skm3p[200], title[64]; } Weapon;
+static Weapon WP[MAX_WEAPONS];
+static int nWP;
+static void parse_weapon(Addon *a, char *v) {
+    char *f[6] = {0}; int k = 0;
+    for (char *p = v; k < 6; k++) { f[k] = p; p = strchr(p, '|'); if (!p) { k++; break; } *p++ = 0; }
+    Weapon w = {0};
+    w.addon = a;
+    int ok = k >= 3 && strlen(f[0]) > 0 && strlen(f[0]) < sizeof w.name && isalpha((unsigned char)f[0][0]);
+    for (const char *c = f[0]; ok && *c; c++) ok = islower((unsigned char)*c) || isdigit((unsigned char)*c) || *c == '_';
+    const char *code = ok ? trim(f[1]) : "";
+    ok = ok && *code && strlen(code) < sizeof w.code;
+    for (const char *c = code; ok && *c; c++) ok = isalnum((unsigned char)*c);
+    if (ok) ok = outfit_path(trim(f[2]), w.fp, sizeof w.fp) && (k < 4 || outfit_path(trim(f[3]), w.sm3p, sizeof w.sm3p)) &&
+                 (k < 5 || outfit_path(trim(f[4]), w.skm3p, sizeof w.skm3p)) && (w.fp[0] || w.sm3p[0] || w.skm3p[0]);
+    if (!ok || nWP >= MAX_WEAPONS) { LOG("addons: %s: weapon line ignored (%s): %s", a->name, ok ? "too many weapons" : "expected <name>|<code>|<FP mesh>|<3P static mesh>|<3P skeletal mesh>|<title>", f[0] ? f[0] : ""); return; }
+    snprintf(w.name, sizeof w.name, "%s", f[0]);
+    snprintf(w.code, sizeof w.code, "%s", code);
+    snprintf(w.title, sizeof w.title, "%s", k >= 6 && *f[5] ? trim(f[5]) : w.name);
+    WP[nWP++] = w;
+}
+
+// Weapon looks of the mounted add-ons; a name in two add-ons: the later one wins.
+int addons_weapons(AddonWeapon *out, int max) {
+    int k = 0;
+    for (int i = 0; i < nWP; i++) {
+        const Weapon *w = &WP[i];
+        if (w->addon->mounted <= 0) continue;
+        int j = 0;
+        while (j < k && strcmp(out[j].name, w->name)) j++;
+        if (j == k) { if (k >= max) continue; k++; }
+        out[j].name = w->name; out[j].code = w->code; out[j].fp = w->fp; out[j].sm3p = w->sm3p; out[j].skm3p = w->skm3p;
+        out[j].title = w->title; out[j].addon = w->addon->title;
+    }
+    return k;
+}
+
 // ---- addoninfo ----
 static void parse_info(Addon *a, char *text) {
     for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
@@ -180,6 +221,7 @@ static void parse_info(Addon *a, char *text) {
         else if (!_stricmp(k, "description")) dst = a->desc, n = sizeof a->desc;
         else if (!_stricmp(k, "content")) dst = a->claim, n = sizeof a->claim;
         else if (!_stricmp(k, "outfit")) parse_outfit(a, v);
+        else if (!_stricmp(k, "weapon")) parse_weapon(a, v);
         if (dst) snprintf(dst, n, "%s", v);
     }
 }
