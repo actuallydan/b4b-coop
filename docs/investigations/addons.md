@@ -229,3 +229,9 @@ casual_joe, holly_green, holly_magenta, walker_dt_test; client `addons_dir=` wit
   installed here)`.
 - Lane 2's `lane-restore.sh` now backs up the `b4bcoop-addons` folder state and restores it (removed when the player
   had none).
+- `B4B_LANE=2 tools/e2e.py --quick --no-lock`: 14/14 PASS (/tmp/b4b-e2e-l2-20260925-170946). A first run failed 11/14:
+  the client's sign-in rejected its profile (`PlayerProfileSettings version invalid - HydraPublicId mismatch -
+  Local:offline.<id> Saved:p64...`), the game wrote a blank profile, so no burn card and the profile diff failed.
+  Not add-on code (sign-in, before any command; same `.sav` publicId loads fine on the host and in earlier runs).
+  Restored lane2/test2's profile from lane2/test1 (reset one kept in `~/.local/share/b4b-coop/addons-tab/`); rerun
+  passed. Cause unknown; possibly the SIGKILL of the earlier instances.
