@@ -48,7 +48,8 @@ static int tp_key = 'N';           // ini thirdperson_key (VK), 0 = none
 // the game's values are put back when it goes off. Shots come from the hero's eyes, not the camera (measured, see
 // third-person.md): side/height move the camera off the line of fire, so hits land that far beside the crosshair.
 #define TP_DIST_DEF 180.f
-static float tp_dist = TP_DIST_DEF, tp_side, tp_height, tp_fov;   // tp_fov 0 = the game's
+#define TP_SIDE_DEF 40.f     // over the right shoulder by default (hits land this far beside the crosshair; ADS exact)
+static float tp_dist = TP_DIST_DEF, tp_side = TP_SIDE_DEF, tp_height, tp_fov;   // tp_fov 0 = the game's
 static UObject *tp_arm, *tp_cam;                                     // on tp_pawn
 static int32_t tp_armi = -1, tp_cami = -1;
 static float tp_arm_orig[4] = {-1}, tp_fov_orig = -1;               // length, socket xyz; FOV (-1 = not saved)
@@ -212,7 +213,7 @@ static int tune_cmd(const char *arg, const char *val, Out *o) {
     else if (!_stricmp(arg, "side") && val && (!_stricmp(val, "left") || !_stricmp(val, "right"))) {
         float m = tp_side < 0 ? -tp_side : tp_side;
         tp_side = (m ? m : 40) * (!_stricmp(val, "left") ? -1 : 1);
-    } else if (!_stricmp(arg, "reset")) { tp_dist = TP_DIST_DEF; tp_side = tp_height = tp_fov = 0; }
+    } else if (!_stricmp(arg, "reset")) { tp_dist = TP_DIST_DEF; tp_side = TP_SIDE_DEF; tp_height = tp_fov = 0; }
     else if (!_stricmp(arg, "distance") || !_stricmp(arg, "side") || !_stricmp(arg, "height") || !_stricmp(arg, "fov")) {
         out_printf(o, "usage: /thirdperson distance <50-600> | side <-150..150|left|right|swap> | height <-100..150> | "
                       "fov <60-130|0> | reset\n");

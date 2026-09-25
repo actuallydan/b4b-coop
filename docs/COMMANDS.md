@@ -68,14 +68,15 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 | Setting | Default | Values | What it does |
 |---|---|---|---|
 | `/thirdperson distance <n>` | `180` | `50`-`600` | How far behind your hero the camera is (the game's own is 300) |
-| `/thirdperson side <n>` | `0` | `-150`-`150`, `left`, `right`, `swap` | Over the shoulder: positive = right, negative = left. `left`/`right` pick a shoulder (40 if it was 0), `swap` switches shoulders |
+| `/thirdperson side <n>` | `40` (right shoulder) | `-150`-`150`, `left`, `right`, `swap` | Over the shoulder: positive = right, negative = left. `left`/`right` pick a shoulder (40 if it was 0), `swap` switches shoulders, `0` = centred behind your hero |
 | `/thirdperson height <n>` | `0` | `-100`-`150` | Raises (or lowers) the camera |
 | `/thirdperson fov <n>` | the game's | `60`-`130`, `0` = the game's | Field of view in third person |
 | `/thirdperson reset` | | | Back to these defaults |
 
 - **Aim with a side or height offset**: your shots still come from your hero's eyes, not from the camera, so they
   land that many units beside (or below) the point under the crosshair: `side 40` = 40 cm to the left of it, at
-  every range (a lot up close, little far away). The command reminds you. Aiming with right mouse is always exact.
+  every range (a lot up close, little far away). The command reminds you. Aiming with right mouse is always exact;
+  `side 0` also puts shots exactly under the crosshair, but your hero's head then covers it.
 
 **`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope.
 - `<id>` is the host's 17-digit Steam ID. The host finds it in Steam: click your account name at the top right →
@@ -278,7 +279,7 @@ Rules:
 | `thirdperson` | `0` | `0`, `1` | `1`: start in third person (`/thirdperson`) |
 | `thirdperson_key` | `N` | a letter, a digit, a key code, or `off` | The third-person toggle key |
 | `thirdperson_distance` | `180` | `50`-`600` | Third-person camera distance (`/thirdperson distance`) |
-| `thirdperson_side` | `0` | `-150`-`150` | Over-the-shoulder offset, negative = left (`/thirdperson side`) |
+| `thirdperson_side` | `40` | `-150`-`150` | Over-the-shoulder offset, negative = left (`/thirdperson side`) |
 | `thirdperson_height` | `0` | `-100`-`150` | Camera height offset (`/thirdperson height`) |
 | `thirdperson_fov` | `0` (game's) | `60`-`130` | Third-person field of view (`/thirdperson fov`) |
 | `allow_joins` | `friends` | `friends`, `anyone` | Host: who may join |
