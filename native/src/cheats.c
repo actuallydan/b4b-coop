@@ -885,6 +885,11 @@ static void cmd_endmission(int ok, Out *o) {
 static UObject *own_profile(Out *o) {
     UObject *pc = host_pc(), *player = pc ? ue_get_ptr(pc, "Player") : NULL;
     if (!player || !is_a(player, "LocalPlayer") || admin_is_client()) { out_printf(o, "no local profile\n"); return NULL; }
+    // Signed in with the profile loaded = in Fort Hope or a mission. On the title/legal screens a command is accepted
+    // but goes nowhere (seen: /supply before sign-in changed nothing), so refuse instead of claiming it worked.
+    char pkg[256] = "";
+    if (ue_world()) ue_world_package(ue_world(), pkg, sizeof pkg);
+    if (!strstr(pkg, "FortHope") && !in_mission()) { out_printf(o, "sign in and go to Fort Hope first (your save isn't loaded yet)\n"); return NULL; }
     UObject *ppc = ue_get_ptr(pc, "GobiPlayerProfileComponent");
     if (!ppc) out_printf(o, "no profile component (sign in first)\n");
     return ppc;
@@ -904,25 +909,37 @@ static int command_ok(uintptr_t vt, uint8_t type) {
 // Before the first /supply or /unlockall write of this game session: copy PlayerProfileSettings.sav (the save itself)
 // and .json (the game's export) to PlayerProfileSettings-b4bcoop-backup-<yyyymmdd-hhmmss>.sav/.json next to them.
 // The save folder: %LOCALAPPDATA%\Back4Blood\Steam\Saved\SaveGames (the game runs with -SaveToUserDir), else the
-// game's own Gobi\Saved\SaveGames. 0 = backed up (now or earlier this session; *where set), -1 = not (no write then).
+// game's own Gobi\Saved\SaveGames. 0 = backed up (now or earlier this session; *where = the backup), 1 = nothing to
+// back up: the save folder is there (the game's other saves, PlayerSettingsGame.sav, are in it) but the profile has
+// never been saved (a new offline profile; *where = the folder), -1 = save folder not found or the copy failed: no
+// write then (the save could be somewhere we don't look).
+static int save_dir_ok(const wchar_t *dir, const wchar_t *file) {
+    wchar_t f[MAX_PATH];
+    _snwprintf(f, MAX_PATH, L"%ls\\%ls", dir, file);
+    return GetFileAttributesW(f) != INVALID_FILE_ATTRIBUTES;
+}
 static int profile_backup(char *where, size_t n) {
     static char done[MAX_PATH * 3];
     if (done[0]) { snprintf(where, n, "%s", done); return 0; }
-    wchar_t dir[MAX_PATH], sav[MAX_PATH], path[MAX_PATH], exe[MAX_PATH];
-    int found = 0;
-    DWORD k = GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH);
-    if (k > 0 && k < MAX_PATH - 64) {
-        wcscat(dir, L"\\Back4Blood\\Steam\\Saved\\SaveGames");
-        _snwprintf(sav, MAX_PATH, L"%ls\\PlayerProfileSettings.sav", dir);
-        found = GetFileAttributesW(sav) != INVALID_FILE_ATTRIBUTES;
-    }
-    if (!found && GetModuleFileNameW(NULL, exe, MAX_PATH)) {   // ...\Gobi\Binaries\Win64\Back4Blood.exe
+    wchar_t dirs[2][MAX_PATH], path[MAX_PATH], exe[MAX_PATH], *dir = NULL;
+    int nd = 0;
+    DWORD k = GetEnvironmentVariableW(L"LOCALAPPDATA", dirs[0], MAX_PATH);
+    if (k > 0 && k < MAX_PATH - 64) { wcscat(dirs[0], L"\\Back4Blood\\Steam\\Saved\\SaveGames"); nd = 1; }
+    if (GetModuleFileNameW(NULL, exe, MAX_PATH)) {   // ...\Gobi\Binaries\Win64\Back4Blood.exe
         for (int up = 0; up < 3; up++) { wchar_t *s = wcsrchr(exe, L'\\'); if (s) *s = 0; }
-        _snwprintf(dir, MAX_PATH, L"%ls\\Saved\\SaveGames", exe);
-        _snwprintf(sav, MAX_PATH, L"%ls\\PlayerProfileSettings.sav", dir);
-        found = GetFileAttributesW(sav) != INVALID_FILE_ATTRIBUTES;
+        _snwprintf(dirs[nd++], MAX_PATH, L"%ls\\Saved\\SaveGames", exe);
     }
-    if (!found) { LOG("cheats: backup: no PlayerProfileSettings.sav found"); return -1; }
+    for (int i = 0; i < nd && !dir; i++) if (save_dir_ok(dirs[i], L"PlayerProfileSettings.sav")) dir = dirs[i];
+    if (!dir) {
+        for (int i = 0; i < nd; i++)
+            if (save_dir_ok(dirs[i], L"PlayerSettingsGame.sav")) {
+                WideCharToMultiByte(CP_UTF8, 0, dirs[i], -1, where, (int)n, NULL, NULL);
+                LOG("cheats: backup: no profile save yet in %s (new profile), nothing to back up", where);
+                return 1;
+            }
+        LOG("cheats: backup: no save folder found");
+        return -1;
+    }
     SYSTEMTIME t;
     GetLocalTime(&t);
     wchar_t stamp[32];
@@ -950,12 +967,14 @@ static void cmd_supply(char *rest, Out *o) {
     if (!ppc) return;
     if (!command_ok(VT_ADJUST_SP, 5)) { out_printf(o, "/supply: not available in this game build\n"); return; }
     char bak[MAX_PATH * 3];
-    if (profile_backup(bak, sizeof bak)) { out_printf(o, "/supply: couldn't back up your save first, so nothing was changed\n"); return; }
+    int b = profile_backup(bak, sizeof bak);
+    if (b < 0) { out_printf(o, "/supply: couldn't back up your save first, so nothing was changed\n"); return; }
     struct { uintptr_t vt; int32_t delta, pad; } cmd = {VT_ADJUST_SP, (int32_t)v, 0};   // FAdjustSupplyPointsCommand
     LOG("cheats: host's own profile: AdjustSupplyPoints %+ld", v);
     if (rewards_execute_local(ppc, &cmd)) { out_printf(o, "/supply: not available\n"); return; }
-    out_printf(o, "+%ld supply points in YOUR save. This is permanent (saved in a few seconds).\n"
-                  "Backup of your save from before: %s (and .json)\n", v, bak);
+    out_printf(o, "+%ld supply points in YOUR save. This is permanent (saved in a few seconds).\n", v);
+    if (b == 0) out_printf(o, "Backup of your save from before: %s (and .json)\n", bak);
+    else out_printf(o, "(new profile: no earlier save to back up)\n");
 }
 
 // Every product in the supply lines (StaticCaravans: tutorial line + every chain), unlockable (not a consumable like a
@@ -987,7 +1006,8 @@ static void cmd_unlockall(char *rest, Out *o) {
     int dry = rest && !_stricmp(rest, "check");
     if (!dry && !command_ok(VT_UNLOCK, 6)) { out_printf(o, "/unlockall: not available in this game build\n"); return; }
     char bak[MAX_PATH * 3] = "";
-    if (!dry && profile_backup(bak, sizeof bak)) { out_printf(o, "/unlockall: couldn't back up your save first, so nothing was changed\n"); return; }
+    int b = dry ? 1 : profile_backup(bak, sizeof bak);
+    if (b < 0) { out_printf(o, "/unlockall: couldn't back up your save first, so nothing was changed\n"); return; }
     int done = 0, owned = 0, skipped = 0;
     UObject *pc = host_pc();
     for (int k = 0; k < n; k++) {
@@ -1014,7 +1034,9 @@ static void cmd_unlockall(char *rest, Out *o) {
     LOG("cheats: host's own profile: unlockall %d new, %d already owned, %d skipped (consumable/DLC) of %d", done, owned, skipped, n);
     if (dry) { out_printf(o, "/unlockall would unlock %d item(s) (%d already yours, %d consumables/DLC skipped)\n", done, owned, skipped); return; }
     out_printf(o, "unlocked %d supply-line item(s) in YOUR save (%d were already yours; burn cards and DLC items skipped). "
-                  "This is permanent.\nBackup of your save from before: %s (and .json)\n", done, owned, bak);
+                  "This is permanent.\n", done, owned);
+    if (b == 0) out_printf(o, "Backup of your save from before: %s (and .json)\n", bak);
+    else out_printf(o, "(new profile: no earlier save to back up)\n");
 }
 
 // ---- on/off ----
