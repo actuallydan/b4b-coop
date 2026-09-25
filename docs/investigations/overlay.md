@@ -88,4 +88,6 @@ Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID
   `/ping` (the spike's missed short click is gone); `~` key opens; typing `h`,`i`,Enter in the Say box sent `/say hi`;
   W held 1 s while open: hero at the same spot, `L` didn't toggle the light; Esc closed; W held 1 s after: moved ~380.
 - Live reload: `thirdperson_distance=320` appended to the ini -> slider shows 320, chat/log "applied".
+- `B4B_LANE=2 tools/e2e.py --quick --no-lock`: 13/13 PASS incl. the new overlay smoke check (`#1 frames built=232
+  drawn=232; #2 frames built=256 drawn=256`), /tmp/b4b-e2e-l2-20260925-163516.
 - Not tried: window resize (ResizeBuffers), native Windows, gamepad.
