@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdarg.h>
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
@@ -374,6 +375,31 @@ static int send_line_t(UObject *pc, const char *text, int kick) {
 }
 static int send_line(UObject *pc, const char *text) { return send_line_t(pc, text, 0); }
 
+// Shared with cheats.c: the /players list, player lookup, a display name (bots: their hero), and a notice every
+// player sees (the /say path, prefixed "[b4bcoop] ").
+int admin_player_array(UObject ***arr) { return player_array(arr); }
+UObject *admin_find_player(const char *arg, Out *o) { return find_player(arg, o); }
+void admin_display_name(UObject *ps, char *buf, size_t n) {
+    ps_name(ps, buf, n);
+    if (!buf[0] && !bot_name(ps, buf, n)) snprintf(buf, n, "?");
+}
+int admin_is_client(void) { return is_client(); }
+
+void admin_notice(const char *fmt, ...) {
+    char msg[260], line[300];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    snprintf(line, sizeof line, "[b4bcoop] %s", msg);
+    UObject **pa; int n = player_array(&pa), sent = 0;
+    for (int i = 0; i < n; i++) {
+        UObject *pc = ue_get_ptr(pa[i], "Owner");
+        if (is_pc(pc) && !send_line(pc, line)) sent++;
+    }
+    LOG("admin: notice to %d player(s): %s", sent, msg);
+    if (!sent) chat_local("%s", line);   // no player controller (loading): at least the host sees it
+}
+
 static void say(const char *msg, Out *o) {
     if (!msg || !*msg) { out_printf(o, "usage: /say <message>\n"); return; }
     char line[300];
@@ -583,7 +609,8 @@ static void help(Out *o) {
                coop_version(), coop_protocol());
     if (is_client()) { out_printf(o, "(/kick /ban /lock ... are for the host)\n"); return; }
     out_printf(o, "host: /kick /ban <name|#>  /unban  /bans\n/lock  /unlock  /teamsize N  /bots on|off\n"
-                  "/restart  /ready [vote]  /say <msg>\n//text sends a message starting with /\n");
+                  "/restart  /ready [vote]  /say <msg>\n/cheats on|off  (sandbox, /cheats help)\n"
+                  "//text sends a message starting with /\n");
 }
 
 // Host actions shared by chat and the agent CLI. Returns 1 if handled.
@@ -610,6 +637,7 @@ void admin_slash(char *line, Out *o) {
     for (char *c = verb; *c; c++) *c = (char)tolower((unsigned char)*c);
     int i = 0;
     for (; i < N_CMDS && strcmp(CMDS[i].name, verb); i++) {}
+    if (i == N_CMDS && cheats_slash(verb, rest, o)) return;   // cheats.c: /cheats, /god, /fly, ... (host only)
     if (i == N_CMDS) { out_printf(o, "unknown command /%s (/help)\n", verb); return; }
     if (CMDS[i].admin && is_client()) { out_printf(o, "/%s: host only (you are a client)\n", verb); return; }
     LOG("admin: /%s %s", verb, rest ? rest : "");

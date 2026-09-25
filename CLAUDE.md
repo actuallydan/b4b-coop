@@ -65,6 +65,11 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     on both sides), then bans in `b4bcoop-bans.txt`, lock). B4B's PreLogin gets the options as a parsed TArray of
     {FString key, value} (`options_str`), not one FString.
     docs/investigations/chat-commands.md.
+  - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
+    /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
+    own save `/supply /unlockall`); off again back in camp; every cheat touching others is a host notice; a map with
+    cheats on sends remote players no rewards (rewards.c), stats or achievements. Dev `cheat <cmd>`, `cheatprobe`.
+    Player reference `docs/commands-cheats.md`. Host-side only, no protocol bump.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
@@ -130,6 +135,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   `B4B_TIMEOUT`, `B4B_FRESH=1` (re-clone), `B4B_BLANK="2 3"` (fresh offline profile for those instances),
   `B4B_INI_EXTRA="netguard=off;netguard_eos=0"` (extra `b4bcoop.ini` lines for every instance), `B4B_INI_EXTRA<n>`
   (instance n only), `B4B_PORT_BASE` (agent ports; 47120 when another game with the agent holds 47112).
+- **Test prefixes are shared between sessions: change them (`testprefix.py`, `B4B_FRESH`, `B4B_BLANK`, editing their
+  `b4bcoop.ini` or saves) only while holding `launch/gamelock.sh`.** `testprefix.py` refuses to touch a prefix a game
+  process is running on (`B4B_PREFIX` in /proc/<pid>/environ) unless `--force`.
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.

@@ -67,3 +67,20 @@ Transport: PacketRelayNetDriver (IpNetDriver subclass) on UDP 7777 with DTLSHand
   `set local campaign run id`, builds `?Difficulty=?PoolConfig=?game=…?RunOwner=1` and calls SetClientTravel.
   `Matchmaking.Dev_JoinPool` (BlueprintCallable, Coop, not private/quickplay) calls it with run id 0 = new run.
   A bare `servertravel` of that URL loads the mission, but no campaign run is created (no NewRun init).
+
+## Cheats (native/src/cheats.c, #14)
+- Shipping stripped the game's own cheats: GobiPlayerController exec cheats (God, Demigod, Heal, GiveUnlock,
+  GiveSupplyPoints, ToggleInfiniteAmmo*, ...) have empty exec thunks (0x140d7ad50 & co.); APlayerController::AddCheats
+  (PC vtable +0xcb0) is `ret`, so PlayerController.CheatManager stays null; ACharacter::ClientCheatFly/Ghost/Walk
+  _Implementation are empty. UCheatManager's own functions are intact: we construct one with
+  StaticConstructObject_Internal (4.25 argument list: Class, Outer, FName, flags, internal flags, template, copy
+  transients, instancing graph, assume archetype) and store it in PlayerController.CheatManager.
+- The profile component's ClientExecute*Command handlers return early on the server (game-mode IsA check), and the
+  ServerExecute* ones are `_Validate = false` / empty. Host-side profile edits call ExecuteCommand (0x141BC4970) with
+  commands built on their own vtables: FAdjustSupplyPointsCommand 0x1454E8880 (GetType 5), FUnlockProductCommand
+  0x1454E88F8 (GetType 6).
+- Component RPCs (stat deltas, achievements) leave through UActorComponent::CallRemoteFunction 0x143B2C830.
+- FNamePool in this build: +0 current block, +4 byte cursor, +0x10 blocks (0x20000 bytes each).
+- Ridden classes: TallboyBasic/Squeezer (Crusher)/Smasher (Bruiser), BloaterBasic (Reeker)/Exploder/Vomiter (Retch),
+  ChaserBasic (Stinger)/BunnyKick (Stalker)/Chucker (Hocker) are ZombieCharacters; Common_, Hag_, Snitcher_, Brute_
+  (Ogre) _AICharacterBP are plain GobiCharacters. Paths in native/src/cheats_ridden.h.
