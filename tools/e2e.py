@@ -312,6 +312,9 @@ def pick_card(cards, avoid=()):
 def duo(args):
     """The 2-instance regression: everything in --quick."""
     S = Session("duo", 2)
+    for i in (1, 2):   # a lane's first run: create the prefixes now, so "before" is the cloned profile, not nothing
+        if not os.path.isdir(os.path.join(ROOT, f"test{i}", "pfx")):
+            sh([sys.executable, os.path.join(REPO, "tools/testprefix.py"), str(i)], timeout=300)
     before = {i: load_profile(profile_path(i)) for i in (1, 2)}
     for i in (1, 2):
         if before[i]: shutil.copy(profile_path(i), os.path.join(OUT, f"profile{i}-before.json"))
