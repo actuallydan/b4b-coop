@@ -21,6 +21,7 @@ const string Usage = @"b4bmod <command> ...   (assets: /Game/... paths looked up
   mi <asset> set <param> <value> [set <param> <value>...] [parent <path>] -o <outdir>
                                           value: number (scalar), r,g,b[,a] (vector, linear 0-1),
                                           /Game/... texture path, or 'none'
+Checks: texcheck <dir> (every texture re-writes byte-identically?), deps <asset>, props <asset>
 Common: --src <dir containing Gobi/> (default $B4B_EXTRACT or ~/.local/share/b4b-coop/extract).
 Edits read an asset from <outdir> if it is already there, so several edits add up.";
 
@@ -37,6 +38,7 @@ try
         case "mi": Commands.Mi(opt); break;
         case "texcheck": Commands.TexCheck(opt.Pos(1)); break;
         case "deps": Commands.Deps(opt, opt.Pos(1)); break;
+        case "props": Commands.Props(opt, opt.Pos(1)); break;
         default: Console.Error.WriteLine(Usage); return 2;
     }
 }
@@ -474,6 +476,25 @@ static class Commands
             Console.WriteLine($"  SerializationBeforeCreate {string.Join(" ", e.SerializationBeforeCreateDependencies.Select(d => d.Index))}");
             Console.WriteLine($"  CreateBeforeCreate {string.Join(" ", e.CreateBeforeCreateDependencies.Select(d => d.Index))}");
         }
+    }
+
+    // ---- dev: top-level tagged properties of the main export
+    public static void Props(Opts o, string asset)
+    {
+        var (file, _) = Resolve(o, asset);
+        var a = Load(file);
+        var e = MainExport(a);
+        foreach (var p in e.Data)
+        {
+            string v = p switch
+            {
+                ArrayPropertyData ar => $"[{ar.Value.Length}] " + string.Join(", ", ar.Value.Take(40).Select(x => x is ObjectPropertyData ob ? ImportPath(a, ob.Value) : x.PropertyType.ToString())),
+                ObjectPropertyData ob => ImportPath(a, ob.Value),
+                _ => p.RawValue?.ToString() ?? p.PropertyType.ToString(),
+            };
+            Console.WriteLine($"{p.Name} ({p.PropertyType}): {v}");
+        }
+        Console.WriteLine($"native tail {e.Extras.Length} bytes");
     }
 
     // ---- dev: every texture under a dir parses and re-writes byte-identically
