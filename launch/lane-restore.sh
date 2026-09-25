@@ -8,14 +8,15 @@
 #                             ~/.local/share/b4b-coop/lane2-logs/, then drop the backup; `gamelock.sh release` calls it
 #   lane-restore.sh status    backup present or not; Flatpak game running or not
 #   lane-restore.sh busy      print PIDs of a game started by Flatpak Steam (Dan playing); exit 1 if none
-# Only top-level files of the game root and Gobi/Binaries/Win64 are covered (the only places the lane writes);
-# the Flatpak Steam's compatdata and saves are never touched.
+# Covered: top-level files of the game root and Gobi/Binaries/Win64, and the b4bcoop-addons folder (add-on tests:
+# restored as it was, or removed if the player had none); the Flatpak Steam's compatdata and saves are never touched.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 B4B_LANE=2   # always the Flatpak folder (B4B_DIR is ignored here)
 source "$here/lane.sh"
 game="$lane_game" bin="$lane_game/Gobi/Binaries/Win64"
 bk="$HOME/.local/share/b4b-coop/lane2-player-backup"
+addons="$lane_game/b4bcoop-addons"
 logs="$HOME/.local/share/b4b-coop/lane2-logs"
 # the game's own files: never copied, never removed
 is_game_file() { case "$1" in Back4Blood.exe|start_protected_game.exe|libScePad.dll) return 0 ;; esac; return 1; }
@@ -46,6 +47,8 @@ backup() {
     done
   done
   (cd "$bk.tmp" && find root bin -type f -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+  if [[ -d $addons ]]; then cp -a "$addons" "$bk.tmp/addons"; echo present > "$bk.tmp/addons.state"
+  else echo absent > "$bk.tmp/addons.state"; fi
   mv "$bk.tmp" "$bk"
   echo "lane-restore: backed up $(wc -l < "$bk/SHA256SUMS") player file(s) of lane 2 into $bk"
 }
@@ -72,15 +75,24 @@ restore() {
       rm -f "$d/${f##*/}"; cp -p "$f" "$d/"
     done
   done
+  # the add-ons folder (only with a backup that recorded its state: older backups didn't)
+  if [[ -f $bk/addons.state ]]; then
+    rm -rf "$addons"
+    if [[ $(cat "$bk/addons.state") == present ]]; then cp -a "$bk/addons" "$addons"; fi
+  fi
   # verify against the game folder itself
   local bad=0
   while read -r sum path; do
     sub=${path%%/*} n=${path#*/}; d=$game; [[ $sub == bin ]] && d=$bin
     [[ $(sha256sum < "$d/$n" | cut -d' ' -f1) == "$sum" ]] || { echo "lane-restore: MISMATCH $d/$n" >&2; bad=1; }
   done < "$bk/SHA256SUMS"
+  if [[ -f $bk/addons.state ]]; then
+    if [[ $(cat "$bk/addons.state") == present ]]; then diff -r -q "$bk/addons" "$addons" >&2 || bad=1
+    elif [[ -e $addons ]]; then echo "lane-restore: $addons still there" >&2; bad=1; fi
+  fi
   [[ $bad == 0 ]] || { echo "lane-restore: backup kept in $bk" >&2; exit 1; }
   ((${#kept[@]})) && printf 'lane-restore: left unknown new file %s\n' "${kept[@]}"
-  echo "lane-restore: restored $(wc -l < "$bk/SHA256SUMS") player file(s) in $game (sha256 verified)"
+  echo "lane-restore: restored $(wc -l < "$bk/SHA256SUMS") player file(s) in $game (sha256 verified), b4bcoop-addons $(cat "$bk/addons.state" 2>/dev/null || echo 'not covered')"
   rm -rf "$bk"
 }
 

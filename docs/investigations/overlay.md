@@ -21,9 +21,9 @@ command has a control (checklist below); the chat commands stay.
 
 ## Panel registry (overlay.h)
 - `overlay_add_panel(name, order, draw)` from a module's init; a tab per panel, sorted by order (Session 10, Players 20,
-  Camera 30, Flashlight 40, Cheats 50, Settings 90, Help 100; the models branch adds e.g. Models 60, Add-ons 70).
+  Camera 30, Flashlight 40, Cheats 50, Add-ons 70 (addons.c, models branch), Settings 90, Help 100; Models 60 next).
 - Widgets: `ov_text/_dim/_warn`, `ov_heading`, `ov_button`, `ov_button_confirm` (second click within 3 s),
-  `ov_checkbox`, `ov_radio`, `ov_slider(_int)` + `ov_edit_done`, `ov_input_text/int`, `ov_combo`, `ov_key`, tables,
+  `ov_checkbox`, `ov_radio`, `ov_selectable` (list row), `ov_slider(_int)` + `ov_edit_done`, `ov_input_text/int`, `ov_combo`, `ov_key`, tables,
   `ov_tooltip`, `ov_copy`.
 - Permissions: `ov_begin_perm(CMD_HOST|CMD_CHEAT)` ... `ov_end_perm()` greys the block out on a client (or with cheats
   off) and shows the reason (a line, and a tooltip on each disabled control). `ov_allowed()` for single controls.
@@ -32,7 +32,7 @@ command has a control (checklist below); the chat commands stay.
   the edit ends, `cmds_ini_set` for that key only (val NULL = default: the line is commented out). Live ini reload
   keeps the window in sync because panels read the modules' current values every frame.
 - The window log shows ov_run replies and every local chat line (`chat.c show_text` -> `overlay_note`).
-- Dev: `overlay open|close|status|log|tab <name>|press <label>|set <label> <value>|locate <label>|mouse <x> <y>`
+- Dev: `overlay open|close|status|log|tab <name>|press <label>|set <label> <value>|locate <label>|mouse <x> <y>|wheel <n>`
   (press/set drive a control by its ImGui label through the same draw code; disabled controls can't be driven).
 
 ## Parity checklist (main's command set)
@@ -66,6 +66,9 @@ command has a control (checklist below); the chat commands stay.
 | `/slomo <x>` | Cheats: game speed slider (on release), Normal speed |
 | `/win /lose` | Cheats: Win / Lose the mission (confirm) |
 | `/supply +N`, `/unlockall` | Cheats: amount + Add supply points, Unlock all (both confirm); `/unlockall check` via the Help box |
+| `/addons [list]`, `/addons info <#>` (anyone) | Add-ons: table in load order (on, #, title + state / "not loaded: why", kind), conflicts; click a row = details (author, description, content class + first gameplay file, id Copy, outfits it adds, its conflicts, `/addons info` button); folder path Copy; "Load add-ons" (`addons`, restart) |
+| `/addons on\|off <#>` (anyone) | Add-ons: the row's checkbox (runs `/addons on\|off <file>`); beyond the chat: Up/Down (load order, `addons_move`), banner while `addonlist.txt` differs from what is mounted; hand edits of the file are re-read |
+| `/addons players`, `/addons policy` (host) | Add-ons: policy radios (`addons_policy`, saved + live via `addons_live`), players' summaries table, `/addons players` button; greyed on a client |
 | ini keys | Settings: text size, overlay/flashlight/third-person keys; Camera: `thirdperson*`; Flashlight: sticky; Session: `presence`, `allow_joins`, `allow_steamids` |
 
 Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID Copy.

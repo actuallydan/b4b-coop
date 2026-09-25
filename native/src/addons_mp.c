@@ -23,6 +23,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "overlay.h"
 
 enum { POL_ANY, POL_COSMETIC, POL_NONE, POL_MATCH };
 #define ADDONS_POLICY_DEFAULT POL_COSMETIC   // the one place to change the default (docs: COMMANDS.md, addons.md)
@@ -38,6 +39,15 @@ int addons_policy_set(const char *v) {
     return -1;
 }
 const char *addons_policy_name(void) { return POLICY_NAMES[policy]; }
+
+// b4bcoop.ini addons_policy= changed while the game runs (or set from the ~ window): NULL = back to the default
+int addons_live(const char *key, const char *v) {
+    if (strcmp(key, "addons_policy")) return 0;
+    if (!v) policy = ADDONS_POLICY_DEFAULT;
+    else if (addons_policy_set(v)) LOG("addons: bad addons_policy=%s (any|cosmetic|none|match), keeping %s", v, addons_policy_name());
+    LOG("addons: policy %s (b4bcoop.ini)", POLICY_NAMES[policy]);
+    return 1;
+}
 
 // ---- summary ----
 typedef struct { char g; char id[9]; char title[TITLE_MAX + 1]; } Entry;
@@ -227,24 +237,35 @@ static void show_summary(const char *value, Out *o) {
     if (s.omitted) out_printf(o, "  ... %d more not listed\n", s.omitted);
 }
 
-static void players(Out *o) {
-    UObject **pa; int n = admin_player_array(&pa);
+// Host: the other human players (player state index, name, their login's add-on summary or NULL if unknown)
+typedef struct { int idx; char name[64]; const Rec *rec; } Remote;
+static int remotes(Remote *out, int max) {
+    UObject **pa; int n = admin_player_array(&pa), k = 0;
     static UClass *pcc;
     if (!pcc) pcc = ue_find_class("PlayerController");
     UObject *me = ue_local_pc();
+    for (int i = 0; i < n && k < max; i++) {
+        UObject *pc = ue_get_ptr(pa[i], "Owner");
+        if (!pc || !pcc || !ue_is_a(pc, pcc) || pc == me) continue;   // bots, the host
+        out[k].idx = i;
+        admin_display_name(pa[i], out[k].name, sizeof out[k].name);
+        out[k].rec = rec_of(ue_get_ptr(pc, "Player"));
+        k++;
+    }
+    return k;
+}
+
+static void players(Out *o) {
+    Remote pl[16];
+    int n = remotes(pl, 16);
     AddonRef r[MAX_ADDONS];
     int mine = own(r, MAX_ADDONS), ng = 0;
     for (int i = 0; i < mine; i++) ng += r[i].gameplay;
     out_printf(o, "add-ons policy: %s\n", POLICY_NAMES[policy]);
     out_printf(o, "you (host): %d cosmetic, %d gameplay\n", mine - ng, ng);
     for (int i = 0; i < n; i++) {
-        UObject *pc = ue_get_ptr(pa[i], "Owner");
-        if (!pc || !pcc || !ue_is_a(pc, pcc) || pc == me) continue;   // bots, the host
-        char nm[64];
-        admin_display_name(pa[i], nm, sizeof nm);
-        const Rec *rc = rec_of(ue_get_ptr(pc, "Player"));
-        out_printf(o, "#%d %s:\n", i, nm);
-        if (rc) show_summary(rc->value, o); else out_printf(o, "  unknown (joined before the host's agent saw the login)\n");
+        out_printf(o, "#%d %s:\n", pl[i].idx, pl[i].name);
+        if (pl[i].rec) show_summary(pl[i].rec->value, o); else out_printf(o, "  unknown (joined before the host's agent saw the login)\n");
     }
 }
 
@@ -276,4 +297,51 @@ int addons_mp_slash(const char *sub, char *arg, Out *o) {
         return 1;
     }
     return 0;
+}
+
+// ~ window, Add-ons tab (addons.c): the host's policy (saved to b4bcoop.ini, like editing addons_policy=) and what
+// each player runs (/addons players). A client sees its own policy greyed out, with the reason.
+void addons_mp_panel(void) {
+    static const char *DESC[] = {"everyone, whatever they run", "cosmetic add-ons only (default)", "only players without add-ons",
+                                 "cosmetic free; gameplay add-ons must be the same as yours"};
+    ov_heading("Who may join with add-ons (host)");
+    ov_begin_perm(CMD_HOST);
+    for (int i = 0; i < 4; i++) {
+        char lab[32];
+        snprintf(lab, sizeof lab, "%s##pol", POLICY_NAMES[i]);
+        if (ov_radio(lab, policy == i) && policy != i) ov_setting("addons_policy", i == ADDONS_POLICY_DEFAULT ? NULL : POLICY_NAMES[i], 1);
+        ov_same_line();
+        ov_text_dim("%s", DESC[i]);
+    }
+    ov_end_perm();
+    ov_text_dim("addons_policy in b4bcoop.ini; applies to the next player who joins.");
+    ov_heading("Players' add-ons");
+    AddonRef r[MAX_ADDONS];
+    int mine = own(r, MAX_ADDONS), ng = 0;
+    for (int i = 0; i < mine; i++) ng += r[i].gameplay;
+    ov_text("You: %d cosmetic, %d gameplay", mine - ng, ng);
+    if (admin_is_client()) {
+        ov_text_dim("You are in someone else's session: the host saw this summary when you joined and decides with its "
+                    "own policy. Hosts don't send their add-ons or policy.");
+        return;
+    }
+    if (!ue_is_listen_server(ue_world())) { ov_text_dim("Not hosting a session."); return; }
+    Remote pl[16];
+    int n = remotes(pl, 16);
+    static Out o;
+    if (!n) ov_text_dim("No other players.");
+    else if (ov_table_begin("addonplayers", 2)) {
+        static const char *H[] = {"Player", "Add-ons (from their login)"};
+        ov_table_header(H, 2);
+        for (int i = 0; i < n; i++) {
+            ov_table_next(); ov_text("#%d %s", pl[i].idx, pl[i].name);
+            ov_table_next();
+            out_reset(&o);
+            if (pl[i].rec) show_summary(pl[i].rec->value, &o); else out_printf(&o, "unknown (joined before the host's agent saw the login)");
+            while (o.len && o.buf[o.len - 1] == '\n') o.buf[--o.len] = 0;
+            ov_text("%s", o.buf[0] == ' ' ? o.buf + 2 : o.buf);
+        }
+        ov_table_end();
+    }
+    if (ov_button("List in the log (/addons players)")) ov_run("addons players");
 }

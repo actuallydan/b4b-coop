@@ -57,7 +57,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `addons.c` add-ons (#20): `<game>\b4bcoop-addons\*.pak` (ini `addons_dir=`, `addons=0`), read in DllMain:
     `addonlist.txt` on/off + load order (later wins, read order 1000+), embedded `b4bcoop-addoninfo.txt`, index SHA1
     checked, conflicts (same file; "mixed" = one package from two add-ons) logged + one chat notice; chat
-    `/addons [on|off|info <#>]` (applies on restart). Packer `modkit/addon.py pack|info|check`.
+    `/addons [on|off|info <#>]` (applies on restart); `~` Add-ons tab (on/off, Up/Down load order = `ord[]` + file,
+    details, host `addons_policy` + players; addons.md §8). Packer `modkit/addon.py pack|info|check`.
     Client-side only, no protocol bump. docs/investigations/addons.md.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
@@ -72,8 +73,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `overlay_key`, `overlay_scale`. Panels: `overlay.h` (`overlay_add_panel` from a module's init + C `ov_*` widgets;
     actions `ov_run` = the chat path `admin_slash`, settings `ov_setting` = ini live handler + writer; `ov_begin_perm`
     greys out host/cheat controls). Tabs live next to their module (presence.c Session, admin.c Players,
-    thirdperson.c Camera, flashlight.c Flashlight, cheats.c Cheats). Dev `overlay open|close|status|tab|press|set|
-    locate|mouse|log`; e2e has a smoke check. docs/investigations/overlay.md (parity checklist). **It replaces the chat
+    thirdperson.c Camera, flashlight.c Flashlight, cheats.c Cheats, addons.c Add-ons). Dev `overlay open|close|status|tab|press|set|
+    locate|mouse|wheel|log`; e2e has a smoke check. docs/investigations/overlay.md (parity checklist). **It replaces the chat
     commands:** port every chat command into it; once it has them all, new features get overlay controls (+ ini keys)
     only, not new chat commands. Don't remove existing chat commands (keep `/say`).
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;

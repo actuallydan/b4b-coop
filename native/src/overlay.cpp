@@ -399,6 +399,12 @@ extern "C" int ov_radio(const char *label, int active) {
     after_item();
     return r || drive_take(label, 1);
 }
+extern "C" int ov_selectable(const char *label, int selected) {
+    LOCKED;
+    int r = ImGui::Selectable(label, selected != 0);
+    after_item();
+    return r || drive_take(label, 1);
+}
 extern "C" int ov_slider(const char *label, float *v, float lo, float hi, const char *fmt) {
     LOCKED;
     int r = ImGui::SliderFloat(label, v, lo, hi, fmt ? fmt : "%.0f", ImGuiSliderFlags_AlwaysClamp);
@@ -847,7 +853,7 @@ extern "C" void overlay_tick(float) {
 extern "C" int overlay_is_open(void) { return open_ != 0; }
 
 #ifndef B4B_RELEASE
-// dev: overlay [open|close|status|log|tab <name>|press <label>|set <label> <value>|locate <label>|mouse <x> <y>]
+// dev: overlay [open|close|status|log|tab <name>|press <label>|set <label> <value>|locate <label>|mouse <x> <y>|wheel <n>]
 extern "C" int overlay_cmd(const char *verb, char *rest, Out *o) {
     if (strcmp(verb, "overlay")) return 0;
     char *a = rest ? strtok(rest, " ") : nullptr, *b = a ? strtok(nullptr, "") : nullptr;
@@ -859,6 +865,9 @@ extern "C" int overlay_cmd(const char *verb, char *rest, Out *o) {
         LOCKED;
         float x, y;
         if (sscanf(b, "%f %f", &x, &y) == 2 && imgui_ready) { mouse_x = x; mouse_y = y; ImGui::GetIO().AddMousePosEvent(x, y); }
+    } else if (a && !strcmp(a, "wheel") && b) {   // mouse wheel at the cursor (notches, + = up), e.g. scroll a tab
+        LOCKED;
+        if (imgui_ready) ImGui::GetIO().AddMouseWheelEvent(0, (float)atof(b));
     } else if (a && (!strcmp(a, "press") || !strcmp(a, "set") || !strcmp(a, "locate")) && b) {
         LOCKED;
         char lab[128] = "", *val = nullptr;
