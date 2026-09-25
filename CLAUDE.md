@@ -64,6 +64,11 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     on both sides), then bans in `b4bcoop-bans.txt`, lock). B4B's PreLogin gets the options as a parsed TArray of
     {FString key, value} (`options_str`), not one FString.
     docs/investigations/chat-commands.md.
+  - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
+    /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
+    own save `/supply /unlockall`); off again back in camp; every cheat touching others is a host notice; a map with
+    cheats on sends remote players no rewards (rewards.c), stats or achievements. Dev `cheat <cmd>`, `cheatprobe`.
+    Player reference `docs/commands-cheats.md`. Host-side only, no protocol bump.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP

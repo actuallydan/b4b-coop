@@ -111,3 +111,17 @@ int joinpolicy_cmd(const char *verb, char *rest, Out *o);   // dev builds
 int rewardguard_init(void);
 void rewardguard_tick(float dt);
 int rewardguard_cmd(const char *verb, char *rest, Out *o);  // dev builds: `rewardguard`, host `rewardtest ...`
+
+// admin.c helpers shared with cheats.c
+int admin_player_array(UObject ***arr);                 // GameState.PlayerArray (humans and bots), /players order
+UObject *admin_find_player(const char *arg, Out *o);    // "#n", name or unique prefix -> PlayerState (NULL + message)
+void admin_display_name(UObject *ps, char *buf, size_t n);   // player name, or a bot's hero name
+int admin_is_client(void);                              // connected to someone else's session
+void admin_notice(const char *fmt, ...);                // "[b4bcoop] <text>" to every player (host notice)
+
+// cheats.c: opt-in host-only sandbox (#14, docs/commands-cheats.md)
+int cheats_slash(const char *verb, char *rest, Out *o); // 1 if verb is a cheat command (handled or refused)
+void cheats_tick(float dt);
+int rewards_execute_local(UObject *ppc, void *cmd);     // rewards.c: a profile command on the host's own profile
+int cheats_tainted(void);                               // cheats were on during this map: rewards.c forwards nothing
+int cheats_cmd(const char *verb, char *rest, Out *o);   // dev builds: `cheat <cmd> ...`, `cheatprobe ...`

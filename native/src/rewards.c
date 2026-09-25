@@ -22,6 +22,7 @@
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
+#include "cmds.h"
 
 // void UGobiPlayerProfileComponent::ExecuteCommand(const FPlayerProfileCommand&, bool bPersist)
 #define ADDR_PPC_EXECUTE VA(0x141BC4970ull)
@@ -87,6 +88,13 @@ static void execute_detour(UObject *ppc, void *cmd, uint8_t persist) {
     for (int i = 0; i < (int)NFWD; i++) {
         if (FORWARD[i].type != type) continue;
         int delta = (type == 5 || type == 20) ? *(int32_t *)((char *)cmd + 8) : (type == 19 ? *(int32_t *)((char *)cmd + 0x28) : 0);
+        // The host had cheats on during this map (cheats.c): no reward reaches another player's save. Only their own
+        // burn-card charge (consumable -1, a card they played) still goes through.
+        if (cheats_tainted() && !(type == 19 && delta < 0)) {
+            LOG("rewards: NOT forwarding %s (%d) to remote player %s: cheats were on this map", FORWARD[i].name, delta,
+                hydra_id(ppc, id, sizeof id));
+            return;
+        }
         LOG("rewards: forwarding %s (%d) to remote player %s", FORWARD[i].name, delta, hydra_id(ppc, id, sizeof id));
         forward(ppc, cmd, i);
         return;
@@ -94,6 +102,14 @@ static void execute_detour(UObject *ppc, void *cmd, uint8_t persist) {
     // stats / starting locations reach the client natively; anything else is worth seeing in a live test
     if (type != 7 && type != 8 && nlogged++ < 50)
         LOG("rewards: not forwarded: command type %d for remote player %s", type, hydra_id(ppc, id, sizeof id));
+}
+
+// cheats.c (/supply, /unlockall): run a profile command on the HOST's own, local profile component (the original
+// ExecuteCommand, persisted; never forwarded). -1 if the hook isn't in place or the component isn't local.
+int rewards_execute_local(UObject *ppc, void *cmd) {
+    if (!orig_execute || !ppc || !cmd || is_remote_pc(COMP_OWNER(ppc))) return -1;
+    orig_execute(ppc, cmd, 1);
+    return 0;
 }
 
 int rewards_init(void) {
