@@ -86,6 +86,33 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
 6. **Install and test**: `b4bmod install mymod.pak`, start the game, wear the outfit (customization screen, or chat
    `/model mom_elite_04`). Other players see it only if they have the add-on too.
 
+## Add an outfit
+The survivor pipeline above **replaces** the template: everyone with your add-on sees your model instead of Mom's
+Elite 04. Add `--as <name>` and it **adds** an outfit instead (Left 4 Dead style): nothing of the game is replaced, and
+players put it on with the chat command `/model <name>`, on any survivor.
+```
+b4bmod survivor mymodel.fbx ^
+    --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM ^
+    --fp     /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM ^
+    --slot body=Head --slot jacket=Torso --slot boots=Legs ^
+    --as casual_joe -o mymod --title "Casual Joe" --zip
+```
+- `<name>`: lower-case letters, digits and `_` (up to 32, starting with a letter). It is what players type, so make
+  it unique (`yourname_outfit`), not a survivor or outfit name the game has (`holly`, `mom_elite_04`: those win).
+- Everything else works as above; the template is only the starting point (skeleton, slots, materials). The files go
+  to `mymod/Gobi/Content/b4bcoop/outfits/<name>/` (your meshes, textures and the template's material instances,
+  pointed at your textures), and `mymod/addoninfo.txt` gets a line the b4bcoop mod reads:
+  `outfit=casual_joe|mom|/Game/b4bcoop/outfits/casual_joe/3P_..._SKM.3P_..._SKM|/Game/.../FP_..._SKM.FP_..._SKM|Casual Joe`
+  (name | template survivor | third-person mesh | first-person arms | title; `--title` is the title). Several
+  outfits in one add-on: run it once per outfit with the same `-o mymod` (the pack step packs all of them).
+- In game: `/model list outfits` lists the outfits of your add-ons, `/model casual_joe` puts it on (third person and
+  your first-person arms), `/model reset` takes it off. Nothing is saved.
+- **Other players**: those with the same add-on see your outfit; those without it (or without b4bcoop) see your
+  survivor in their base pieces (head, torso, legs of your profile), never an empty or broken model. The host lets it
+  through without having the add-on; a host with `/models off` or `addons_policy=none` refuses it.
+- Weapons: `--as` is for survivors only so far.
+- Picking it in the game's customization screen is not supported (only `/model`).
+
 ## Make a weapon model
 1. **Your model**: an FBX with **separate objects per moving part**, named like `Magazine`, `Bolt`, `Trigger` (others
    stay on the gun), barrel along +X and up +Z (else `--forward -y --up +z` ...), real-world size (it is scaled to the

@@ -80,7 +80,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `models.c` `/model` runtime model swaps (#19, `models` branch): another survivor's outfits/pieces through the
     game's own replicated `PlayerSlot.CurrentCustomizationSet` (`ServerSelectCustomizationSet`, no validation), NPC
     bodies as a made-up row `b4bcoop.npc.<name>` put on by every b4bcoop machine; host `/model <player>`,
-    `/models off` (hook on the RPC implementation), campaign-run save keeps own looks. Dev `mdl ...`.
+    `/models off` (hook on the RPC implementation), campaign-run save keeps own looks; add-on outfits (addoninfo
+    `outfit=`, `b4bmod survivor --as`) as made-up row `b4bcoop.outfit.<name>`, 3P + FP arms, others see the
+    survivor (new-assets.md §8). Dev `mdl ...`.
     docs/investigations/model-swap.md, player page docs/commands-models.md.
   - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
     /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's

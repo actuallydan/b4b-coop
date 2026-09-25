@@ -35,7 +35,7 @@ Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](
 | `/leave` | Leaves the host's game, back to your own Fort Hope | `/leave` |
 | `/host` | Starts hosting your Fort Hope (only needed with `host=0`) | `/host` |
 | `/model <name>` | Changes how your survivor looks, this game session only | `/model karlee_elite_03`, `/model holly` |
-| `/model list [survivor\|npc]` | The looks you can use | `/model list`, `/model list walker` |
+| `/model list [survivor\|npc\|outfits]` | The looks you can use (`outfits`: those your add-ons add) | `/model list`, `/model list walker` |
 | `/model reset` | Back to your own look | `/model reset` |
 | `/addons` | Lists your add-ons, on/off, and conflicts | `/addons` |
 | `/addons on\|off <#>` | Switches an add-on on or off from the next game start | `/addons off 2` |
@@ -92,8 +92,9 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
   is `Joining by IP address is off. Join through Steam instead: ...`.
 
 **`/model`**: wear another survivor's outfit (`/model walker_elite_07`), a whole survivor's look (`/model holly`),
-single pieces (`/model holly_head_03`) or a Fort Hope NPC (`/model vanessa`). Everyone sees survivor outfits; NPC
-looks only players with b4bcoop. Kept through map changes, death and respawn; nothing is saved. `/model` alone shows
+single pieces (`/model holly_head_03`), a Fort Hope NPC (`/model vanessa`) or an outfit one of your add-ons adds
+(`/model list outfits`). Everyone sees survivor outfits; NPC looks only players with b4bcoop; add-on outfits only
+players with the same add-on (the others see your survivor). Kept through map changes, death and respawn; nothing is saved. `/model` alone shows
 what you wear. All names, examples and limits: `docs/commands-models.md`.
 
 **`/leave`**: only while in someone else's game (else `you are not in someone else's session`).
@@ -271,6 +272,8 @@ copy the backup over `PlayerProfileSettings.sav`. If the backup can't be made, n
 Add-ons change how the game looks (textures, models, UI), Left 4 Dead style: drop a file in a folder, restart. There
 is no in-game browser. Add-ons are **only on your PC**: other players don't need them and don't see them. If you have
 a survivor skin add-on, you see it on every survivor wearing that outfit; players without it see the normal outfit.
+Some add-ons **add** outfits instead of replacing one: `/model list outfits` lists them, `/model <name>` puts one on;
+players with the same add-on see it on you, the others your survivor. A host with `addons_policy=none` refuses them.
 
 **Install:** an add-on is one `.pak` file. Put it in the `b4bcoop-addons` folder in the game folder (next to
 `Back4Blood.exe`; create the folder if it isn't there). An add-on zip already contains that folder: extract it into

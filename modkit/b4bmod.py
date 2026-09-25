@@ -25,6 +25,8 @@
                                           your model (rigged to the template's skeleton) -> the game's mesh
   mesh edit <asset> -o <moddir> [--inflate CM] [--scale-section L:S:F] [--material L:S:M]
   survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
+         [--as <name>]                    --as: ADD an outfit instead of replacing the template (new packages under
+                                          /Game/b4bcoop/outfits/<name>/; players wear it with /model <name>)
   weapon <model> --fp-mesh <FP SKM | code like AR02> -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
          [--forward +x] [--up +z] [--part REGEX=BONE]...   the 3P/static/magazine meshes are found in the FP mesh's
          folder (override: --3p-mesh <SKM>, --static <SM>..., --mag-static <SM>, each also `none`; --no-infer)
@@ -650,6 +652,8 @@ def cmd_model(kind, a):
         die(f"b4bmod {kind} needs {need} <game mesh> (see docs/meshes.md)", 2)
     if kind == "weapon":
         infer_weapon_meshes(a)
+    if "--as" in a and meta["title"] and "--as-title" not in a:
+        a += ["--as-title", meta["title"]]   # the outfit's name in /model list
     templates = [a[i + 1] for i, x in enumerate(a[:-1]) if x in TEMPLATE_FLAGS[kind]]
     for t in templates:
         if t.startswith(("/Game/", "/Engine/")):

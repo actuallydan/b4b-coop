@@ -85,6 +85,7 @@ b4bmod survivor mymodel.fbx --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Eli
 (one command on one line.) Step 3 extracts what it needs from the game, fits your model (rigged or not) onto the
 game's skeleton in Blender, makes the LODs and the textures, and writes `mymod.pak` (the add-on), `mymod.zip` (to
 share) and installs it. Start the game and wear the outfit. Weapons: `b4bmod weapon mygun.fbx --fp-mesh ...`.
+Add `--as <name>` to add an outfit instead of replacing Mom's (players wear it with `/model <name>`).
 
 ## Commands
 `b4bmod help` prints all of them. The main ones:
@@ -99,6 +100,7 @@ share) and installs it. Start the game and wear the outfit. Weapons: `b4bmod wea
 | `mi <material instance> [set <param> <value>...] -o <moddir>` | material parameters |
 | `rename <asset> </Game/new/path> -o <moddir> [--ref old=new]...` | a copy of an asset under a new path (textures, materials, meshes); experimental, see docs/textures.md |
 | `survivor <model> --outfit ... [--fp ...] -o <moddir>`, `weapon <model> --fp-mesh <FP mesh or code> -o <moddir>` | your model, fitted in Blender, to a survivor outfit or a weapon, packed (`--install` installs it) |
+| `survivor ... --as <name>` | the same, as an **added** outfit players wear with `/model <name>` (nothing of the game replaced; docs/meshes.md "Add an outfit") |
 | `mesh info / export / import / edit` | skeletal meshes: slots and LODs; to glTF; your own fitted FBX/glTF back; quick edits |
 | `pack <moddir> -o <name>.pak [--title ...] [--zip]` | the add-on |
 | `install <pak>`, `uninstall <name>`, `check [<pak>]` | into / out of `<game>\b4bcoop-addons`; what the game will load |

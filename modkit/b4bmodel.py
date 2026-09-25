@@ -6,6 +6,8 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
   b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir>
         [--slot MAT=SLOT]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
         [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none]
+        [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
+                                            `outfit=` line in <moddir>/addoninfo.txt (in game: /model <name>)
   b4bmodel.py weapon <model> --fp-mesh <FP weapon SKM> [--3p-mesh <3P weapon SKM>] [--static <SM>]... -o <moddir>
         [--slot MAT=SLOT]... [--tex MAT=...]... [--forward +x] [--up +z] [--scale fit|F] [--part REGEX=BONE]...
         [--mag-static <SM>] [--lods 1,0.5] [--skins retarget|keep]
@@ -385,6 +387,94 @@ def survivor(o):
     log("done:", moddir)
 
 
+# ---- added outfits (--as <name>): the result as NEW packages, nothing of the game replaced -------------------------
+# docs/investigations/new-assets.md. The pipeline writes into a staging folder at the template's paths; every package
+# it wrote (meshes, textures, hair MIs) and every material instance of the template's own folder the meshes use
+# (directly or as a parent) is copied under /Game/b4bcoop/outfits/<name>/ with `b4bmod rename`, references rewritten
+# between the copies (mesh -> MIs -> textures). Shared game packages (skeleton, physics asset, master materials,
+# textures the pipeline didn't change) stay referenced as they are. The addoninfo gets an `outfit=` line the b4bcoop
+# agent reads (`/model <name>`).
+OUTFIT_ROOT = "/Game/b4bcoop/outfits/"
+OUTFIT_NAME_RX = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+def main_class(f):
+    p = upkg.Package(f)
+    e = next((x for x in p.exports if x["outer"] == 0), p.exports[0] if p.exports else None)
+    return p.class_name(e) if e else None, p
+
+
+def outfit_name(o):
+    n = (o.get("as") or "").lower()
+    if not OUTFIT_NAME_RX.match(n):
+        die(f"--as {o.get('as')!r}: a name of letters, digits and _ (up to 32, starting with a letter), e.g. --as zombie_mom")
+    return n
+
+
+def as_outfit(o, name, stage, meshes):
+    moddir, src = o["out"], src_dir(o)
+    owned = {owned_prefix(m) for m in meshes}
+
+    def file_of(pkg):   # what the pipeline wrote, else the game's (extracted) package
+        for base in (stage, src):
+            f = upkg.game_path_to_file(pkg, base)
+            if f and os.path.exists(f): return f
+        return None
+
+    copy, todo = {}, [upkg.file_to_game_path(m) for m in meshes]
+    while todo:
+        pkg = todo.pop()
+        if pkg in copy or not pkg.startswith("/Game/"): continue
+        f = file_of(pkg)
+        written = bool(f) and os.path.abspath(f).startswith(os.path.abspath(stage) + os.sep)
+        if not f:
+            if any(pkg.startswith(x) for x in owned): die(f"{pkg}: not extracted (b4bmod extract '{pkg}')")
+            continue
+        cls, p = main_class(f)
+        # the template folder's material instances come along even when unchanged: they point at textures we replace
+        if not written and not (cls == "MaterialInstanceConstant" and any(pkg.startswith(x) for x in owned)): continue
+        copy[pkg] = (f, cls)
+        if cls in ("SkeletalMesh", "MaterialInstanceConstant"):
+            todo += [n for cp, cn, outer, n in p.imports if cn == "Package" and n.startswith("/Game/")]
+    new, seen = {}, {}
+    for pkg in sorted(copy):
+        base = pkg.rsplit("/", 1)[1]
+        if base.lower() in seen: die(f"--as: {pkg} and {seen[base.lower()]} have the same name; can't put both in one folder")
+        seen[base.lower()] = pkg
+        new[pkg] = OUTFIT_ROOT + name + "/" + base
+    old_dir = os.path.join(moddir, "Gobi", "Content", *OUTFIT_ROOT[len("/Game/"):].split("/"), name)
+    if os.path.isdir(old_dir): shutil.rmtree(old_dir)   # a previous run of this outfit
+    refs = [x for old, nw in sorted(new.items()) for x in ("--ref", f"{old}={nw}")]
+    b4bmod = find_b4bmod() or die("b4bmod.py not found next to b4bmodel.py (rename)")
+    for pkg in sorted(copy, key=lambda k: {"Texture2D": 0, "MaterialInstanceConstant": 1}.get(copy[k][1], 2)):
+        f, cls = copy[pkg]
+        r = subprocess.run([sys.executable, b4bmod, "rename", f, new[pkg], "-o", moddir, "--src", src] + refs,
+                           capture_output=True, text=True)
+        if r.returncode:
+            sys.stderr.write(r.stdout + r.stderr); die(f"--as: copying {pkg} failed")
+        log(f"  {cls or '?'}: {pkg} -> {new[pkg]}")
+    # the copies must not point at anything we copied (they would show the game's version) and must load their own
+    for pkg, nw in new.items():
+        f = upkg.game_path_to_file(nw, moddir)
+        p = upkg.Package(f)
+        stale = sorted({n for cp, cn, outer, n in p.imports if cn == "Package" and n in new})
+        if stale: die(f"--as: {nw} still references {stale}")
+    obj = lambda pkg: f"{new[pkg]}.{pkg.rsplit('/', 1)[1]}" if pkg in new else ""
+    p3 = upkg.file_to_game_path(meshes[0])
+    pf = upkg.file_to_game_path(meshes[1]) if len(meshes) > 1 else None
+    m = re.search(r"/Heroes/([^/]+)/", p3)
+    hero = m.group(1).lower() if m else "-"
+    title = (o.get("as_title") or name).replace("|", "/").replace("\r", " ").replace("\n", " ")
+    line = f"outfit={name}|{hero}|{obj(p3)}|{obj(pf) if pf else ''}|{title}"
+    info = os.path.join(moddir, "addoninfo.txt")
+    lines = open(info, encoding="utf-8-sig").read().splitlines() if os.path.exists(info) else []
+    lines = [x for x in lines if not re.match(rf"\s*outfit\s*=\s*{re.escape(name)}\s*\|", x, re.I)] + [line]
+    with open(info, "w", encoding="utf-8", newline="\r\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+    log(f"outfit {name}: {len(new)} package(s) under {OUTFIT_ROOT}{name}/ (template: {hero}); addoninfo: {line}")
+    log(f"in game: /model {name}")
+
+
 # ---- weapon ---------------------------------------------------------------------------------------------------------
 
 def weapon(o):
@@ -568,9 +658,20 @@ def main():
     o.o["out"] = os.path.abspath(o.o["out"])
     o.o["work"] = os.path.abspath(o.get("work") or tempfile.mkdtemp(prefix="b4bmodel_"))
     os.makedirs(o.o["work"], exist_ok=True)
-    if cmd == "survivor":
+    if cmd == "survivor" and o.get("as"):
+        name, moddir = outfit_name(o), o.o["out"]
+        stage = os.path.join(o.o["work"], "stage")
+        shutil.rmtree(stage, ignore_errors=True)
+        o.o["out"] = stage
+        survivor(o)
+        o.o["out"] = moddir
+        src = src_dir(o.o)
+        meshes = [out_file(asset_file(o[k], src), stage) for k in ("outfit", "fp") if o.get(k)]
+        as_outfit(o.o, name, stage, meshes)
+    elif cmd == "survivor":
         survivor(o)
     elif cmd == "weapon":
+        if o.get("as"): die("--as: survivor outfits only (weapons: not yet)")
         weapon(o)
     elif cmd == "textures":
         man = json.load(open(o.pos[0]))

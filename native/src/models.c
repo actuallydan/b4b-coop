@@ -22,6 +22,8 @@
 //     bot its hero's default skin.
 //   - /models off|on (host): hook on ServerSelectCustomizationSet_Implementation refuses sets with another survivor's
 //     rows; turning it off resets every such slot.
+//   - Added outfits (add-ons with `outfit=` lines, addons.c; docs/investigations/new-assets.md): a made-up outfit row
+//     "b4bcoop.outfit.<name>" like the NPC bodies; every machine with that add-on puts its 3P mesh and FP arms on.
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -194,7 +196,8 @@ static void handle_str(const RowHandle *h, char *buf, size_t n) {
     const Entry *e = entry_by_row(h->table, h->row);
     if (!h->table) { snprintf(buf, n, "-"); return; }
     if (e) snprintf(buf, n, "%s", e->name);
-    else snprintf(buf, n, "%s/%s", ue_obj_name(h->table, t, sizeof t), ue_name(h->row, r, sizeof r));
+    else if (!strncmp(ue_name(h->row, r, sizeof r), "b4bcoop.", 8)) snprintf(buf, n, "%s", r);
+    else snprintf(buf, n, "%s/%s", ue_obj_name(h->table, t, sizeof t), r);
 }
 
 static UObject *load_asset(const char *path) {
@@ -276,18 +279,69 @@ static Npc *npc_of_row(FName row) {
     ue_name(row, b, sizeof b);
     return _strnicmp(b, NPC_PREFIX, sizeof NPC_PREFIX - 1) ? NULL : npc_by_name(b + sizeof NPC_PREFIX - 1);
 }
-static UObject *npc_mesh(Npc *n) {   // loaded on first use (blocking), kept alive by the components using it
-    if (n->mesh && ue_object_at(n->mesh_idx) == n->mesh) return n->mesh;
-    n->mesh = load_asset(n->path);
-    n->mesh_idx = n->mesh ? U_INDEX(n->mesh) : 0;
+// A skeletal mesh on the given skeleton, loaded on first use (blocking) and kept alive by the components using it;
+// *bad once it failed to load or has another skeleton.
+static UObject *mesh_on(const char *path, const char *skel, UObject **m, int32_t *mi, int *bad, const char *what) {
+    if (*bad) return NULL;
+    if (*m && ue_object_at(*mi) == *m) return *m;
+    *m = load_asset(path);
+    *mi = *m ? U_INDEX(*m) : 0;
     char b[64];
-    UObject *sk = n->mesh ? ue_get_ptr(n->mesh, "Skeleton") : NULL;
-    if (!sk || strcmp(ue_obj_name(sk, b, sizeof b), "3P_Biped_SK")) {
-        n->bad = 1;
-        LOG("models: NPC %s: %s", n->name, n->mesh ? "other skeleton, not usable" : "failed to load");
-        n->mesh = NULL;
+    UObject *sk = *m ? ue_get_ptr(*m, "Skeleton") : NULL;
+    if (!sk || strcmp(ue_obj_name(sk, b, sizeof b), skel)) {
+        *bad = 1;
+        LOG("models: %s %s: %s", what, path, *m ? "other skeleton, not usable" : "failed to load");
+        *m = NULL;
     }
-    return n->mesh;
+    return *m;
+}
+static UObject *npc_mesh(Npc *n) { return mesh_on(n->path, "3P_Biped_SK", &n->mesh, &n->mesh_idx, &n->bad, "NPC"); }
+
+// ---- added outfits: add-ons with `outfit=` lines (addons.c; made with modkit `b4bmod survivor --as <name>`) ----
+// Same made-up-row path as the NPC bodies, row "b4bcoop.outfit.<name>": every machine with that add-on puts its 3P
+// mesh on the body and its FP mesh on the first-person arms; machines without it (or without b4bcoop) show the
+// set's pieces, i.e. the wearer's own survivor. The host relays names it doesn't have itself.
+#define OUTFIT_PREFIX "b4bcoop.outfit."
+typedef struct {
+    char name[33], hero[24], title[64], addon[96], p3[200], pf[200];
+    UObject *m3, *mf; int32_t i3, i_f; int bad, fpbad;
+} Outf;
+#define MAX_OUTFS 64
+static Outf outfs[MAX_OUTFS];
+static int n_outfs = -1;
+static void build_outfits(void) {
+    AddonOutfit a[MAX_OUTFS];
+    n_outfs = addons_outfits(a, MAX_OUTFS);
+    for (int i = 0; i < n_outfs; i++) {
+        Outf *o = &outfs[i];
+        memset(o, 0, sizeof *o);
+        snprintf(o->name, sizeof o->name, "%s", a[i].name); snprintf(o->hero, sizeof o->hero, "%s", a[i].hero);
+        snprintf(o->title, sizeof o->title, "%s", a[i].title); snprintf(o->addon, sizeof o->addon, "%s", a[i].addon);
+        snprintf(o->p3, sizeof o->p3, "%s", a[i].mesh3p); snprintf(o->pf, sizeof o->pf, "%s", a[i].meshfp);
+        o->fpbad = !o->pf[0];
+        LOG("models: add-on outfit %s (\"%s\", %s): %s%s%s", o->name, o->title, o->addon, o->p3, o->pf[0] ? " + " : "", o->pf);
+    }
+}
+static Outf *outfit_by_name(const char *name) {
+    if (n_outfs < 0) build_outfits();
+    for (int i = 0; i < n_outfs; i++) if (!_stricmp(outfs[i].name, name)) return &outfs[i];
+    return NULL;
+}
+// "b4bcoop.outfit.<name>" with a well-formed name (any add-on's, known here or not): 1, name copied to out
+static int outfit_row(FName row, char *out, size_t n) {
+    char b[80];
+    ue_name(row, b, sizeof b);
+    if (_strnicmp(b, OUTFIT_PREFIX, sizeof OUTFIT_PREFIX - 1)) return 0;
+    const char *nm = b + sizeof OUTFIT_PREFIX - 1;
+    size_t l = strlen(nm);
+    if (!l || l > 32) return 0;
+    for (const char *c = nm; *c; c++) if (!islower((unsigned char)*c) && !isdigit((unsigned char)*c) && *c != '_') return 0;
+    if (out) snprintf(out, n, "%s", nm);
+    return 1;
+}
+static Outf *outfit_of_row(FName row) {
+    char nm[40];
+    return outfit_row(row, nm, sizeof nm) ? outfit_by_name(nm) : NULL;
 }
 
 // ---- players, slots, sets ----
@@ -324,13 +378,14 @@ static int set_foreign(const CustSet *s, int hero) {
     for (int k = 0; k < 4; k++) if (foreign(&s->slot[k], hero)) return 1;
     return 0;
 }
-// Every non-empty handle is a row of a CharacterCustomizationRow table, or (outfit only) one of our NPC names.
+// Every non-empty handle is a row of a CharacterCustomizationRow table, or (outfit only) one of our NPC names or an
+// add-on outfit name (the host relays those without having the add-on).
 static int set_sane(const CustSet *s) {
     for (int k = 0; k < 4; k++) {
         const RowHandle *h = &s->slot[k];
         if (!h->table) continue;
         if (!is_rowstruct(h->table, "CharacterCustomizationRow")) return 0;
-        if (!dt_row(h->table, h->row) && !(k == SLOT_OUTFIT && npc_of_row(h->row))) return 0;
+        if (!dt_row(h->table, h->row) && !(k == SLOT_OUTFIT && (npc_of_row(h->row) || outfit_row(h->row, NULL, 0)))) return 0;
     }
     return 1;
 }
@@ -341,7 +396,7 @@ typedef struct {
     char key[80];              // host: player key (steam:<id>/name:<n>) or "slot:<n>" for a bot's slot
     char label[48];            // what was asked for (entry or hero name)
     RowHandle pick[4]; uint8_t has[4];
-    int npc;                   // pick[OUTFIT].row is an NPC name (table: the hero's own, filled in by compose)
+    int npc;                   // pick[OUTFIT].row is made up: an NPC or add-on outfit (table: the hero's own, see compose)
     int32_t slot_idx;          // U_INDEX of the slot last seen (new map/slot: retry counters reset)
     int tries; float wait; int gave_up;
 } Want;
@@ -374,7 +429,15 @@ static void compose(const CustSet *cur, const Want *w, int hero, CustSet *out) {
     out->last = cur->last;
     int pieces = 0;
     for (int k = 0; k < 4; k++) if (w->has[k]) { out->slot[k].table = w->pick[k].table; out->slot[k].row = w->pick[k].row; out->last = (uint8_t)k; pieces |= k != SLOT_OUTFIT; }
-    if (w->npc) out->slot[SLOT_OUTFIT].table = hero >= 0 ? heroes[hero].custtable : NULL;
+    if (w->npc) {
+        out->slot[SLOT_OUTFIT].table = hero >= 0 ? heroes[hero].custtable : NULL;
+        // the game finds no such row: it shows the pieces (players without b4bcoop or the add-on). Make them complete.
+        for (int k = 0; k < 3 && hero >= 0; k++) {
+            if (out->slot[k].table && dt_row(out->slot[k].table, out->slot[k].row)) continue;
+            for (int i = heroes[hero].first; i < heroes[hero].first + heroes[hero].count; i++)
+                if (cat[i].slot == k) { out->slot[k].table = cat[i].table; out->slot[k].row = cat[i].row; break; }
+        }
+    }
     if (!pieces || w->has[SLOT_OUTFIT]) return;
     out->slot[SLOT_OUTFIT].table = NULL; out->slot[SLOT_OUTFIT].row.idx = out->slot[SLOT_OUTFIT].row.num = 0;
     for (int k = 0; k < 3; k++) {
@@ -581,22 +644,30 @@ static void set_mesh(UObject *comp, UObject *mesh) {
     ue_process_event(comp, f, p);
 }
 static int n_npc_applied;
-static void tick_npc(void) {
+static void tick_npc(void) {   // NPC bodies and add-on outfits (made-up outfit rows)
     UObject **s; int n = hero_slots(&s);
     for (int i = 0; i < n; i++) {
         CustSet *cur = slot_set(s[i]);
         UObject *pawn = slot_pawn(s[i]);
         if (!cur || !pawn || cur->last != SLOT_OUTFIT || !cur->slot[SLOT_OUTFIT].table) continue;
-        Npc *np = npc_of_row(cur->slot[SLOT_OUTFIT].row);
-        if (!np || np->bad) continue;
-        UObject *body = ue_get_ptr(pawn, "Mesh"), *mesh = npc_mesh(np);
-        if (!body || !mesh || ue_get_ptr(body, "SkeletalMesh") == mesh) continue;
+        FName row = cur->slot[SLOT_OUTFIT].row;
+        Npc *np = npc_of_row(row);
+        Outf *of = np ? NULL : outfit_of_row(row);
+        UObject *mesh = np && !np->bad ? npc_mesh(np) : of ? mesh_on(of->p3, "3P_Biped_SK", &of->m3, &of->i3, &of->bad, "outfit") : NULL;
+        UObject *body = mesh ? ue_get_ptr(pawn, "Mesh") : NULL;
+        if (!body) continue;
+        if (of && !of->fpbad) {   // first-person arms (NPC bodies have none: the survivor's stay)
+            UObject *fpm = mesh_on(of->pf, "FP_Biped_SK", &of->mf, &of->i_f, &of->fpbad, "outfit arms");
+            UObject *arms = fpm ? comp_of(pawn, "FirstPersonArms") : NULL;
+            if (arms && ue_get_ptr(arms, "SkeletalMesh") != fpm) set_mesh(arms, fpm);
+        }
+        if (ue_get_ptr(body, "SkeletalMesh") == mesh) continue;
         set_mesh(body, mesh);
         UObject *head = comp_of(pawn, "ThirdPersonHeadMesh"), *legs = comp_of(pawn, "ThirdPersonLegsMesh");
         if (head && ue_get_ptr(head, "SkeletalMesh")) set_mesh(head, NULL);
         if (legs && ue_get_ptr(legs, "SkeletalMesh")) set_mesh(legs, NULL);
         n_npc_applied++;
-        LOG("models: hero slot %d wears NPC %s", i, np->name);
+        LOG("models: hero slot %d wears %s %s", i, np ? "NPC" : "outfit", np ? np->name : of->name);
     }
 }
 
@@ -631,16 +702,18 @@ static void selectset_detour(UObject *ps, const CustSet *set) {
         need_catalogue();
         char n[64];
         admin_ps_name(ps, n, sizeof n);
-        const char *why = NULL;
+        const char *why = NULL, *tell = REFUSED_NOTICE " (/models).";
         if (!set_sane(set)) why = "not a customization row";
         else if (locked && set_foreign(set, slot_hero(slot))) why = "models are off";
+        else if (set->slot[SLOT_OUTFIT].table && outfit_row(set->slot[SLOT_OUTFIT].row, NULL, 0) && !strcmp(addons_policy_name(), "none"))
+            why = "add-on outfit, addons_policy=none", tell = REFUSED_NOTICE " for add-on outfits (addons_policy=none).";
         if (why) {
             n_refused++;
             LOG("models: refused a look from %s: %s", n, why);
             UObject *pc = ue_get_ptr(ps, "Owner");
             static ULONGLONG last_told; static UObject *last_pc;
             if (pc && (pc != last_pc || GetTickCount64() - last_told > 3000)) {
-                admin_notice_to(pc, REFUSED_NOTICE " (/models).");
+                admin_notice_to(pc, tell);
                 last_pc = pc; last_told = GetTickCount64();
             }
             return;
@@ -711,6 +784,14 @@ static int resolve(const char *name, Want *w, char *label, size_t n) {
         if (!_stricmp(cat[i].name, name)) { want_pick(w, &cat[i]); snprintf(label, n, "%s", cat[i].name); return 0; }
     int hi = hero_by_slug(name);
     if (hi >= 0 && !want_hero(w, hi)) { snprintf(label, n, "%s", heroes[hi].slug); return 0; }
+    Outf *of = outfit_by_name(name);
+    if (of && !of->bad) {
+        char row[80];
+        snprintf(row, sizeof row, OUTFIT_PREFIX "%s", of->name);
+        w->pick[SLOT_OUTFIT].table = NULL; w->pick[SLOT_OUTFIT].row = make_name(row); w->has[SLOT_OUTFIT] = 1; w->npc = 1;
+        snprintf(label, n, "%s", of->name);
+        return 0;
+    }
     Npc *np = npc_by_name(name);
     if (np && !np->bad) {
         char row[80];
@@ -725,6 +806,14 @@ static int resolve(const char *name, Want *w, char *label, size_t n) {
 static void list(const char *cat_arg, Out *o) {
     need_catalogue();
     if (!n_heroes) { out_printf(o, "no survivor data loaded yet\n"); return; }
+    if (cat_arg && (!_stricmp(cat_arg, "outfits") || !_stricmp(cat_arg, "outfit") || !_stricmp(cat_arg, "addons"))) {
+        if (n_outfs < 0) build_outfits();
+        if (!n_outfs) { out_printf(o, "no add-on outfits (add-ons with outfits: /addons)\n"); return; }
+        out_printf(o, "add-on outfits (seen by players who have the add-on; others see your survivor):\n");
+        for (int i = 0; i < n_outfs; i++)
+            out_printf(o, " %s: %s (%s)%s\n", outfs[i].name, outfs[i].title, outfs[i].addon, outfs[i].bad ? " NOT USABLE" : "");
+        return;
+    }
     if (cat_arg && (!_stricmp(cat_arg, "npc") || !_stricmp(cat_arg, "npcs"))) {
         if (n_npcs < 0) build_npcs();
         char line[200]; size_t k = snprintf(line, sizeof line, "NPC bodies (seen by players with b4bcoop):");
@@ -751,6 +840,15 @@ static void list(const char *cat_arg, Out *o) {
         }
         if (k) out_printf(o, "%s\n", line);
         out_printf(o, "/model list npc: Fort Hope NPCs, survivors, cultists\n");
+        if (n_outfs < 0) build_outfits();
+        if (n_outfs) {
+            k = snprintf(line, sizeof line, "add-on outfits (/model list outfits):");
+            for (int i = 0; i < n_outfs; i++) {
+                if (k + strlen(outfs[i].name) + 2 > 90) { out_printf(o, "%s\n", line); k = snprintf(line, sizeof line, " "); }
+                k += snprintf(line + k, sizeof line - k, " %s", outfs[i].name);
+            }
+            out_printf(o, "%s\n", line);
+        }
         return;
     }
     static const int order[4] = {SLOT_OUTFIT, SLOT_HEAD, SLOT_TORSO, SLOT_LEGS};
@@ -908,6 +1006,7 @@ void models_slash(const char *verb, char *rest, Out *o) {
     me.on = 1;
     snprintf(me.label, sizeof me.label, "%s", label);
     out_printf(o, "you now look like %s (/model reset to undo)\n", label);
+    if (nw.npc && outfit_by_name(label)) out_printf(o, "(an add-on outfit: players without that add-on see your survivor)\n");
     LOG("models: /model %s", label);
     tick_acc = 1;   // apply on the next tick
 }
