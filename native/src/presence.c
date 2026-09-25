@@ -1,18 +1,20 @@
 // presence: join friends through Steam's own UI (docs/investigations/steam-invites.md).
-//   advertise   while we host (listen server: offline Fort Hope or a mission), Steam rich presence `connect` =
-//               "+b4bcoop_join steam:<our id64> addr:<ip:port>" -> friends get "Join Game"; cleared when we stop.
+//   advertise   while we host (listen server: offline Fort Hope or a mission; on by default), Steam rich presence
+//               `connect` = "+b4bcoop_join steam:<our id64> proto:<n> ver:<x.y.z>" (+ " addr:<ip:port>" with
+//               host_ip=1) -> friends get "Join Game"; cleared when we stop.
 //   join        GameRichPresenceJoinRequested_t (337, friend clicked Join Game / accepted an invite while running)
-//               or the same string on the command line (Steam started the game for it) -> session join target
-//               (cmds_set_session_join: overrides host=/join= from the ini), auto sign-in Offline (signin.c),
-//               then the auto-join machinery joins from offline Fort Hope; steam: first, the address as fallback.
+//               or the same string on the command line (Steam started the game for it) -> refused at once if the
+//               host's protocol differs from ours; else session join target (cmds_set_session_join: overrides
+//               host=/join= from the ini), auto sign-in Offline (signin.c), then the auto-join machinery joins from
+//               offline Fort Hope; steam: first, the address (host_ip=1 only) as fallback.
 //   friends     presence_has_friend(): ISteamFriends::HasFriend for the host's join policy (joinpolicy.c)
 //   commands    (dev builds) presence [on|off] | steamjoin <connect string> (simulate a join request) |
 //               invite <id64|name> | friends [all]
 // Steam: the game's own steam_api64.dll (v1.47, delay-loaded by OnlineSubsystemSteam), flat exports via
 // GetProcAddress. Our callback object is registered from inside SteamAPI_RunCallbacks (hooked), i.e. on the OSS's own
 // callback thread, so registration never races the dispatch loop (steam_api's callback map has no lock).
-// b4bcoop.ini: presence=0 (don't advertise), presence_addr=host[:port] (fallback address to advertise, e.g. a public
-// IP with a forwarded port; default: this machine's LAN IPv4 and the listen port).
+// b4bcoop.ini: presence=0 (don't advertise); with host_ip=1 (advanced IP hosting) also presence_addr=host[:port]
+// (address to advertise, e.g. a public IP with a forwarded port; default: this machine's LAN IPv4 and listen port).
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
@@ -141,10 +143,20 @@ static int valid_id64(const char *s) {
     return 1;
 }
 
-// "... +b4bcoop_join steam:<id64> addr:<host:port> ..." -> "steam:<id64>,<host:port>" (either may be missing).
-// Returns 0 if the text carries no b4bcoop join.
-static int parse_connect(const char *text, char *targets, size_t n) {
+static int valid_version(const char *s) {   // 0.3.0, 1.2.3-beta.1
+    size_t n = strlen(s);
+    if (!n || n > 32) return 0;
+    for (; *s; s++) if (!isalnum((unsigned char)*s) && *s != '.' && *s != '-') return 0;
+    return 1;
+}
+
+// "... +b4bcoop_join steam:<id64> proto:<n> ver:<x.y.z> addr:<host:port> ..." -> targets "steam:<id64>,<host:port>"
+// (either may be missing), proto/ver the host's b4bcoop protocol and version ("" if absent: an older b4bcoop).
+// An address on another machine is dropped unless host_ip=1 (IP joins are off). Returns 0 if the text carries no
+// b4bcoop join.
+static int parse_connect(const char *text, char *targets, size_t n, char proto[16], char ver[40]) {
     const char *p = text ? strstr(text, JOIN_TOKEN) : NULL;
+    proto[0] = ver[0] = 0;
     if (!p) return 0;
     p += strlen(JOIN_TOKEN);
     char steam[32] = "", addr[112] = "";
@@ -155,9 +167,16 @@ static int parse_connect(const char *text, char *targets, size_t n) {
         while (*p && *p != ' ' && *p != '\t' && *p != '"') { if (k < sizeof tok - 1) tok[k++] = *p; p++; }
         tok[k] = 0;
         if (!strncmp(tok, "steam:", 6) && valid_id64(tok + 6)) snprintf(steam, sizeof steam, "%s", tok);
+        else if (!strncmp(tok, "proto:", 6) && tok[6] && strlen(tok + 6) < 6 && strspn(tok + 6, "0123456789") == strlen(tok + 6))
+            snprintf(proto, 16, "%s", tok + 6);
+        else if (!strncmp(tok, "ver:", 4) && valid_version(tok + 4)) snprintf(ver, 40, "%s", tok + 4);
         else if (!strncmp(tok, "addr:", 5) && valid_host(tok + 5)) snprintf(addr, sizeof addr, "%s", tok + 5);
         else if (valid_host(tok) && strchr(tok, '.')) snprintf(addr, sizeof addr, "%s", tok);
         else LOG("presence: ignoring connect token '%s'", tok);
+    }
+    if (addr[0] && !coop_host_ip() && !coop_is_loopback(addr)) {
+        LOG("presence: ignoring addr:%s (host_ip=0: IP joins are off, Steam only)", addr);
+        addr[0] = 0;
     }
     snprintf(targets, n, "%s%s%s", steam, steam[0] && addr[0] ? "," : "", addr);
     return targets[0] != 0;
@@ -231,9 +250,11 @@ static void lan_ipv4(char *out, size_t n) {
         }
 }
 
+// host_ip=1 only (IP hosting): the address to advertise next to steam:. Default: none, joins are Steam-only.
 static const char *fallback_addr(void) {
     static char addr[112];
-    if (cfg_addr[0]) snprintf(addr, sizeof addr, "%s%s", cfg_addr, strchr(cfg_addr, ':') ? "" : ":7777");
+    if (!coop_host_ip()) addr[0] = 0;
+    else if (cfg_addr[0]) snprintf(addr, sizeof addr, "%s%s", cfg_addr, strchr(cfg_addr, ':') ? "" : ":7777");
     else {
         char ip[64];
         lan_ipv4(ip, sizeof ip);
@@ -319,7 +340,12 @@ static void advertise_tick(void) {
         if (signin_on_title()) hosting = 0; else past_title = 1;
     }
     if (hosting) last_hosting = clock_s;
-    int want = advertise && clock_s - last_hosting < 15;   // hysteresis: server travel briefly has no NetDriver
+    const char *addr = fallback_addr();                     // host_ip=1 only
+    int p2p = steamnet_p2p_on();                            // steamnet.c: we accept Steam P2P joins
+    static int told_unjoinable;
+    if (hosting && !p2p && !addr[0] && !told_unjoinable++)
+        LOG("presence: hosting, but nobody can join (Steam P2P unavailable: %s; host_ip=0): not advertising", steamnet_last_error());
+    int want = advertise && (p2p || addr[0]) && clock_s - last_hosting < 15;   // hysteresis: server travel briefly has no NetDriver
     if (!want) {
         if (advertising) {
             for (int i = 0; i < NKEYS; i++) set_key(i, "");
@@ -330,11 +356,11 @@ static void advertise_tick(void) {
     }
     if (!hosting) return;   // mid-travel: keep what is set
     char connect[CONNECT_MAX], status[128], group[40], size[8], pkg[256];
-    const char *addr = fallback_addr();
-    const char *steam = steamnet_p2p_on() ? " steam:" : "";   // steamnet.c: we accept Steam P2P next to UDP
-    char id[24] = "";
-    if (steam[0]) snprintf(id, sizeof id, "%llu", (unsigned long long)my_id);
-    snprintf(connect, sizeof connect, JOIN_TOKEN "%s%s%s%s", steam, id, addr[0] ? " addr:" : "", addr);
+    char id[40] = "";
+    if (p2p) snprintf(id, sizeof id, " steam:%llu", (unsigned long long)my_id);
+    // proto/ver: a joiner with another b4bcoop protocol stops right away (handle_connect) instead of timing out
+    snprintf(connect, sizeof connect, JOIN_TOKEN "%s proto:%d ver:%s%s%s", id, coop_protocol(), coop_version(),
+             addr[0] ? " addr:" : "", addr);
     int players = ue_num_clients(w) + 1;
     ue_world_package(w, pkg, sizeof pkg);
     snprintf(status, sizeof status, "b4bcoop: hosting %s (%d player%s)", strstr(pkg, "FortHope") ? "Fort Hope" : "a mission",
@@ -360,12 +386,26 @@ static void advertise_tick(void) {
 
 // ---- join handling (game thread) ----
 static void handle_connect(const char *connect, uint64_t friend_id, const char *source) {
-    char targets[300];
-    if (!parse_connect(connect, targets, sizeof targets)) {
+    char targets[300], proto[16], ver[40];
+    if (!parse_connect(connect, targets, sizeof targets, proto, ver)) {
         LOG("presence: %s from %llu is not a b4bcoop join, ignored: %s", source, (unsigned long long)friend_id, connect);
+        if (strstr(connect, JOIN_TOKEN) && !coop_host_ip())   // an IP-only host (host_ip=1 there, not here)
+            chat_local_later("That host only takes joins by IP address, which are off here (host_ip=0).");
         return;
     }
-    LOG("presence: %s from %llu: \"%s\" -> %s", source, (unsigned long long)friend_id, connect, targets);
+    LOG("presence: %s from %llu: \"%s\" -> %s (host protocol %s, version %s)", source, (unsigned long long)friend_id,
+        connect, targets, proto[0] ? proto : "-", ver[0] ? ver : "-");
+    char want[8];
+    snprintf(want, sizeof want, "%d", coop_protocol());
+    if (strcmp(proto, want)) {   // another b4bcoop protocol (or an older b4bcoop without one): the host would refuse us
+        char msg[200], line[220];
+        coop_version_mismatch(msg, sizeof msg, ver, proto);
+        LOG("presence: not joining: %s", msg);
+        snprintf(line, sizeof line, "Could not join: %s", msg);
+        if (ue_local_pc() && !signin_on_title()) chat_local("%s", line);
+        else chat_local_later(line);   // shown once the player is in Fort Hope
+        return;
+    }
     cmds_set_session_join(targets);
     signin_arm();
     UObject *w = ue_world();
@@ -380,7 +420,8 @@ void presence_init(void) {
     load_ini();
     parse_command_line();
     if (launch_connect[0]) queue_connect(launch_connect, 0, "launch command line");
-    LOG("presence: advertise=%d addr=%s", advertise, cfg_addr[0] ? cfg_addr : "(LAN)");
+    if (cfg_addr[0] && !coop_host_ip()) LOG("presence: presence_addr=%s ignored (IP joins need host_ip=1)", cfg_addr);
+    LOG("presence: advertise=%d addr=%s", advertise, !coop_host_ip() ? "none (Steam only)" : cfg_addr[0] ? cfg_addr : "(LAN)");
 }
 
 void presence_tick(float dt) {

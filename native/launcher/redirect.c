@@ -5,7 +5,7 @@
 // (the Easy Anti-Cheat bootstrapper, which keeps the agent from loading on Windows), then checks prerequisites with a
 // plain LoadLibraryW("XINPUT1_3.DLL") (app dir first: this file) and calls CreateProcessW. We patch the stub's import
 // of CreateProcessW and start "<root>\Gobi\Binaries\Win64\Back4Blood.exe" with the same arguments instead, so a plain
-// Steam "Play" starts the game the way launch/run.cmd does and the agent (X3DAudio1_7.dll) loads.
+// Steam "Play" starts the game directly (like the old "Play B4B co-op.cmd" did) and the agent (X3DAudio1_7.dll) loads.
 // Pass-through (EAC as usual) when the agent isn't installed or the launch options contain -b4bcoop=off.
 // Wine/Proton ignores this file (builtin xinput1_3 wins); nothing there needs it. docs/investigations/launch.md.
 #include <windows.h>

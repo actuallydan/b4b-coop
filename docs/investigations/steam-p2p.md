@@ -3,22 +3,23 @@
 Build 14216215. Static analysis of `Back4Blood.exe` / `steam_api64.dll` (Steamv147) plus single-account live runs.
 Implementation: `native/src/steamnet.c` (+ small hooks in `cmds.c`, `uelog.c`, `main.c`, `presence.c`).
 
-Status 2026-09-24: **a Steam P2P join worked between two local copies on one Steam account** (DTLS, login, 60 s of
-play traffic; see "Local checks"), but one account can't test it reliably: Steam hands each packet addressed to "our
-own" SteamID to either copy, so later runs lost 30-70 % of packets. Not yet run between two accounts / machines, and
-only that can show the P2P session request/accept and Steam's routing between SteamIDs. Test plan at the end.
+Status 2026-09-24: **verified between two real Steam accounts** on one machine (join, mission follow, per-player
+rewards; "Two-account result" at the end). One account alone can't test it reliably: Steam hands each packet addressed
+to "our own" SteamID to either copy, so single-account runs lost 30-70 % of packets ("Local checks").
+Since 0.3.0 Steam P2P is **the** join path for players: hosting is on by default, joins arrive through Steam "Join
+Game" (presence.c) or `steam:<id64>`, and the game's UDP socket is bound to 127.0.0.1 ("Loopback binding").
 
 ## Usage
 
 | Where | What |
 |---|---|
-| host | nothing to do: Steam P2P is on by default and the host accepts Steam joins **and** UDP 7777 at the same time. `status` shows `steam: id=7656... p2p=on (join me: steam:7656...)`. |
-| client `b4bcoop.ini` | `join=steam:<host SteamID64>` (or `join=1.2.3.4[:port]` as before; `join=steam:<id>,1.2.3.4` tries both) |
+| host | nothing to do: hosting and Steam P2P are on by default. UDP joins only from this machine (127.0.0.1) unless `host_ip=1`, then from the network too. `status` shows `steam: id=7656... p2p=on (join me: steam:7656...)`. |
+| client | Steam Join Game (presence.c), or `join=steam:<host SteamID64>` in `b4bcoop.ini` (`join=1.2.3.4[:port]` needs `host_ip=1` on both sides, except 127.0.0.1; `join=steam:<id>,1.2.3.4` tries both) |
 | agent commands | `join steam:<id64>`, `join <ip>[:port]`, `steamnet` (per-peer P2P session state), `steamnet on\|off` |
 | chat | `/join steam:<id64>` (chat.c → `coop_join`) |
-| Steam "Join Game" | presence.c advertises `+b4bcoop_join steam:<id64> addr:<ip:port>`; the joiner tries `steam:` first |
+| Steam "Join Game" | presence.c advertises `+b4bcoop_join steam:<id64> proto:<n> ver:<x.y.z>` (+ `addr:<ip:port>` with `host_ip=1`) |
 | C API (`cmds.h`) | `void coop_join(const char *target)` (`ip[:port]` or `steam:<id64>`), `void coop_host(void)`; any thread (queued to the game thread) |
-| ini | `steam_p2p=0` turns Steam P2P off (also `transport=ip`) |
+| ini | `steam_p2p=0` turns Steam P2P off (also `transport=ip`); `host_ip=1` (advanced) re-enables IP hosting/joining |
 
 The host's SteamID64 is on its Steam profile URL, in `status`, and in the agent log.
 
@@ -94,6 +95,19 @@ The engine ships Unreal's Steam net driver, and it would have been the obvious r
 - `DefaultPlatformService`/`NativePlatformService` live in the obfuscated paks (no standard pak footer); not needed:
   the shim talks to steam_api directly (the same `SteamUser020`/`SteamNetworking006` interfaces the game uses).
 
+## Loopback binding (0.3.0, `host_ip=0` default)
+Players' games expose nothing to the network: the `bind()` hook rewrites a wildcard bind (`0.0.0.0` / `::`) of a UDP
+socket **called from the game exe** (the net driver's listen socket on a host, its connection socket on a client) to
+127.0.0.1 (v6: `::ffff:127.0.0.1`, or `::1` for a v6-only socket). Log: `steamnet: game UDP socket bound to 127.0.0.1
+port N instead of all interfaces`; `steamnet` shows `loopback binds=N`. Steam P2P doesn't need a reachable socket
+(packets are injected in `recvfrom`), local test copies still join `127.0.0.1:7787`, and Windows shows no Firewall
+prompt. Binds from other modules are left alone: on Windows `steamclient64.dll` runs in the game process and binds
+its own UDP sockets for Steam's networking. Verified live 2026-09-24: `ss -ulnp` shows the host at
+`127.0.0.1:7787` and the client at `127.0.0.1:<ephemeral>`; `host_ip=1` gives `0.0.0.0` again.
+IP joins to another machine are refused in `cmd_join` (and dropped from `join=` / connect strings) with a message
+pointing to Steam Join Game. Our own sockets: the dev command server is 127.0.0.1 only and absent from player builds;
+the Windows launcher opens none.
+
 ## DTLS / PacketHandler
 
 Unchanged: DTLS runs inside the net connection, above the socket, so it neither knows nor cares that the datagrams
@@ -114,7 +128,8 @@ Nothing to change:
 
 - Steam P2P needs: steam_api64 loaded, `SteamUser020` logged on, `SteamNetworking006`, our ws2_32 hooks, and
   `steam_p2p` not 0. Otherwise `status` says `p2p=<reason>` and:
-  - host: nothing changes, it takes UDP joins as always;
+  - host: only local (127.0.0.1) UDP joins, or network ones with `host_ip=1`; presence advertises nothing when there
+    is neither Steam P2P nor `host_ip=1`;
   - client: `join steam:<id>` is refused (`cannot join steam:<id>: Steam P2P unavailable here (<reason>)`, also as a
     local chat line through `coop_join`) and starts no travel, so a target list (`steam:<id>,1.2.3.4:7777`, Steam
     Join Game) falls through to the address at once.
@@ -156,7 +171,7 @@ Confidence = "works as described without code changes".
 
 | # | Step | Expect | Confidence |
 |---|---|---|---|
-| 1 | A: `host=1` (default ini). Start, Offline, Fort Hope. `tools/b4b.py status`. | `steam: id=<A> p2p=on (join me: steam:<A>)`; log `steamnet: game listen port 7777; Steam P2P packets go to that socket too`, `presence: registered Steam callback 1202` and `1203`. | high (seen locally) |
+| 1 | A: default (no ini needed). Start, Offline, Fort Hope. `tools/b4b.py status`. | `steam: id=<A> p2p=on (join me: steam:<A>)`; log `steamnet: game listen port 7777; Steam P2P packets go to that socket too`, `presence: registered Steam callback 1202` and `1203`. | high (seen locally) |
 | 2 | B: `join=steam:<A>` in the ini (or `/join steam:<A>` in chat). Start, Offline, Fort Hope. | B: `steamnet: steam:<A> -> 198.18.0.1:7777`, `open 198.18.0.1:7777`. A: `steamnet: P2P session request from <B>: accepted`, `NotifyAcceptedConnection`, DTLS `Handshaking completed`, `Login request`, `Join succeeded`. B spawns in A's camp. | medium-high (75%): the data path is verified locally; new here is the session request/accept between two accounts |
 | 3 | `steamnet` on both after a minute. | `active=1`, rx/tx growing on both, `error=0`. Note `relay`. | high (given 2) |
 | 4 | Repeat 2 with B on another network. | `relay=1` (or 0 if punching worked), same result. | medium (65%): SDR; the legacy API relays by default |

@@ -11,12 +11,14 @@
 //     the remote SteamID (joinpolicy.c: by default only the host's Steam friends and its own account); everyone else
 //     is refused before a single packet reaches the game (registered through presence.c). Steam authenticates the
 //     remote SteamID of a P2P session, so on this path the policy is not spoofable.
-// So a host listens on UDP *and* Steam at the same time, and `join steam:<id64>` is just `open <fake ip>:7777`:
+// So a host takes Steam joins and (host_ip=1 only; by default its UDP socket is bound to 127.0.0.1, see h_bind) UDP
+// joins at the same time, and `join steam:<id64>` is just `open <fake ip>:7777`:
 // travel.c's follow/rejoin reopens the same fake address, which keeps mapping to the same SteamID.
 // Steam's networking runs in steamclient (SDR relay, NAT punching); the game's socket never sees those packets.
 // Findings, test plan: docs/investigations/steam-p2p.md.
 //
 // b4bcoop.ini: steam_p2p=1|0 (default 1): accept/allow Steam P2P. `transport=ip` is the same as steam_p2p=0.
+// host_ip=1 (cmds.c): leave the game's UDP sockets on all interfaces (IP hosting and joining, advanced).
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -284,8 +286,50 @@ static int WSAAPI h_recvfrom(SOCKET s, char *buf, int len, int flags, struct soc
     return o_recvfrom(s, buf, len, flags, from, fromlen);
 }
 
+// host_ip=0 (default, cmds.c): a wildcard bind (0.0.0.0 / ::) of a UDP socket by the game itself (the net driver's
+// listen socket on a host, its connection socket on a client) is made on the loopback address instead. Nothing the
+// game hosts is reachable from the network then (no Windows Firewall prompt, nothing exposed); Steam P2P needs no
+// reachable socket (packets come through recvfrom above), and local test copies still join 127.0.0.1. Only binds
+// called from the game exe: steamclient64.dll (in-process on Windows) binds its own UDP sockets for Steam's networking.
+static uint32_t g_loopback_binds;
+static int from_game_exe(void *ra) {
+    HMODULE m = NULL;
+    return ra && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                    (LPCWSTR)ra, &m) && m == GetModuleHandleW(NULL);
+}
+static const struct sockaddr *loopback_bind(SOCKET s, const struct sockaddr *sa, int len, struct sockaddr_storage *lo) {
+    if (!sa || coop_host_ip()) return sa;
+    int type = 0, tl = sizeof type;
+    if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char *)&type, &tl) || type != SOCK_DGRAM) return sa;
+    memset(lo, 0, sizeof *lo);
+    if (sa->sa_family == AF_INET && len >= (int)sizeof(struct sockaddr_in)) {
+        struct sockaddr_in *a = (struct sockaddr_in *)lo;
+        *a = *(const struct sockaddr_in *)sa;
+        if (a->sin_addr.s_addr != htonl(INADDR_ANY)) return sa;
+        a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else if (sa->sa_family == AF_INET6 && len >= (int)sizeof(struct sockaddr_in6)) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)lo;
+        *a = *(const struct sockaddr_in6 *)sa;
+        static const uint8_t any[16] = {0};
+        if (memcmp(&a->sin6_addr, any, 16)) return sa;
+        DWORD v6only = 1; int vl = sizeof v6only;
+        getsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&v6only, &vl);
+        uint8_t *b = (uint8_t *)&a->sin6_addr;
+        if (v6only) b[15] = 1;                                                        // ::1
+        else { b[10] = b[11] = 0xff; b[12] = 127; b[15] = 1; }                        // ::ffff:127.0.0.1 (dual stack)
+    } else return sa;
+    return (const struct sockaddr *)lo;
+}
+
 static int WSAAPI h_bind(SOCKET s, const struct sockaddr *sa, int len) {
-    int r = o_bind(s, sa, len);
+    struct sockaddr_storage lo;
+    const struct sockaddr *want = from_game_exe(__builtin_return_address(0)) ? loopback_bind(s, sa, len, &lo) : sa;
+    int r = o_bind(s, want, len);
+    if (want != sa && g_loopback_binds++ < 20) {
+        uint16_t p = ntohs(sa->sa_family == AF_INET ? ((const struct sockaddr_in *)sa)->sin_port : ((const struct sockaddr_in6 *)sa)->sin6_port);
+        LOG("steamnet: game UDP socket bound to %s port %u instead of all interfaces (host_ip=0: not reachable from the "
+            "network)%s", sa->sa_family == AF_INET ? "127.0.0.1" : "loopback", p, r ? " -- bind failed" : "");
+    }
     if (r == 0 && sa && (sa->sa_family == AF_INET || sa->sa_family == AF_INET6)) {
         struct sockaddr_storage a; int al = sizeof a;
         uint16_t port = 0;
@@ -384,7 +428,7 @@ int steamnet_resolve_target(const char *t, char *url, size_t n) {
         unsigned long long id = strtoull(t + 6, &end, 10);
         if (id < 0x0110000100000000ull || (*end && *end != ':')) return -1;
         if (!steamnet_available()) {
-            LOG("steamnet: cannot join steam:%llu: Steam P2P unavailable (%s); ask the host for an IP join", id, g_why);
+            LOG("steamnet: cannot join steam:%llu: Steam P2P unavailable (%s)", id, g_why);
             return -2;
         }
         if (id == steamnet_local_id()) LOG("steamnet: joining our own SteamID (works only if Steam loops it back)");
@@ -441,8 +485,9 @@ int steamnet_cmd(const char *verb, char *rest, Out *o) {
     }
     steamnet_status(o);
     out_printf(o, "hooks=%s game listen port=%d client socket=%s session requests=%ld failures=%ld channel=%d "
-               "dropped: own=%u bad=%u refused=%u\n", g_ready ? "yes" : "no", g_listen_port, g_client_sock != INVALID_SOCKET ? "yes" : "no",
-               n_requests, n_fails, P2P_CHANNEL, g_self_drops, g_bad_drops, g_refused_drops);
+               "dropped: own=%u bad=%u refused=%u loopback binds=%u\n", g_ready ? "yes" : "no", g_listen_port,
+               g_client_sock != INVALID_SOCKET ? "yes" : "no", n_requests, n_fails, P2P_CHANNEL, g_self_drops, g_bad_drops,
+               g_refused_drops, g_loopback_binds);
     EnterCriticalSection(&cs);
     static Peer copy[MAX_PEERS];
     int n = npeers;

@@ -75,7 +75,7 @@ registered, and its exec thunk and implementation are intact.
   since OnRep applies it to FlashLightComponents on every machine.
 
 ## Phase 2 live test plan
-Two local instances (`launch/two.sh`), host + client in a mission, both heroes in view:
+Two local instances (`launch/two.sh`, since replaced by `launch/multi.sh`), host + client in a mission, both heroes in view:
 1. `tools/b4b.py flashlight` on both: expect `light=off role=authority` (host) / `role=client` (client), `hooks=1`.
 2. Client: `B4B_AGENT=1 tools/b4b.py flashlight on` → client log has no errors; host log has `flashlight: toggled -> 1`.
    Client `flashlight` status → `light=on` after replication. Visually: client's own light on; host sees the client

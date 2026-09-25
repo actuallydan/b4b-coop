@@ -11,7 +11,7 @@ local chat line from `coop`.
 | Command | Who | Verified live | Notes |
 |---|---|---|---|
 | `/help` | all | yes (host camp, `host-help-fort-hope.jpg`) | host sees the admin list too |
-| `/join <ip[:port]>` | all | yes (client, camp) | `coop_join()`; `steam:<id64>` replies "transport not available" until the Steam P2P branch lands |
+| `/join steam:<id64>` | all | yes (client, camp) | `coop_join()`; `/join <ip[:port]>` only to 127.0.0.1 unless `host_ip=1` (0.3.0), else it replies why and points to Steam Join Game |
 | `/host` | all | yes | only standalone in Fort Hope; turns on auto-host for the session (camp stays hosted after missions) |
 | `/leave` | client | yes (from a mission) | disconnect, own offline camp, ini auto-join off for the session |
 | `/players` | all | yes (`client-reply-mission.jpg`) | host also sees ping and Steam id; bots marked |

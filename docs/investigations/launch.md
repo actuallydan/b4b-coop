@@ -21,8 +21,9 @@ b4bcoop-README.txt, b4bcoop-LICENSE.txt
 All three DLLs come from the player build (`native/build.sh --release` → `native/out/release/`); the dev build
 (`native/build.sh` → `native/out/`) produces the same three names with the command server and test commands.
 
-The legacy layout (`dwmapi.dll` + Linux launch option + Windows `Play B4B co-op.cmd`) still builds and works
-(`dist/b4bcoop-legacy.zip`, player build; `launch/install.sh [--release] --legacy`) until the Windows flow is verified.
+The zip is `dist/b4bcoop-<version>.zip` (`VERSION`). The legacy layout (`dwmapi.dll` + Linux launch option + Windows
+`Play B4B co-op.cmd`) is no longer shipped (0.3.0); `native/build.sh` still builds `dwmapi.dll` and
+`launch/install.sh [--release] --legacy` installs it, for dev comparisons only.
 
 ## 1. Steam's launch config for app 924970
 
@@ -71,7 +72,7 @@ UE's BootstrapPackagedGame with a TRS addition. `wWinMain` = 0x140002F70 (called
 
 So the stub always starts the EAC bootstrapper, on Linux too. Under Proton, `start_protected_game.exe` then starts
 `Gobi\Binaries\Win64\Back4Blood.exe Gobi -SaveToUserDir` and the agent loads (the EAC runtime doesn't block it); on
-Windows EAC protects the game process and the agent doesn't load (observed; that is why `Play B4B co-op.cmd` exists).
+Windows EAC protects the game process and the agent doesn't load (observed; that is why the old `Play B4B co-op.cmd` existed).
 The stub imports no `SetDefaultDllDirectories`/`SetDllDirectory`, so its bare-name loads really search its own dir
 first.
 
@@ -154,8 +155,8 @@ library, so worse UX than A; keep as the documented fallback.
 - A DLL loaded by `start_protected_game.exe` (it imports `VERSION`, `WINMM`, `CRYPT32`, not KnownDLLs, and bare
   `LoadLibrary`s SDL video/audio DLLs): works around the anti-cheat's own bootstrapper, which EAC updates and
   integrity-checks, and looks like cheating. Unnecessary given A.
-- `Play B4B co-op.cmd` / `launch/run.cmd`: works (verified), but the owner doesn't want to ship scripts, and Steam
-  Join Game can't use it.
+- `Play B4B co-op.cmd` / `launch/run.cmd` (both removed in 0.3.0): worked (verified), but the owner doesn't want to
+  ship scripts, and Steam Join Game can't use it.
 
 ## 4. Prototype results on Linux (Proton Experimental)
 
@@ -185,43 +186,46 @@ So test the stub path through Steam, not `proton run` (T3 isn't affected: the re
 
 ## 5. Final install flow
 
-Both OSes, one zip (`launch/package.sh` → `dist/b4bcoop.zip`, layout mirrors the game folder):
+Both OSes, one zip (`launch/package.sh` → `dist/b4bcoop-<version>.zip`, layout mirrors the game folder):
 1. Steam → Back 4 Blood → Manage → Browse local files; copy the zip's contents in (the `Gobi` folder merges; nothing
    is replaced).
-2. Edit `Gobi/Binaries/Win64/b4bcoop.ini` (`host=1` or `join=<ip>`).
-3. Press Play.
+2. Press Play, sign in Offline: hosting is the default, friends join with Steam "Join Game" (the ini is optional).
 
-Uninstall: delete `xinput1_3.dll`, `Gobi/Binaries/Win64/X3DAudio1_7.dll` and `b4bcoop.ini`. Upgrading from the
-dwmapi version: delete `dwmapi.dll` and the `.cmd`; Linux: remove the launch option (harmless if left, but pointless).
-Online with EAC without uninstalling: launch option `-b4bcoop=off` (Windows; on Linux EAC never blocked the mod).
+Uninstall: the README's "Remove" list (`launch/uninstall.sh` does the same). Upgrading from the dwmapi version:
+delete `dwmapi.dll`, the `.cmd` and the `steam_appid.txt` it wrote; Linux: remove the launch option (harmless if
+left, but pointless). A normal game without uninstalling: launch option `-b4bcoop=off` (Windows: the redirect passes
+through to EAC; both OSes: the agent stays a plain proxy and starts nothing).
 
 | | Verified | Hypothesis |
 |---|---|---|
 | Linux/Steam Deck | X3DAudio1_7 loads with no override via direct run and via the real Steam launch; hosting/joining regression (T5). Steam Deck itself not run, same Proton mechanism. | – |
 | Windows | Static analysis only: stub loads XINPUT1_3 by bare name before CreateProcessW; redirect code path exercised under Proton (T3/T4); X3DAudio1_7 is a non-KnownDLL static import resolved app-dir-first exactly like dwmapi, which already worked on Windows. | That Windows loads the root `xinput1_3.dll` into the stub, that the redirected start behaves like the `.cmd` one, Defender/Smart App Control reactions. §6. |
 
-Kept until Windows is verified: `native/out/dwmapi.dll` (same agent), `launch/install.sh --legacy`,
-`dist/b4bcoop-legacy.zip` (dwmapi.dll + `Play B4B co-op.cmd` + ini), `launch/run.cmd`.
+Dev only since 0.3.0: `native/out/dwmapi.dll` (same agent), `launch/install.sh --legacy`. The legacy zip and
+`launch/run.cmd` are gone; if the redirect fails on Windows, §3 B is the fallback.
 
 ## 6. Windows test script (owner's laptop)
 
-Prep: `launch/package.sh` → copy `dist/b4bcoop.zip` and `dist/b4bcoop-legacy.zip` to the laptop. In the game folder
+Prep: `launch/package.sh` → copy `dist/b4bcoop-<version>.zip` (and, for W5 only, `native/out/release/dwmapi.dll`) to
+the laptop. In the game folder
 remove the old install first: `Gobi\Binaries\Win64\dwmapi.dll`, `Play B4B co-op.cmd`, `Gobi\Binaries\Win64\steam_appid.txt`
 (its presence would hide a Steam relaunch problem), and clear the game's Steam launch options. Keep Task Manager
 (Details tab, add the "Command line" column) open. `N` below = the game's PID.
 
-**W1: main flow (the one that matters).** Extract `b4bcoop.zip` into the game folder, press Play in Steam.
+**W1: main flow (the one that matters).** Extract `b4bcoop-<version>.zip` into the game folder, press Play in Steam.
 - Expect `Gobi\Binaries\Win64\b4bcoop-launcher.log`:
   `hooked CreateProcessW` → `stub: CreateProcessW(NULL, "...\start_protected_game.exe" Gobi -SaveToUserDir )` →
   `redirect (no EAC): "...\Gobi\Binaries\Win64\Back4Blood.exe" Gobi -SaveToUserDir` → `started pid N`.
-- Expect `Gobi\Binaries\Win64\b4bcoop-N.log` starting with `b4bcoop loaded as X3DAudio1_7.dll`, then
-  `init: tick hooked`, `server: listening on 127.0.0.1:47112`, `netguard: armed`.
+- Expect `Gobi\Binaries\Win64\b4bcoop-N.log` starting with `b4bcoop loaded (player build) as X3DAudio1_7.dll`,
+  `b4bcoop <version> (protocol N)`, then `init: tick hooked`, `netguard: armed`.
+- No Windows Firewall prompt (the game's UDP socket is bound to 127.0.0.1: `steamnet: game UDP socket bound to
+  127.0.0.1 port 7777`).
 - No EAC splash (the Back 4 Blood splash from `EasyAntiCheat\SplashScreen.png`), no `start_protected_game.exe` /
   `EasyAntiCheat*.exe` in Task Manager; `Back4Blood.exe` command line ends in `Gobi -SaveToUserDir`.
 - Steam shows the game as running and back to Play after quitting; no second launch/relaunch loop.
 - Sign in Offline: same profile/progression as before (saves in `%LOCALAPPDATA%\Back4Blood\Steam\Saved`); 3D audio
   (positional zombie sounds) and controller work.
-- Then one co-op session as host or client (`host=1` / `join=`), as in the README.
+- Then one co-op session as host (the default) or as a client via Steam Join Game, as in the README.
 
 If W1 fails, what the logs say:
 - no `b4bcoop-launcher.log` at all → the stub didn't load our `xinput1_3.dll` (Defender quarantine? check Protection
@@ -235,7 +239,7 @@ If W1 fails, what the logs say:
 **W2: opt-out.** Launch option `-b4bcoop=off`, Play: EAC splash appears, launcher log says
 `pass-through to Easy Anti-Cheat: -b4bcoop=off in the launch options`, no new `b4bcoop-N.log`. Clear the option.
 
-**W3: Steam Join Game (needs a second account, optional).** Host on another PC with `host=1`; from the laptop's Steam
+**W3: Steam Join Game (needs a second account, optional).** Host on another PC (hosting is the default); from the laptop's Steam
 friends list "Join Game" while B4B is closed. Expect a launcher log whose redirected command line carries
 `+b4bcoop_join steam:...`, and the agent joining (steam-invites.md).
 
@@ -245,8 +249,8 @@ quotes included). Expect `b4bcoop-N.log` (`loaded as X3DAudio1_7.dll`), no EAC s
 command line `... Gobi -SaveToUserDir "<game>\Back4Blood.exe"`. Optional: the short form `"<exe path>" %command%` is
 predicted to show "The map specified on the commandline ... could not be found"; click OK and note what happens.
 
-**W5: both names installed (upgrade case).** With W1's files in place, also copy `dwmapi.dll` from
-`b4bcoop-legacy.zip` into `Gobi\Binaries\Win64`. Play: exactly one new `b4bcoop-N.log`, first line
+**W5: both names installed (upgrade case).** With W1's files in place, also copy `dwmapi.dll` (player build,
+`native/out/release/dwmapi.dll`) into `Gobi\Binaries\Win64`. Play: exactly one new `b4bcoop-N.log`, first line
 `loaded as dwmapi.dll`. Delete `dwmapi.dll` again.
 
 Report back: the two logs of W1 (and of any failing step), plus yes/no for splash, relaunch, audio, co-op.

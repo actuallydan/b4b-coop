@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create/refresh an isolated Proton prefix for local test instance N (never touches the real prefix).
 
-    testprefix.py N [--fresh] [--blank] [--host | --join ADDR]
+    testprefix.py N [--fresh] [--blank] [--host | --join ADDR]   (--host: no join=, i.e. the default: host)
 
 Prefix:  ~/.local/share/b4b-coop/prefixes/test<N>  (cloned from steamapps/compatdata/924970, ~600 MB)
 Config:  <prefix>/b4bcoop.ini  (pass to the agent via B4B_COOP_CONFIG)
@@ -75,12 +75,14 @@ def blank_profile(dst):
         if os.path.exists(f): os.remove(f)
 
 
-def write_config(dst, host, join):
+def write_config(dst, n, join):
+    # The host needs no host= line: hosting is the default (what a player gets), join= turns it off.
     lines = ["offline=1"]
-    if host: lines.append("host=1")
     if join: lines.append(f"join={join}")
-    # B4B_INI_EXTRA="netguard=off;netguard_eos=0": extra agent config lines for every instance (';'-separated)
-    lines += [l.strip() for l in os.environ.get("B4B_INI_EXTRA", "").split(";") if l.strip()]
+    # B4B_INI_EXTRA="netguard=off;netguard_eos=0": extra agent config lines for every instance (';'-separated);
+    # B4B_INI_EXTRA<n> (e.g. B4B_INI_EXTRA2="b4bcoop_protocol_override=2"): only for instance n
+    for var in ("B4B_INI_EXTRA", f"B4B_INI_EXTRA{n}"):
+        lines += [l.strip() for l in os.environ.get(var, "").split(";") if l.strip()]
     open(os.path.join(dst, "b4bcoop.ini"), "w").write("\n".join(lines) + "\n")
 
 
@@ -96,7 +98,7 @@ def main():
     if "--blank" in args:
         blank_profile(dst)
     join = args[args.index("--join") + 1] if "--join" in args else ""
-    write_config(dst, "--host" in args, join)
+    write_config(dst, n, join)
     print(winpath(os.path.join(dst, "b4bcoop.ini")))
 
 

@@ -5,7 +5,8 @@
 # Removes the other variant and UE4SS if present.
 #   launch/install.sh             dev build (command server, test commands): what launch/multi.sh and tools/b4b.py need
 #   launch/install.sh --release   player build (what launch/package.sh ships), to test it locally
-#   --legacy (with either)        the old dwmapi.dll agent instead (Proton needs WINEDLLOVERRIDES="dwmapi=n,b" %command%)
+#   --legacy (with either)        dev only: the old dwmapi.dll agent instead (no longer shipped; Proton needs
+#                                 WINEDLLOVERRIDES="dwmapi=n,b" %command%)
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 game="${B4B_DIR:-$HOME/.local/share/Steam/steamapps/common/Back 4 Blood}"

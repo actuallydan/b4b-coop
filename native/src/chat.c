@@ -226,12 +226,16 @@ static void later_tick(float dt) {
     later[0] = 0;
 }
 
-// A join attempt failed with an error from the host. Ours: banned -> stop ini auto-join; locked -> retry less often.
+// A join attempt failed with an error from the host. Ours: banned or another b4bcoop version -> stop auto-join
+// (retrying can't help); locked / not a friend -> retry less often.
 void chat_on_join_failed(const char *error) {
     const char *e = strstr(error, "Error: '");
-    char msg[160];
+    char msg[256];
     snprintf(msg, sizeof msg, "Could not join: %.*s", e ? (int)strcspn(e + 8, "'") : 40, e ? e + 8 : "connection failed");
-    if (strstr(error, "banned")) cmds_auto_join_stop();
+    if (strstr(error, "same version")) {
+        cmds_auto_join_stop();
+        if (cmds_session_join()[0]) cmds_set_session_join(NULL);
+    } else if (strstr(error, "banned")) cmds_auto_join_stop();
     else if (strstr(error, "locked") || strstr(error, "Steam friends")) cmds_auto_join_backoff(60);
     chat_local_later(msg);
 }

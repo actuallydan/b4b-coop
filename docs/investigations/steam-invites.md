@@ -8,10 +8,11 @@ host's b4bcoop session. No ini edits, no IP typing. Code: `native/src/presence.c
 
 | Step | Mechanism |
 |---|---|
-| Advertise | While the local world is a listen server (offline Fort Hope or a mission), the host sets Steam rich presence: `connect` = `+b4bcoop_join steam:<host id64> addr:<ip:port>`, plus `status` ("b4bcoop: hosting Fort Hope (2 players)"), `steam_player_group` / `steam_player_group_size` (Steam groups the party in the friends list). Not while the sign-in screen is up (host=1 makes even the title's Fort Hope a listen server) and not while a Steam join target is pending. Keys are cleared 15 s after hosting stops (the delay covers server travel, where the world briefly has no NetDriver). The game's own presence push replaces the whole key set on every state change (see below), so every 2 s the agent reads its `connect` back (a local cache call) and re-applies its keys if they're gone. It never calls `ClearRichPresence`, so the game's keys stay alongside ours. |
+| Advertise | While the local world is a listen server (offline Fort Hope or a mission), the host sets Steam rich presence: `connect` = `+b4bcoop_join steam:<host id64> proto:<n> ver:<x.y.z>` (plus ` addr:<ip:port>` only with `host_ip=1`), plus `status` ("b4bcoop: hosting Fort Hope (2 players)"), `steam_player_group` / `steam_player_group_size` (Steam groups the party in the friends list). Not while the sign-in screen is up (hosting, the default, makes even the title's Fort Hope a listen server) and not while a Steam join target is pending. Keys are cleared 15 s after hosting stops (the delay covers server travel, where the world briefly has no NetDriver). The game's own presence push replaces the whole key set on every state change (see below), so every 2 s the agent reads its `connect` back (a local cache call) and re-applies its keys if they're gone. It never calls `ClearRichPresence`, so the game's keys stay alongside ours. |
 | Join while running | Steam posts `GameRichPresenceJoinRequested_t` (id 337: `CSteamID friend; char connect[256]`) to the running game. Our callback copies the string and the game thread handles it. |
 | Join at launch | Steam starts the game with the connect string on the command line. `presence_init` scans `GetCommandLineW()` for `+b4bcoop_join` (and, once Steam is up, `ISteamApps::GetLaunchCommandLine` as a fallback for `steam://run/924970//…` launches). |
-| Join target | The connect string becomes a session join target `steam:<id64>,<ip:port>` (`cmds_set_session_join`). It overrides `host=` and `join=` from the ini for this session, arms the Offline auto sign-in, and the existing auto-join loop joins once the player is signed in and standalone in offline Fort Hope. A target list is tried in turn: an alternative that starts no travel (no `SetClientTravel` call, e.g. `steam:` without the P2P transport) is skipped immediately, so today the address is used at once. If the player is hosting or already in a session when the request arrives, the agent leaves and joins immediately (they clicked Join). After 6 attempts without a connection the target is dropped and the ini applies again. |
+| Version check | `proto:` must equal our protocol (`VERSION`), else the join stops right there with "Could not join: Host runs b4bcoop 0.4.0 (protocol 2); you have 0.3.0 (protocol 1). Everyone needs the same version." (a connect string without `proto:` = an older b4bcoop). The host's login gate (admin.c) checks the same for every join. |
+| Join target | The connect string becomes a session join target `steam:<id64>,<ip:port>` (`cmds_set_session_join`). It overrides `host=` and `join=` from the ini for this session, arms the Offline auto sign-in, and the existing auto-join loop joins once the player is signed in and standalone in offline Fort Hope. A target list is tried in turn: an alternative that starts no travel (no `SetClientTravel` call, e.g. `steam:` without the P2P transport) is skipped immediately. With `host_ip=0` (default) an `addr:` on another machine is dropped at parse time. If the player is hosting or already in a session when the request arrives, the agent leaves and joins immediately (they clicked Join). After 6 attempts without a connection the target is dropped and the ini applies again. |
 | Sign-in | `testing_arm_signin()`: the `offline=1` machinery (press Sign in, answer the Online/Offline popup with Offline) runs for 10 minutes from the join request. If the player is already past the title screen (Fort Hope, no `SignInScreen`) it is a no-op. Join attempts wait until sign-in finishes. |
 | Invites | Host: the Steam overlay / friends list "Invite to Game" uses the rich-presence `connect` string, so it needs nothing extra. Agent command `invite <id64 or name>` calls `ISteamFriends::InviteUserToGame(friend, connect)`; the name is a case-insensitive substring of persona name or nickname and must match exactly one friend. `friends [all]` lists online friends playing B4B (app 924970) with their rich presence. |
 
@@ -20,13 +21,15 @@ Connect string parsing is strict, because it comes from another player and ends 
 is logged and ignored (`?listen`, `;exec`, `|`, spaces, and extra colons are all rejected). A bare `host:port`
 token with a dot is taken as an address, so `+b4bcoop_join 1.2.3.4:7777` works too.
 
-### Address fallback
-The host advertises `addr:` from `presence_addr=host[:port]` in `b4bcoop.ini` if that key is set, for example a public IP or DNS
+### Address fallback (host_ip=1 only)
+Since 0.3.0 hosts advertise no address by default: joins are Steam-only and the game's socket is bound to 127.0.0.1
+(steam-p2p.md, "Loopback binding"); `presence_addr` is ignored without `host_ip=1`. With `host_ip=1` (advanced):
+the host advertises `addr:` from `presence_addr=host[:port]` in `b4bcoop.ini` if that key is set, for example a public IP or DNS
 name with UDP forwarded, or a Tailscale IP. Otherwise it advertises the first up, non-loopback LAN IPv4 (`GetAdaptersAddresses`,
 no traffic) and the listen port (`-Port=` on the command line, else 7777). Steam 1.47 has no client-side
 "my public IP" call (`ISteamUser::GetPublicIP` doesn't exist yet; only the game-server interface has one), so a
-LAN address is the only automatic choice. It works on a LAN or VPN. Over the internet, set `presence_addr` or wait for
-Steam P2P. `presence=0` turns advertising off.
+LAN address is the only automatic choice. It works on a LAN or VPN; over the internet it needs `presence_addr` and a
+forwarded port. `presence=0` turns advertising off.
 
 ### Steam P2P hand-off
 `void coop_join(const char *target)` in `cmds.c` is the entry point that the P2P branch replaces. Here it runs the
@@ -96,12 +99,10 @@ Not testable on one account: a real `GameRichPresenceJoinRequested_t` delivery (
 `steamjoin` path), Steam's Join Game menu itself, and a Steam-initiated launch with the connect string.
 
 ## Two-account test plan
-Host A and joiner B, two Steam accounts that are friends, both owning B4B, both with this build installed. Linux:
-launch options `WINEDLLOVERRIDES="dwmapi=n,b" %command%` (no longer needed with the `X3DAudio1_7.dll` agent,
-docs/investigations/launch.md). Windows: `Play B4B co-op.cmd` (see step 6; the root `xinput1_3.dll` redirect should
-make a Steam-initiated launch load the agent too, unverified). Host ini: `host=1`, plus
-`presence_addr=<A's reachable IP>` unless both are on one LAN/VPN (until P2P lands). Joiner ini: anything (a Steam
-join overrides it). Evidence: `b4bcoop-<pid>.log` lines prefixed `presence:` / `auto:` / `testing:`, and
+Host A and joiner B, two Steam accounts that are friends, both owning B4B, both with this build installed (the
+player zip: `X3DAudio1_7.dll`, no launch options; on Windows the root `xinput1_3.dll` redirect makes a Steam-initiated
+launch load the agent too, unverified). No ini needed on either side (0.3.0: hosting is the default, joins go over
+Steam P2P; a Steam join overrides the joiner's ini). Steps 6 and 11 below predate that and are kept for the record. Evidence: `b4bcoop-<pid>.log` lines prefixed `presence:` / `auto:` / `testing:`, and
 `tools/b4b.py presence`.
 
 | # | Step | Expected | Confidence |
