@@ -52,11 +52,11 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     ones, exempted by identity from the three signature paths (player builds hook nothing when there is no add-on).
     Dev only: `dumpassets <glob> [outdir]` extracts files as the engine reads them (IterateDirectory + OpenRead on
     FPakPlatformFile), `paks`, `mountpak <path> [order]`, ini `modpaks=<windows dir>` (raw paks, order 3000+). Pak
-    writer: `tools/b4bpak.py`. docs/investigations/model-mods-paks.md.
+    writer: `modkit/b4bpak.py` (`tools/b4bpak.py` forwards). docs/investigations/model-mods-paks.md.
   - `addons.c` add-ons (#20): `<game>\b4bcoop-addons\*.pak` (ini `addons_dir=`, `addons=0`), read in DllMain:
     `addonlist.txt` on/off + load order (later wins, read order 1000+), embedded `b4bcoop-addoninfo.txt`, index SHA1
     checked, conflicts (same file; "mixed" = one package from two add-ons) logged + one chat notice; chat
-    `/addons [on|off|info <#>]` (applies on restart). Packer `tools/modkit/addon.py pack|info|check`.
+    `/addons [on|off|info <#>]` (applies on restart). Packer `modkit/addon.py pack|info|check`.
     Client-side only, no protocol bump. docs/investigations/addons.md.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
@@ -113,6 +113,14 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
 - `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
+- `modkit/` — the mod maker's kit (#21), a separate deliverable (players never need it; nothing of it is in the player
+  zip or the agent): `b4bmod.py` (one command: setup/status/config, find/extract (offline, `dotnet/pakx` = CUE4Parse
+  from NuGet with its managed Oodle decoder), info/tree/export/texture/mi (`dotnet/b4bmod`, UAssetAPI), mesh
+  info/export/import/edit (wraps `tools/modkit/skm.py`/`skmgltf.py`; FBX via headless Blender), pack/install/check
+  (`addon.py`)), `b4bmod.cmd`/`b4bmod.sh`, `README.md` (Windows first; how to get every third-party piece), `docs/`
+  (author guides), `package.sh` → `dist/modkit/b4bcoop-modkit-<version>.zip` (reproducible; refuses 64-hex strings).
+  The pak AES key is never in the repo: modders give it (`b4bmod config aes_key`, `B4B_AES_KEY`, `--aes-key`); pakx
+  checks it against every pak index SHA1. Data: `~/.local/share/b4b-coop/` (`%LOCALAPPDATA%\b4b-coop` on Windows).
 - `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
 

@@ -59,11 +59,20 @@ jobs:
           grep -qaF "CreateProcessW" dist/b4bcoop/xinput1_3.dll   # the launch redirect, not a plain proxy
           cat dist/SHA256SUMS
 
+      - name: Build the mod maker's kit (modkit/package.sh; sources only, a separate zip)
+        run: |
+          if [ -x modkit/package.sh ]; then
+            modkit/package.sh
+            (cd dist/modkit && sha256sum b4bcoop-modkit-*.zip) >> dist/SHA256SUMS
+            echo "KIT_ZIP=dist/modkit/$(cd dist/modkit && ls b4bcoop-modkit-*.zip)" >> "$GITHUB_ENV"
+          fi
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: |
             dist/${{ env.PKG_ZIP }}
+            ${{ env.KIT_ZIP }}
             dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll
             dist/b4bcoop/xinput1_3.dll
 
@@ -84,5 +93,5 @@ jobs:
           $(cat dist/SHA256SUMS)
           \`\`\`
           EOF
-          gh release create "$TAG" "dist/$PKG_ZIP" dist/SHA256SUMS --repo "$REPO" --verify-tag \
+          gh release create "$TAG" "dist/$PKG_ZIP" ${KIT_ZIP:+"$KIT_ZIP"} dist/SHA256SUMS --repo "$REPO" --verify-tag \
             --title "b4b-coop $TAG" --notes-file notes.md

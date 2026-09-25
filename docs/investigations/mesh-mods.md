@@ -2,7 +2,7 @@
 
 Status 2026-09-25, build 14216215. Branch `models-meshes`. Tools: `tools/modkit/upkg.py` (package reader/writer),
 `tools/modkit/skm.py` (SKM render data parse/edit/write), `tools/modkit/skmgltf.py` (glTF export/import),
-`tools/modkit/blender/blocky.py` (headless Blender test mesh), `tools/modkit/pakx` (offline extraction).
+`tools/modkit/blender/blocky.py` (headless Blender test mesh), `modkit/dotnet/pakx` (offline extraction, run via `modkit/b4bmod.py`).
 
 ## TL;DR
 - **Format solved.** `skm.py` parses the whole cooked `USkeletalMesh` native part and writes it back
@@ -96,12 +96,10 @@ no static mesh writer yet (weapons and characters are skeletal).
 
 ## 2. Tools
 ```
-# offline extraction from the retail paks (no game running; same bytes as the agent's dumpassets)
-DOTNET_ROOT=vendor/dotnet vendor/dotnet/dotnet build -c Release tools/modkit/pakx
-P="$HOME/.local/share/Steam/steamapps/common/Back 4 Blood/Gobi/Content/Paks"
-KEY=0x0208250257E8EA16828509DEBF23D703A5B509FE4F15F33F11BEE4BAB1F97CFD
-DOTNET_ROOT=vendor/dotnet vendor/dotnet/dotnet tools/modkit/pakx/bin/Release/net10.0/pakx.dll "$P" $KEY \
-    vendor/oodle/liboodle-data-shared.so ~/.local/share/b4b-coop/meshes/extract 'Heroes/Holly/.*_SKM\.(uasset|uexp)$'
+# offline extraction from the retail paks (no game running; same bytes as the agent's dumpassets): modkit/dotnet/pakx via
+# the modkit (AES key from `b4bmod config aes_key`, B4B_AES_KEY or --aes-key; never in the repo)
+modkit/b4bmod.sh extract '/Game/Characters/Heroes/Holly/*'          # into ~/.local/share/b4b-coop/extract
+modkit/b4bmod.sh find 'Heroes/Holly/.*_SKM$'
 
 .venv/bin/python tools/modkit/skm.py info <x_SKM.uasset>            # bounds, materials, LODs, sections
 .venv/bin/python tools/modkit/skm.py roundtrip <files...>           # parse + write, byte compare

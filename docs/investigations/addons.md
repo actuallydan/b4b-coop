@@ -1,14 +1,14 @@
 # Add-ons: L4D-style loader, format and enable list (#20)
 
 Status 2026-09-25, build 14216215, Proton. Epic #23. Code: `native/src/addons.c` (loader, `/addons`),
-`native/src/paks.c` (mount + signature exemptions, see model-mods-paks.md), `tools/modkit/addon.py` (packer).
+`native/src/paks.c` (mount + signature exemptions, see model-mods-paks.md), `modkit/addon.py` (packer).
 Player page: docs/COMMANDS.md "Add-ons".
 
 ## TL;DR
 - Drop-in: `<game>\b4bcoop-addons\<name>.pak` (next to `Back4Blood.exe`, outside `Gobi\Content\Paks`, which the
   engine mounts itself with signature checks). An add-on zip holds `b4bcoop-addons/<name>.pak`: unzip into the game
   folder. Restart to apply; no in-game browser.
-- One file per add-on: our pak format (tools/b4bpak.py) with an extra root entry `b4bcoop-addoninfo.txt`
+- One file per add-on: our pak format (modkit/b4bpak.py) with an extra root entry `b4bcoop-addoninfo.txt`
   (title, author, version, category, description, content). A pak without it still loads (title = file name).
 - `addonlist.txt` in the folder: `<file>.pak=1|0`, top to bottom = load order, later wins. New paks are appended,
   switched on, sorted by name; the agent rewrites the file then. `/addons on|off` edits it.
@@ -67,7 +67,7 @@ printed by `addon.py pack/info`.
   on NOT LOADED (why in `info`), MOUNT FAILED, missing (listed but file gone: kept in the list so its setting
   survives).
 
-## 3. Packer (tools/modkit/addon.py)
+## 3. Packer (modkit/addon.py; mod makers use it through `b4bmod pack/check/install`, modkit/docs/addons.md)
 - `pack <src> [-o out.pak] [--title ... --zip]`: `<src>` = folder of cooked files laid out like the game
   (`Gobi/Content/...`: what `dumpassets` writes and the modkit tools produce) with optional `addoninfo.txt` at its
   top, or one of our uncompressed paks (repacked). Refuses files outside `Gobi/`/`Engine/` and non-ASCII names; warns
@@ -100,7 +100,7 @@ spaces in the path. Not run live: `/addons` typed in chat (same code as the harn
 above; player builds have no `type` command), `addons_dir=`, a damaged pak.
 
 ## 6. Content class (#22): cosmetic vs. gameplay-affecting
-Code: `native/src/addonclass.c` (agent, at load, from the pak) and `classify()` in `tools/modkit/addon.py` (at pack,
+Code: `native/src/addonclass.c` (agent, at load, from the pak) and `classify()` in `modkit/addon.py` (at pack,
 written as `content=`): same rules, kept in sync. The author's label is never trusted.
 - Every `.uasset` is read (header only: summary, name map, import map, export map; B4B = legacy -7, unversioned,
   104-byte export entries, like `tools/modkit/upkg.py`). Each export's class: import -> (module = the class import's

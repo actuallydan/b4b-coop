@@ -1,137 +1,637 @@
 #!/usr/bin/env python3
-"""b4bmod: texture and material-instance mods for Back 4 Blood without the UE editor (#18/#21, epic #23).
+"""b4bmod: the b4bcoop mod maker's kit, one command from the game's files to an installed add-on.
 
-Front end for the .NET tool in tools/modkit/b4bmod/ (builds it on first use) plus asset search and packing.
-Step-by-step guide: docs/investigations/texture-mods.md.
+  setup                                   get .NET 10 + UAssetAPI (no admin), build the tools, show what's missing
+  status                                  what is set up: tools, game folder, AES key, Oodle, Blender
+  config [<key> [<value>]]                show or set aes_key (checked against the game's paks), game, oodle, blender
 
-  b4bmod.py setup                                 fetch .NET 10 SDK + UAssetAPI into vendor/, build the tool
-  b4bmod.py find <regex> [--paks DIR]             search every game file path (offline, from the pak indexes)
-  b4bmod.py extract <glob>                        dev build + running game: agent `dumpassets` (e.g.
-                                                  '/Game/Characters/Heroes/Walker/*')
-  b4bmod.py info <asset>...                       texture format/size/mips, MI parameters, what a mesh uses
-  b4bmod.py tree <asset>                          mesh -> material instances -> textures
-  b4bmod.py export <asset> <out.png> [--mip N]    texture -> PNG (paint over this)
-  b4bmod.py texture <asset> <in.png> -o <moddir> [--resize] [--quality fast|balanced|best]
-  b4bmod.py mi <asset> [list]
-  b4bmod.py mi <asset> set <param> <value> [set <param> <value>...] [parent <path>] -o <moddir>
-  b4bmod.py pak <moddir> <out.pak>                plain mod pak (tools/b4bpak.py); dev ini modpaks=<its folder>
+  find <regex>                            search every game asset path (offline, from the pak indexes)
+  extract <asset | folder/*>... [--regex R] [-o DIR]
+                                          copy game files out of the paks (default into the extract folder, which the
+                                          other commands read); e.g. /Game/Characters/Heroes/Walker/*
+  info <asset>...                         texture format/size, material parameters, what a package references
+  tree <asset>                            mesh -> material instances -> textures
+  export <asset> <out.png> [--mip N]      texture -> PNG
+  texture <asset> <in.png> -o <moddir> [--resize] [--quality fast|balanced|best]
+                                          your PNG -> the game's texture (same format, full mip chain)
+  mi <asset> [list]                       material instance parameters
+  mi <asset> set <param> <value> [set <param> <value>...] [parent <path>] -o <moddir>
+  mesh info <asset>                       materials (slots), LODs, bones of a skeletal mesh
+  mesh export <asset> <out.glb> [--lod N] the game's mesh with its skeleton, to open in Blender
+  mesh import <template asset> <model.fbx|.glb|.gltf> -o <moddir> [--lods N] [--material NAME=SLOT]...
+                                          your model (rigged to the template's skeleton) -> the game's mesh
+  mesh edit <asset> -o <moddir> [--inflate CM] [--scale-section L:S:F] [--material L:S:M]
+  pack <moddir> [-o NAME.pak] [--title T] [--author A] [--version V] [--category C] [--description D] [--zip]
+                                          <moddir> -> one add-on .pak (+ a zip for players with --zip)
+  install <addon.pak> | uninstall <name>  copy into / remove from <game>/b4bcoop-addons (restart the game)
+  check [<addon.pak> | <addons folder>]   an add-on's info, or what the game will load (default: the game's folder)
 
-<asset> is a game path (/Game/Characters/Heroes/Walker/.../Walker_Torso_00_A_BC_T) looked up under --src (default
-$B4B_EXTRACT or ~/.local/share/b4b-coop/extract, where `dumpassets` writes), or a .uasset file. <moddir> gets the
-edited cooked files laid out like the game (<moddir>/Gobi/Content/...): that folder is what goes into a pak or an
-add-on. Never commit extracted or edited game files.
+<asset> is a game path like /Game/Characters/Heroes/Walker/Meshes/Elite/Elite_00/3P_Walker_Elite_00_SKM (from `find`)
+or a .uasset file. <moddir> is your mod's folder: the edited files go to <moddir>/Gobi/Content/..., like the game's.
+Options anywhere: --aes-key <key>, --game <Back 4 Blood folder>, --src <extract folder>.
+Guide: README.md next to this file. Never share extracted game files; share add-ons you made.
 """
-import os, re, subprocess, sys
+import hashlib, io, json, os, re, shutil, subprocess, sys, urllib.request, zipfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-VENDOR = os.path.join(ROOT, "vendor")
-DOTNET_DIR = os.path.join(VENDOR, "dotnet")
-DOTNET = os.path.join(DOTNET_DIR, "dotnet.exe" if os.name == "nt" else "dotnet")
-UASSETAPI = os.path.join(VENDOR, "UAssetAPI")
-UASSETAPI_COMMIT = "3228c1e"          # tested; MIT, github.com/atenfyr/UAssetAPI
-PROJ = os.path.join(HERE, "b4bmod")
-DLL = os.path.join(PROJ, "bin", "Release", "net10.0", "b4bmod.dll")
-# Community AES key of B4B's pak indexes (docs/investigations/model-mods-paks.md): only needed to list file names.
-PAK_AES = "0208250257E8EA16828509DEBF23D703A5B509FE4F15F33F11BEE4BAB1F97CFD"
-DATA = os.path.join(os.path.expanduser("~"), ".local", "share", "b4b-coop")
-DEFAULT_PAKS = (r"C:\Program Files (x86)\Steam\steamapps\common\Back 4 Blood\Gobi\Content\Paks" if os.name == "nt" else
-                os.path.join(os.path.expanduser("~"), ".local/share/Steam/steamapps/common/Back 4 Blood/Gobi/Content/Paks"))
+KIT = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(KIT) if os.path.isdir(os.path.join(os.path.dirname(KIT), "native")) else None
+WIN = os.name == "nt"
+if WIN:
+    DATA = os.environ.get("B4B_MODKIT_DATA") or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "b4b-coop")
+else:
+    DATA = os.environ.get("B4B_MODKIT_DATA") or os.path.join(os.path.expanduser("~"), ".local", "share", "b4b-coop")
+# third-party pieces `setup` fetches: <kit>/deps, or the repo's vendor/ (developers already have them there)
+DEPS = os.environ.get("B4B_MODKIT_DEPS") or (os.path.join(REPO, "vendor") if REPO else os.path.join(KIT, "deps"))
+CONFIG = os.path.join(DATA, "b4bmod.ini")
+# mesh tools: next to this file in the kit; in the repo still in tools/modkit/ (until models-fullmodel is merged)
+MESH = KIT if os.path.exists(os.path.join(KIT, "skmgltf.py")) else os.path.join(REPO or KIT, "tools", "modkit")
 
-
-def env():
-    e = dict(os.environ, DOTNET_ROOT=DOTNET_DIR, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
-    return e
-
-
-def setup(force_build=False):
-    if not os.path.exists(DOTNET):
-        print("fetching the .NET 10 SDK into vendor/dotnet ...")
-        if os.name == "nt":
-            ps = ("& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://dot.net/v1/dotnet-install.ps1))) "
-                  f"-Channel 10.0 -InstallDir '{DOTNET_DIR}'")
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True)
-        else:
-            subprocess.run(f"curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir '{DOTNET_DIR}'",
-                           shell=True, check=True)
-    if not os.path.isdir(os.path.join(UASSETAPI, "UAssetAPI")):
-        print(f"fetching UAssetAPI ({UASSETAPI_COMMIT}) into vendor/UAssetAPI ...")
-        subprocess.run(["git", "clone", "-q", "https://github.com/atenfyr/UAssetAPI", UASSETAPI], check=True)
-        subprocess.run(["git", "-C", UASSETAPI, "checkout", "-q", UASSETAPI_COMMIT], check=True)
-    srcs = [os.path.join(PROJ, f) for f in os.listdir(PROJ) if f.endswith((".cs", ".csproj"))]
-    if force_build or not os.path.exists(DLL) or max(map(os.path.getmtime, srcs)) > os.path.getmtime(DLL):
-        print("building tools/modkit/b4bmod ...", file=sys.stderr)
-        r = subprocess.run([DOTNET, "build", "-c", "Release", "-v", "q", "-nologo", PROJ], env=env(),
-                           capture_output=True, text=True)
-        if r.returncode:
-            sys.stderr.write(r.stdout + r.stderr)
-            raise SystemExit("build failed")
+UASSETAPI_COMMIT = "3228c1e86261aa08131f7ec0ff1a395f5d0b2a84"   # MIT, github.com/atenfyr/UAssetAPI (tested)
+UASSETAPI_ZIP_SHA256 = "3c044cc871c41e877f76ce42ced31f0d700ae9febe959d35b03a41ded8c4e92f"
+DOTNET_CHANNEL = "10.0"
+PROJECTS = {"b4bmod": os.path.join(KIT, "dotnet", "b4bmod"), "pakx": os.path.join(KIT, "dotnet", "pakx")}
+KEY_RX = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 
 
-def run_tool(args):
-    setup()
-    return subprocess.run([DOTNET, DLL] + args, env=env()).returncode
+def die(msg, code=1):
+    print(f"b4bmod: {msg}", file=sys.stderr)
+    raise SystemExit(code)
 
 
-def find(pattern, paks):
-    """Every file name in the retail paks (decrypted indexes), cached; print the ones matching <regex>."""
-    cache = os.path.join(DATA, "listing", "files.txt")
-    if not os.path.exists(cache):
-        sys.path.insert(0, os.path.join(ROOT, "tools"))
-        import b4bpak   # needs the `cryptography` package
-        names = []
-        for p in sorted(os.listdir(paks)):
-            if not p.endswith(".pak"):
+# ---- config -----------------------------------------------------------------------------------------------------
+
+def read_config():
+    cfg = {}
+    if os.path.exists(CONFIG):
+        for line in open(CONFIG, encoding="utf-8"):
+            if "=" in line and not line.lstrip().startswith((";", "#")):
+                k, v = line.split("=", 1)
+                cfg[k.strip().lower()] = v.strip()
+    return cfg
+
+
+def write_config(cfg):
+    os.makedirs(DATA, exist_ok=True)
+    with open(CONFIG, "w", encoding="utf-8") as f:
+        f.write("; b4bmod settings (b4bmod config <key> <value>)\n")
+        for k in sorted(cfg):
+            f.write(f"{k}={cfg[k]}\n")
+
+
+OPTS = {}   # --aes-key, --game, --src given on the command line
+
+
+def aes_key(required=True):
+    k = OPTS.get("--aes-key") or os.environ.get("B4B_AES_KEY") or read_config().get("aes_key")
+    if not k and required:
+        die("no AES key set. Back 4 Blood's paks need the game's AES key to be read (one key for every copy of the game).\n"
+            "  Find it in a public UE AES key list (search \"Back 4 Blood AES key\"; README.md, \"The AES key\"), then\n"
+            "  b4bmod config aes_key 0x<64 hex digits>")
+    if k and not KEY_RX.match(k.strip()):
+        die("the AES key must be 64 hex digits, optionally with 0x in front")
+    return k.strip() if k else None
+
+
+# ---- game folder ------------------------------------------------------------------------------------------------
+
+def steam_roots():
+    roots = []
+    if WIN:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+                roots.append(winreg.QueryValueEx(k, "SteamPath")[0])
+        except OSError:
+            pass
+        roots.append(r"C:\Program Files (x86)\Steam")
+    else:
+        h = os.path.expanduser("~")
+        roots += [os.path.join(h, ".local/share/Steam"), os.path.join(h, ".steam/steam"),
+                  os.path.join(h, ".var/app/com.valvesoftware.Steam/.local/share/Steam")]
+    return roots
+
+
+def find_game():
+    g = OPTS.get("--game") or os.environ.get("B4B_GAME") or read_config().get("game")
+    if g:
+        return g
+    libs = []
+    for r in steam_roots():
+        vdf = os.path.join(r, "steamapps", "libraryfolders.vdf")
+        libs.append(r)
+        if os.path.exists(vdf):
+            libs += [p.replace("\\\\", "\\") for p in re.findall(r'"path"\s+"([^"]+)"', open(vdf, encoding="utf-8", errors="replace").read())]
+    for lib in libs:
+        g = os.path.join(lib, "steamapps", "common", "Back 4 Blood")
+        if os.path.isdir(os.path.join(g, "Gobi", "Content", "Paks")):
+            return g
+    return None
+
+
+def game_dir():
+    g = find_game()
+    if not g:
+        die("Back 4 Blood not found. Tell b4bmod where it is (the folder with Back4Blood.exe and Gobi in it; in Steam:\n"
+            "  right-click Back 4 Blood > Manage > Browse local files):  b4bmod config game \"<that folder>\"")
+    if not os.path.isdir(os.path.join(g, "Gobi", "Content", "Paks")):
+        die(f"{g}: no Gobi/Content/Paks in it; that is not the Back 4 Blood folder")
+    return g
+
+
+def paks_dir():
+    return os.path.join(game_dir(), "Gobi", "Content", "Paks")
+
+
+def src_dir():
+    return OPTS.get("--src") or os.environ.get("B4B_EXTRACT") or os.path.join(DATA, "extract")
+
+
+# ---- .NET and the tools -----------------------------------------------------------------------------------------
+
+def dotnet_exe():
+    """(path, env) of a dotnet with a 10.x SDK: the kit's own, else one on PATH; None if there is none."""
+    own = os.path.join(DEPS, "dotnet", "dotnet.exe" if WIN else "dotnet")
+    base = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1")
+    if os.path.exists(own):
+        return own, dict(base, DOTNET_ROOT=os.path.dirname(own))
+    sysd = shutil.which("dotnet")
+    if sysd:
+        try:
+            sdks = subprocess.run([sysd, "--list-sdks"], capture_output=True, text=True, timeout=60).stdout
+            if re.search(r"^10\.", sdks, re.M):
+                return sysd, base
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None, base
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=300) as r:
+        return r.read()
+
+
+def install_dotnet():
+    d = os.path.join(DEPS, "dotnet")
+    os.makedirs(DEPS, exist_ok=True)
+    print(f"installing the .NET {DOTNET_CHANNEL} SDK into {d} (Microsoft's dotnet-install script, no admin) ...")
+    if WIN:
+        script = os.path.join(DEPS, "dotnet-install.ps1")
+        open(script, "wb").write(fetch("https://dot.net/v1/dotnet-install.ps1"))
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+                        "-Channel", DOTNET_CHANNEL, "-InstallDir", d], check=True)
+    else:
+        script = os.path.join(DEPS, "dotnet-install.sh")
+        open(script, "wb").write(fetch("https://dot.net/v1/dotnet-install.sh"))
+        subprocess.run(["bash", script, "--channel", DOTNET_CHANNEL, "--install-dir", d], check=True)
+
+
+def install_uassetapi():
+    d = os.path.join(DEPS, "UAssetAPI")
+    url = f"https://github.com/atenfyr/UAssetAPI/archive/{UASSETAPI_COMMIT}.zip"
+    print(f"fetching UAssetAPI {UASSETAPI_COMMIT[:7]} (MIT) from {url} ...")
+    data = fetch(url)
+    if hashlib.sha256(data).hexdigest() != UASSETAPI_ZIP_SHA256:
+        die("the UAssetAPI download does not have the expected SHA-256; not using it. Please report this.")
+    top = f"UAssetAPI-{UASSETAPI_COMMIT}/"
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        for m in z.infolist():
+            if not m.filename.startswith(top) or m.is_dir():
                 continue
-            _, mount, entries = b4bpak.read_index(os.path.join(paks, p), PAK_AES)
-            base = mount.replace("../../../", "")
-            names += [f"{base}{e['name']}\t{p}" for e in entries]
+            rel = m.filename[len(top):]
+            if "/" in rel and not rel.startswith("UAssetAPI/"):
+                continue   # tests, benchmarks and docs are not needed (top-level files are: README.md is packed)
+            out = os.path.join(d, *rel.split("/"))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as f:
+                f.write(z.read(m))
+    open(os.path.join(d, "COMMIT"), "w").write(UASSETAPI_COMMIT + "\n")
+
+
+def tool_dll(name):
+    return os.path.join(PROJECTS[name], "bin", "Release", "net10.0", name + ".dll")
+
+
+def build(name, force=False):
+    proj, dll = PROJECTS[name], tool_dll(name)
+    srcs = [os.path.join(proj, f) for f in os.listdir(proj) if f.endswith((".cs", ".csproj"))]
+    if not force and os.path.exists(dll) and max(map(os.path.getmtime, srcs)) <= os.path.getmtime(dll):
+        return
+    dn, env = dotnet_exe()
+    if not dn:
+        die("no .NET 10 SDK: run  b4bmod setup")
+    if name == "b4bmod" and not os.path.exists(os.path.join(DEPS, "UAssetAPI", "UAssetAPI", "UAssetAPI.csproj")):
+        die("UAssetAPI is missing: run  b4bmod setup")
+    print(f"building {name} (first run downloads its NuGet packages) ...", file=sys.stderr)
+    r = subprocess.run([dn, "build", "-c", "Release", "-v", "q", "-nologo", f"-p:B4BDeps={DEPS}", proj],
+                       env=env, capture_output=True, text=True)
+    if r.returncode:
+        sys.stderr.write(r.stdout + r.stderr)
+        die(f"building {name} failed")
+
+
+def run_dotnet_tool(name, args, capture=False):
+    build(name)
+    dn, env = dotnet_exe()
+    if capture:
+        return subprocess.run([dn, tool_dll(name)] + args, env=env, capture_output=True, text=True)
+    return subprocess.run([dn, tool_dll(name)] + args, env=env).returncode
+
+
+def pakx(args, capture=False):
+    base = ["--paks", paks_dir(), "--aes", aes_key()]
+    r = run_dotnet_tool("pakx", [args[0]] + base + args[1:], capture)
+    if capture and r.returncode:
+        die((r.stderr or r.stdout).strip().removeprefix("pakx: "))
+    return r
+
+
+def python_tool(script, args):
+    return subprocess.run([sys.executable, script] + args).returncode
+
+
+# ---- assets -----------------------------------------------------------------------------------------------------
+
+def unmangle(a):
+    """Git Bash on Windows turns /Game/... into C:/Program Files/Git/Game/...: undo that."""
+    m = re.match(r"^[A-Za-z]:[/\\].*?[/\\]Git[/\\](Game|Engine)[/\\](.*)$", a)
+    return f"/{m.group(1)}/{m.group(2)}" if m else a
+
+
+def pak_path(asset):
+    """/Game/X/Y[.Y] -> Gobi/Content/X/Y ; /Engine/X -> Engine/Content/X."""
+    for root, pre in (("/Game/", "Gobi/Content/"), ("/Engine/", "Engine/Content/")):
+        if asset.startswith(root):
+            p = asset[len(root):]
+            dot = p.rfind(".")
+            if dot > p.rfind("/"):
+                p = p[:dot]
+            return pre + p
+    return None
+
+
+def asset_regex(a):
+    """/Game/... package or glob (* matches across folders) -> regex over pak paths, every file of the package(s)."""
+    p = pak_path(a)
+    if p is None:
+        die(f"{a}: expected a /Game/... path (see `b4bmod find`) or --regex")
+    rx = "^" + "".join(".*" if c == "*" else "." if c == "?" else re.escape(c) for c in p)
+    return rx if p.endswith("*") else rx + r"\.[^/.]+$"
+
+
+def extract(patterns, out=None, quiet=False):
+    out = out or src_dir()
+    args = ["extract", "--out", out]
+    oodle = read_config().get("oodle")
+    if oodle:
+        args += ["--oodle", oodle]
+    rx = "|".join(f"(?:{p})" for p in patterns)
+    r = pakx(args + [rx], capture=True)
+    if not quiet or not r.stderr.startswith("0 files"):
+        sys.stderr.write(r.stderr)
+    return r
+
+
+def asset_file(asset):
+    p = pak_path(asset)
+    return os.path.join(src_dir(), *(p + ".uasset").split("/")) if p else asset
+
+
+def ensure(asset, folder=False):
+    """Extract a /Game/ package (or its whole folder) if it isn't in the extract folder yet."""
+    p = pak_path(asset)
+    if not p or os.path.exists(asset_file(asset)):
+        return
+    print(f"extracting {asset}{' and its folder' if folder else ''} ...", file=sys.stderr)
+    extract([asset_regex(asset.rsplit("/", 1)[0] + "/*" if folder else asset)], quiet=True)
+    if not os.path.exists(asset_file(asset)):
+        die(f"{asset}: not in the game's paks (check the path with  b4bmod find <part of the name>)")
+
+
+# ---- commands ---------------------------------------------------------------------------------------------------
+
+def cmd_setup(a):
+    if not dotnet_exe()[0]:
+        install_dotnet()
+    if not os.path.exists(os.path.join(DEPS, "UAssetAPI", "UAssetAPI", "UAssetAPI.csproj")):
+        install_uassetapi()
+    for n in PROJECTS:
+        build(n, force=True)
+    print("tools built.\n")
+    return cmd_status([])
+
+
+def cmd_status(a):
+    ok = True
+    print(f"python      {sys.version.split()[0]} ({sys.executable})")
+    dn = dotnet_exe()[0]
+    print(f".NET SDK    {dn or 'MISSING: run  b4bmod setup'}")
+    ua = os.path.join(DEPS, "UAssetAPI", "UAssetAPI", "UAssetAPI.csproj")
+    print(f"UAssetAPI   {os.path.dirname(os.path.dirname(ua)) if os.path.exists(ua) else 'MISSING: run  b4bmod setup'}")
+    for n in PROJECTS:
+        print(f"{n:<11} {'built' if os.path.exists(tool_dll(n)) else 'not built yet: run  b4bmod setup'}")
+    ok &= bool(dn) and os.path.exists(ua)
+    g = find_game()
+    print(f"game        {g or 'NOT FOUND: b4bmod config game <Back 4 Blood folder>'}")
+    k = aes_key(required=False)
+    src = "--aes-key" if OPTS.get("--aes-key") else "B4B_AES_KEY" if os.environ.get("B4B_AES_KEY") else CONFIG
+    if not k:
+        print("AES key     NOT SET: b4bmod config aes_key 0x<64 hex digits>  (README.md, \"The AES key\")")
+        ok = False
+    elif g and dn and os.path.exists(tool_dll("pakx")):
+        r = run_dotnet_tool("pakx", ["key", "--paks", os.path.join(g, "Gobi", "Content", "Paks"), "--aes", k], capture=True)
+        print(f"AES key     {'OK (checked against the paks)' if r.returncode == 0 else 'WRONG: ' + (r.stderr or r.stdout).strip()} (from {src})")
+        ok &= r.returncode == 0
+    else:
+        print(f"AES key     set (from {src}), not checked yet")
+    oodle = read_config().get("oodle")
+    print(f"Oodle       {oodle + ' (native)' if oodle else 'built-in managed decoder (OodleSharp, via CUE4Parse); optional native: config oodle'}")
+    bl = blender_exe()
+    print(f"Blender     {bl or 'not found (only for meshes): install Blender, or b4bmod config blender <path to blender>'}")
+    print(f"mesh tools  {MESH}")
+    print(f"extract to  {src_dir()}")
+    print(f"settings    {CONFIG}")
+    print("\nready." if ok else "\nnot ready yet: fix the lines above.")
+    return 0 if ok else 1
+
+
+def cmd_config(a):
+    cfg = read_config()
+    if not a:
+        print(f"{CONFIG}:")
+        for k in ("aes_key", "game", "oodle", "blender"):
+            print(f"  {k}={cfg.get(k, '')}")
+        return 0
+    k = a[0].lower()
+    if k not in ("aes_key", "game", "oodle", "blender"):
+        die("keys: aes_key, game, oodle, blender")
+    if len(a) == 1:
+        print(cfg.get(k, ""))
+        return 0
+    v = a[1].strip()
+    if v in ("", "-", "none"):
+        cfg.pop(k, None)
+    elif k == "aes_key":
+        if not KEY_RX.match(v):
+            die("the AES key must be 64 hex digits, optionally with 0x in front")
+        v = v if v.lower().startswith("0x") else "0x" + v
+        OPTS["--aes-key"] = v
+        r = pakx(["key"], capture=True)
+        print(r.stdout.strip())
+    elif k == "game":
+        v = os.path.abspath(v)
+        if not os.path.isdir(os.path.join(v, "Gobi", "Content", "Paks")):
+            die(f"{v}: no Gobi/Content/Paks in it; give the folder with Back4Blood.exe and Gobi")
+    elif not os.path.exists(v):
+        die(f"{v}: not found")
+    if v not in ("", "-", "none"):
+        cfg[k] = v
+    write_config(cfg)
+    print(f"saved in {CONFIG}")
+    return 0
+
+
+def listing():
+    """Every file in the paks (path, pak), cached per game version (pak names and sizes)."""
+    p = paks_dir()
+    sig = hashlib.sha1("".join(f"{n}:{os.path.getsize(os.path.join(p, n))};" for n in sorted(os.listdir(p))
+                               if n.endswith(".pak")).encode()).hexdigest()[:12]
+    cache = os.path.join(DATA, "listing", f"files-{sig}.tsv")
+    if not os.path.exists(cache):
+        r = pakx(["list"], capture=True)
         os.makedirs(os.path.dirname(cache), exist_ok=True)
-        with open(cache, "w") as f:
-            f.write("\n".join(sorted(names)) + "\n")
-        print(f"(indexed {len(names)} files from {paks} into {cache})", file=sys.stderr)
-    rx = re.compile(pattern, re.I)
+        with open(cache, "w", encoding="utf-8") as f:
+            f.write(r.stdout)
+        print(f"(indexed {r.stdout.count(chr(10))} files into {cache})", file=sys.stderr)
+    for line in open(cache, encoding="utf-8"):
+        path, _, pak = line.rstrip("\n").split("\t")
+        yield path, pak
+
+
+def cmd_find(a):
+    if len(a) != 1:
+        die("usage: b4bmod find <regex>   e.g. b4bmod find \"Heroes/Walker/.*_SKM$\"", 2)
+    rx = re.compile(a[0], re.I)
     n = 0
-    for line in open(cache):
-        name, pak = line.rstrip("\n").split("\t")
-        if not name.endswith(".uasset"):
+    for path, pak in listing():
+        if not path.endswith((".uasset", ".umap")):
             continue
-        game = "/Game/" + name[len("Gobi/Content/"):-len(".uasset")] if name.startswith("Gobi/Content/") else name[:-7]
-        if not rx.search(game):
-            continue
-        print(f"{game}\t{pak}")
-        n += 1
+        base = path.rsplit(".", 1)[0]
+        game = "/Game/" + base[len("Gobi/Content/"):] if base.startswith("Gobi/Content/") else \
+               "/Engine/" + base[len("Engine/Content/"):] if base.startswith("Engine/Content/") else base
+        if rx.search(game):
+            print(f"{game}\t{pak}")
+            n += 1
     print(f"{n} assets", file=sys.stderr)
+    return 0
 
 
-def main():
-    a = sys.argv[1:]
+def take(a, flag):
+    if flag in a:
+        i = a.index(flag)
+        if i + 1 >= len(a):
+            die(f"{flag} needs a value", 2)
+        v = a[i + 1]
+        del a[i:i + 2]
+        return v
+    return None
+
+
+def cmd_extract(a):
+    out = take(a, "-o") or take(a, "--out")
+    pats = []
+    while "--regex" in a:
+        pats.append(take(a, "--regex"))
+    pats += [asset_regex(x) for x in a]
+    if not pats:
+        die("usage: b4bmod extract </Game/... asset or folder/*>... [--regex R] [-o DIR]", 2)
+    extract(pats, out)
+    return 0
+
+
+def cmd_dotnet(cmd, a):
+    """info/tree/export/texture/mi/...: the .NET tool, after extracting the assets it names."""
+    for x in a:
+        if x.startswith(("/Game/", "/Engine/")):
+            ensure(x, folder=(cmd == "tree"))
+            if cmd != "info":
+                break
+    if cmd == "tree":
+        # extract what the tree references (materials, textures, parents), a level per round, then print it
+        for _ in range(8):
+            r = run_dotnet_tool("b4bmod", [cmd] + a + ["--src", src_dir()], capture=True)
+            missing = sorted(set(re.findall(r"(/(?:Game|Engine)/\S+)  \(not extracted\)", r.stdout)))
+            if r.returncode or not missing:
+                break
+            print(f"extracting {len(missing)} referenced asset(s) ...", file=sys.stderr)
+            extract([asset_regex(m) for m in missing], quiet=True)
+        sys.stdout.write(r.stdout)
+        sys.stderr.write(r.stderr)
+        return r.returncode
+    return run_dotnet_tool("b4bmod", [cmd] + a + ["--src", src_dir()])
+
+
+def blender_exe():
+    b = read_config().get("blender") or os.environ.get("BLENDER") or shutil.which("blender")
+    if not b and WIN:
+        import glob
+        c = sorted(glob.glob(r"C:\Program Files\Blender Foundation\Blender*\blender.exe"))
+        b = c[-1] if c else None
+    return b
+
+
+FBX2GLB = r"""
+import bpy, sys
+src, dst = sys.argv[sys.argv.index("--") + 1:][:2]
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.fbx(filepath=src)
+bpy.ops.export_scene.gltf(filepath=dst, export_format="GLB", export_all_influences=True, export_animations=False)
+"""
+
+
+def to_gltf(model):
+    ext = os.path.splitext(model)[1].lower()
+    if ext in (".glb", ".gltf"):
+        return model
+    if ext != ".fbx":
+        die(f"{model}: give a .fbx, .glb or .gltf file")
+    h = subprocess.run([sys.executable, os.path.join(MESH, "skmgltf.py"), "import", "-h"], capture_output=True, text=True)
+    if "fbx" in (h.stdout + h.stderr).lower():
+        return model   # the mesh tool reads FBX itself
+    bl = blender_exe()
+    if not bl:
+        die("FBX needs Blender to convert it (or export glTF from your 3D tool): install Blender, or\n"
+            "  b4bmod config blender <path to blender(.exe)>")
+    out = os.path.join(DATA, "tmp", os.path.splitext(os.path.basename(model))[0] + ".glb")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    print(f"converting {model} to glTF with Blender ...", file=sys.stderr)
+    r = subprocess.run([bl, "-b", "--factory-startup", "--python-expr", FBX2GLB, "--", os.path.abspath(model), out],
+                       capture_output=True, text=True)
+    if r.returncode or not os.path.exists(out):
+        sys.stderr.write(r.stdout[-3000:] + r.stderr[-3000:])
+        die("Blender could not convert the FBX")
+    return out
+
+
+def moddir_file(moddir, asset):
+    p = pak_path(asset)
+    if not p:
+        die(f"{asset}: give the template as a /Game/... path, so the output lands at the same game path")
+    out = os.path.join(moddir, *(p + ".uasset").split("/"))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    return out
+
+
+def cmd_mesh(a):
+    if not a or a[0] not in ("info", "export", "import", "edit"):
+        die("usage: b4bmod mesh info|export|import|edit ...  (b4bmod help)", 2)
+    sub, a = a[0], a[1:]
+    skm, skmgltf = os.path.join(MESH, "skm.py"), os.path.join(MESH, "skmgltf.py")
+    if not os.path.exists(skmgltf):
+        die(f"mesh tools not found in {MESH}")
+    if sub == "info":
+        for x in a:
+            ensure(x)
+        return python_tool(skm, ["info"] + [asset_file(x) for x in a])
+    if sub == "export":
+        if len(a) < 2:
+            die("usage: b4bmod mesh export <asset> <out.glb> [--lod N]", 2)
+        ensure(a[0])
+        return python_tool(skmgltf, ["export", asset_file(a[0])] + a[1:])
+    moddir = take(a, "-o") or take(a, "--out")
+    if not moddir:
+        die(f"mesh {sub} needs -o <moddir>", 2)
+    if sub == "import":
+        if len(a) < 2:
+            die("usage: b4bmod mesh import <template asset> <model.fbx|.glb> -o <moddir> [--lods N] [--material NAME=SLOT]", 2)
+        ensure(a[0])
+        out = moddir_file(moddir, a[0])
+        extra = a[2:]
+        if "--lods" not in extra:
+            # as many LODs as the template: lower graphics settings draw LOD1+ (copies of the imported mesh)
+            info = subprocess.run([sys.executable, skm, "info", asset_file(a[0])], capture_output=True, text=True).stdout
+            m = re.search(r"\blods (\d+)", info)
+            if m:
+                extra += ["--lods", m.group(1)]
+        rc = python_tool(skmgltf, ["import", asset_file(a[0]), to_gltf(a[1]), out] + extra)
+        if rc == 0:
+            print(f"-> {out} (+ .uexp). Next: b4bmod pack {moddir}")
+        return rc
+    if not a:
+        die("usage: b4bmod mesh edit <asset> -o <moddir> [--inflate CM] ...", 2)
+    ensure(a[0])
+    return python_tool(skm, ["edit", asset_file(a[0]), moddir_file(moddir, a[0])] + a[1:])
+
+
+def addons_dir():
+    return os.path.join(game_dir(), "b4bcoop-addons")
+
+
+def cmd_install(a):
+    if len(a) != 1 or not a[0].lower().endswith(".pak"):
+        die("usage: b4bmod install <addon.pak>", 2)
+    d = addons_dir()
+    os.makedirs(d, exist_ok=True)
+    dst = os.path.join(d, os.path.basename(a[0]))
+    try:
+        shutil.copyfile(a[0], dst)
+    except PermissionError:
+        die(f"can't write {dst}: close the game first")
+    print(f"installed {dst}\nstart (or restart) the game; the chat command /addons lists it.")
+    return 0
+
+
+def cmd_uninstall(a):
+    if len(a) != 1:
+        die("usage: b4bmod uninstall <name>", 2)
+    n = a[0] if a[0].lower().endswith(".pak") else a[0] + ".pak"
+    p = os.path.join(addons_dir(), os.path.basename(n))
+    if not os.path.exists(p):
+        die(f"{p}: not installed")
+    try:
+        os.remove(p)
+    except PermissionError:
+        die(f"can't remove {p}: close the game first")
+    print(f"removed {p}")
+    return 0
+
+
+def cmd_check(a):
+    t = a[0] if a else addons_dir()
+    if os.path.isfile(t):
+        return python_tool(os.path.join(KIT, "addon.py"), ["info", t])
+    if not os.path.isdir(t):
+        die(f"{t}: no such add-on or folder (nothing installed yet?)")
+    return python_tool(os.path.join(KIT, "addon.py"), ["check", t])
+
+
+def main(argv):
+    a = [unmangle(x) for x in argv]
+    for flag in ("--aes-key", "--game"):
+        v = take(a, flag)
+        if v:
+            OPTS[flag] = v
+    v = take(a, "--src")
+    if v:
+        OPTS["--src"] = v
     if not a or a[0] in ("-h", "--help", "help"):
         print(__doc__)
         return 0
-    cmd = a[0]
-    if cmd == "setup":
-        setup(force_build=True)
-        print("ready")
-        return 0
-    if cmd == "find":
-        paks = DEFAULT_PAKS
-        if "--paks" in a:
-            i = a.index("--paks"); paks = a[i + 1]; del a[i:i + 2]
-        if len(a) != 2:
-            raise SystemExit("usage: b4bmod.py find <regex> [--paks DIR]")
-        find(a[1], paks)
-        return 0
-    if cmd == "extract":
-        if len(a) < 2:
-            raise SystemExit("usage: b4bmod.py extract <glob> [windows outdir]")
-        return subprocess.run([sys.executable, os.path.join(ROOT, "tools", "b4b.py"), "dumpassets"] + a[1:]).returncode
-    if cmd == "pak":
-        if len(a) != 3:
-            raise SystemExit("usage: b4bmod.py pak <moddir> <out.pak>")
-        return subprocess.run([sys.executable, os.path.join(ROOT, "tools", "b4bpak.py"), "pack", a[1], a[2]]).returncode
-    return run_tool(a)
+    cmd, rest = a[0], a[1:]
+    if cmd in ("setup", "status", "config", "find", "extract", "mesh", "install", "uninstall", "check"):
+        return {"setup": cmd_setup, "status": cmd_status, "config": cmd_config, "find": cmd_find,
+                "extract": cmd_extract, "mesh": cmd_mesh, "install": cmd_install, "uninstall": cmd_uninstall,
+                "check": cmd_check}[cmd](rest)
+    if cmd == "pack":
+        return python_tool(os.path.join(KIT, "addon.py"), ["pack"] + rest)
+    if cmd == "pak":   # advanced: plain mod pak for the dev build's modpaks= (no addoninfo)
+        return python_tool(os.path.join(KIT, "b4bpak.py"), ["pack"] + rest)
+    if cmd in ("info", "tree", "export", "texture", "mi", "deps", "props", "texcheck"):
+        return cmd_dotnet(cmd, rest)
+    die(f"unknown command {cmd!r} (b4bmod help)", 2)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
