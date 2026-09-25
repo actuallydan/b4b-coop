@@ -198,8 +198,25 @@ Import rules (skmgltf.py):
   `bolt`, …), float UVs, vertex colours, 2 LODs. **3P weapons** (`3P_<Id>_SKM`) have their own skeleton (`AR01_SK`).
 - **What other players see**: the weapon actor (`AR02_1_BP_C` ...) has `BaseSkeletalMesh_1P` (the FP SKM),
   `BarrelStaticMesh_1P`/`HipSightStaticMesh_1P`/`ADSSightStaticMesh_1P` (attachments), and for third person
-  **`BaseStaticMesh_3P` = `3P_<Id>_SM`** (+ `BarrelMesh_3P`, `SightMesh_3P`). World pickups use `<Id>_Pickup_SM`, the
-  dropped magazine `<Id>_MagEmpty_3P_SM`. `3P_<Id>_SKM` exists for AR01, AR02, LMG01, Sni01 only; we replace it too.
+  **`BaseStaticMesh_3P` = `3P_<Id>_SM`** (+ `BarrelMesh_3P`, `SightMesh_3P`). `3P_<Id>_SKM` exists for AR01, AR02,
+  LMG01, Sni01 only; we replace it too.
+- **Who references which weapon mesh** (name maps of all 115,815 retail `.uasset` headers, `b4bmod extract --regex
+  '\.uasset$'`, 4 s, 321 MB): world pickups `<Id>_N_Pickup_BP` show **`3P_<Id>_SM`** (with `Skin_Default/*_3P_Glint_MI`
+  overrides), not `<Id>_Pickup_SM`: no package references `AR02_Pickup_SM`, `HG01_Pickup_SM`, ... (guns; melee
+  `Hatchet01_Pickup_SM` is used). The dropped magazine is the Cascade system `VFX/Systems/EmptyMags/
+  VFX_EmptyMag_<Id>_3P_P` (mesh particles of `<Id>_MagEmpty_3P_SM` with `Weapon_<Id>_Mag_FP_MI`), fired by the 3P
+  reload montage `BaseAnims3P/.../WPN_<Id>_Stand_Reload_AM`; only 8 exist (AR02, AR03, AR04, HG01, HG03, LMG02, SMG02,
+  SMG03; `HG04_Mag_Empty_3P_SM` is only in `ChendaVendor_BP`). `3P_AR02_SKM` is used only by two Finleyville church
+  cinematics; `3P_LMG01_SKM` is LMG01's 3P weapon (`LMG01_BP`); `3P_AR01_SKM`, `3P_Sni01_SKM` are unreferenced.
+  Other 3P pieces in the weapon BPs: `3P_<Id>_Ironsights_SM` (AR01/03/05, SG02, SMG05, Sni01/02),
+  `3P_AR04_Carry_Handle_SM`.
+- `b4bmod weapon` infers the meshes from the FP mesh's folder (listing only, no extraction): `3P_<Id>_SKM`,
+  `3P_<Id>_SM` + `<Id>_Pickup_SM` (names compared without `_` and case), the folder's one `*Empty*_SM`; the rest is
+  printed as "not replaced". Without a 3P SKM the static meshes come from the FP fit (`sm.py from-skinned` with the FP
+  SKM as reference): retail FP SKM and 3P SM have the same principal sizes (AR02 17.5/4.5/1.1 vs 17.9/4.4/1.1 cm, HG01,
+  SMG01, SG01, AR03, Sni01 alike), rotated 90° about X. Static meshes' own textures (e.g. `SMG02_Primary_3P_N_T`) are
+  built too (fit set -> static slot by MI, MI name without `_FP/_3P`, or base colour). AK on AR02 with only `--fp-mesh`:
+  pak byte-identical to the explicit-path run (sha256 d49da7d1...).
 - Sockets: the FP weapon SKM has `SkeletalMeshSocket` exports relative to `gun` (`muzzle`, `holo`, `scope`, `laser`,
   ...); the 3P weapon skeleton has a `muzzle` **bone**. `skmgltf.py import --socket muzzle=x,y,z` / `--bone muzzle=...`
   move them (b4bmodel does it from the model's muzzle marker or barrel tip).

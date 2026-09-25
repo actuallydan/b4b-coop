@@ -408,18 +408,43 @@ def weapon(o):
         bones = weapon_bones(man3, tpm)
         skmgltf.import_gltf(tpm, man3["lods"], out_file(tpm, moddir), bones=bones)
         mans.append((man3, tpm))
-        for spec in o.o["static"]:
-            smf = asset_file(spec, src)
-            sm.import_static_from_skinned(smf, man3["lods"], tpm, out_file(smf, moddir), slot_map=None)
-        if o.get("mag_static"):
-            smf = asset_file(o["mag_static"], src)
-            sm.import_static_from_skinned(smf, man3["lods"], tpm, out_file(smf, moddir), only_bone="mag")
+    # static meshes (what other players, world pickups and the dropped magazine show): moved over from the 3P fit, or
+    # from the FP fit for the many weapons without a 3P skeletal mesh (retail FP and 3P static meshes are the same
+    # size, only turned: the transform between the retail meshes carries the model over)
+    sman, sref = (man3, tpm) if tpm else (manf, fpm)
+    for spec in o.o["static"]:
+        smf = asset_file(spec, src)
+        sm.import_static_from_skinned(smf, sman["lods"], sref, out_file(smf, moddir), slot_map=None)
+    if o.get("mag_static"):
+        smf = asset_file(o["mag_static"], src)
+        sm.import_static_from_skinned(smf, sman["lods"], sref, out_file(smf, moddir), only_bone="mag")
     tt = TexTool(o.o)
     for man, mesh in mans:
         textures_for(man, mesh, tt)
+    # textures only the static meshes' materials use (e.g. a 3P normal map on a weapon without a 3P skeletal mesh)
+    for spec in o.o["static"] + ([o["mag_static"]] if o.get("mag_static") else []):
+        smf = asset_file(spec, src)
+        textures_for(static_manifest(sman, sref, smf, src), smf, tt, static=True)
     if o.get("skins", "retarget") == "retarget":
         retarget_skins(fpm, tt, o.o)
     log("done:", moddir)
+
+
+def static_manifest(man, mesh_file, sm_file, src):
+    """The fit's texture sets renamed to the static mesh's slots: the slot with the same material instance, else the
+    same name without _FP/_3P/_LOD, else the same base colour texture, else the only slot."""
+    ks = mesh_slots(mesh_file, src)
+    ss = mesh_slots(sm_file, src, static=True)
+    base = lambda mi: re.sub(r"_(fp|3p|lod)(?=_|$)", "", mi.split(".")[-1].lower())
+    sets = {}
+    for k, kmi, ktex, _ in ks:
+        if k not in man["sets"]: continue
+        hit = [s for s, mi, t, _ in ss if mi == kmi] or [s for s, mi, t, _ in ss if base(mi) == base(kmi)] or \
+              [s for s, mi, t, _ in ss if basecolor_of(t) and basecolor_of(t) == basecolor_of(ktex)]
+        if hit: sets.setdefault(hit[0], man["sets"][k])
+    if not sets and len(ss) == 1 and man["sets"]:
+        sets[ss[0][0]] = next(iter(man["sets"].values()))
+    return {"sets": sets}
 
 
 def retarget_skins(fp_mesh, tt, o):

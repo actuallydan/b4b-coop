@@ -29,12 +29,14 @@ or for [doing the fitting yourself](#doing-the-fitting-yourself-mesh-import).
 | A survivor outfit, third person (what others and cameras see) | `.../<Hero>/Meshes/Elite/Elite_NN/3P_<Hero>_Elite_NN_SKM` (or head/torso/legs pieces under `Base/`) | `3P_Biped_SK` (179 bones; a hero mesh uses a subset) |
 | The same outfit's first-person arms | `.../FP_<Hero>_Elite_NN_SKM` | `FP_Biped_SK` (197 bones, **another bind pose**: about 1.09x taller, arms differ) |
 | A weapon in first person | `/Game/Items/Weapons/<Class>/<Code>/Meshes/<Code>_SKM` | `FP_Biped_SK` (weapon bones `gun`, `mag`, `bolt`, ...) |
-| The same weapon in other survivors' hands (what other players and bots show) | `.../Meshes/3P_<Code>_SM`, a **static** mesh | none (one piece) |
-| The weapon lying in the world / its dropped magazine | `.../Meshes/<Code>_Pickup_SM` / `<Code>_MagEmpty_3P_SM` | none |
-| (AR01, AR02, LMG01, Sni01 only) the 3P skeletal weapon | `.../Meshes/3P_<Code>_SKM` | its own (`<Code>_SK`) |
+| The same weapon in other survivors' hands (what other players and bots show) **and lying in the world** as a pickup | `.../Meshes/3P_<Code>_SM`, a **static** mesh | none (one piece) |
+| The empty magazine a reload drops (AR02-04, HG01, HG03, LMG02, SMG02-03: a particle effect showing this mesh) | `.../Meshes/<Code>_MagEmpty_3P_SM` (names vary: `*Empty*_SM`) | none |
+| `<Code>_Pickup_SM` | no game file uses it for guns (replaced anyway) | none |
+| (AR01, AR02, LMG01, Sni01 only) the 3P skeletal weapon: LMG01 in other survivors' hands, AR02 in cutscenes | `.../Meshes/3P_<Code>_SKM` | its own (`<Code>_SK`) |
 
 A survivor needs both the 3P and the FP mesh, and a weapon its FP mesh and its static meshes, or players see your
-model in one view and the original in the other. `b4bmod survivor` / `b4bmod weapon` do all of them in one command.
+model in one view and the original in the other. `b4bmod survivor` / `b4bmod weapon` do all of them in one command;
+for a weapon you only name the FP mesh, the others are found next to it.
 
 A static mesh must keep **one section per material slot** of the template, in slot order, even for slots your model
 doesn't use: otherwise the game hides the whole mesh (a weapon becomes invisible in other survivors' hands). The
@@ -92,18 +94,25 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    follow the FP mesh's slots by material.
 4. **Run**:
    ```
-   b4bmod weapon ak.fbx ^
-       --fp-mesh /Game/Items/Weapons/Assault/AR02/Meshes/AR02_SKM ^
-       --3p-mesh /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SKM ^
-       --static  /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SM ^
-       --static  /Game/Items/Weapons/Assault/AR02/Meshes/AR02_Pickup_SM ^
-       --mag-static /Game/Items/Weapons/Assault/AR02/Meshes/AR02_MagEmpty_3P_SM ^
+   b4bmod weapon ak.fbx --fp-mesh /Game/Items/Weapons/Assault/AR02/Meshes/AR02_SKM ^
        --slot AkMaterial=AR02_Reciever_M --slot Ammunition=AR02_Mag_M ^
        --tex AkMaterial=Textures/AK_1/AK_1_ --tex Ammunition=Textures/Ammunition/Ammunition_ ^
        -o mymod --title "My AK" --author you --version 1.0 --zip
    ```
-   - `--static 3P_<Code>_SM` is what other survivors hold: don't leave it out. `--3p-mesh` only exists for AR01, AR02,
-     LMG01 and Sni01.
+   - `--fp-mesh AR02` (just the code) works too. The other meshes are found in the FP mesh's folder and printed:
+     ```
+     weapon: --3p-mesh /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SKM
+     weapon: --static /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SM
+     weapon: --static /Game/Items/Weapons/Assault/AR02/Meshes/AR02_Pickup_SM
+     weapon: --mag-static /Game/Items/Weapons/Assault/AR02/Meshes/AR02_MagEmpty_3P_SM
+     weapon: not replaced (the game's own look stays): ...
+     ```
+     Giving one of `--3p-mesh`, `--static`, `--mag-static` yourself replaces what was found for that flag; `none`
+     (e.g. `--mag-static none`) leaves it out; `--no-infer` turns the search off. "Not replaced" lists the folder's
+     other meshes, e.g. `3P_AR01_Ironsights_SM`: a separate 3P sight piece that stays on top of your model unless you
+     add it with `--static` (it then gets your model too; a blank mesh isn't supported yet).
+   - Weapons without a 3P skeletal mesh (all but AR01, AR02, LMG01, Sni01) get their static meshes from the
+     first-person fit (the game's FP and 3P meshes are the same size).
    - It also points all of the weapon's skins at your textures (`--skins keep` leaves them alone: then an equipped
      skin shows its own textures on your model).
    - Moving parts: `--part "REGEX=BONE"` if your object names differ (`mag`, `bolt`, `trigger`, `charging_handle`,
@@ -154,5 +163,5 @@ The scripts next to b4bmod, each with `-h` / a usage header; run them with the s
 
 Status: verified in game (2026-09-25): a MakeHuman survivor (3P and FP arms, animated, both players' views) and an
 AK on the AR02 (first person with reload moving the model's magazine, other survivors' hands, skins retargeted). Not
-seen in game yet: the pickup and dropped-magazine meshes, the muzzle flash position. Format details and evidence:
+seen in game yet: the muzzle flash position. Format details and evidence:
 docs/investigations/mesh-mods.md in the b4b-coop repository.
