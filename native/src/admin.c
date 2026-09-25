@@ -1,8 +1,10 @@
 // Chat commands (chat.c queues them) and the host's admin actions, also available as agent commands (dev builds).
 // docs/investigations/chat-commands.md.
 //
-// Roles: a command typed on this machine acts on this machine. Admin commands need this machine to be the server
-// (listen host, or standalone for settings like teamsize/bots); on a client they reply "host only" and do nothing.
+// Roles: a command typed on this machine acts on this machine. Each chat command has a permission (cmds.h), checked
+// here before its handler runs: CMD_ANYONE (every player: own view, own light, own session, lists), CMD_HOST (this
+// machine must be the server: listen host, or standalone for settings like teamsize/bots; a client gets "host only"),
+// CMD_CHEAT (host, and cheats on: cheats.c's verbs, which cheats_perm() reports).
 // A client's commands never reach the host (chat.c intercepts before anything is sent).
 //
 // Host-side enforcement (hook AGameModeBase::PreLogin override, the function that calls slotguard's ApproveLogin):
@@ -595,17 +597,21 @@ void admin_ready(const char *rest, Out *o) {
 }
 
 // ---- dispatch ----
-static const struct { const char *name; int admin; const char *usage; } CMDS[] = {
-    {"help", 0, "/help"}, {"join", 0, "/join steam:<id64> (or <ip[:port]> with host_ip=1)"}, {"host", 0, "/host"}, {"leave", 0, "/leave"},
-    {"players", 0, "/players"}, {"flashlight", 0, "/flashlight [on|off|auto]"}, {"ping", 0, "/ping"},
-    {"kick", 1, "/kick <name|#>"}, {"ban", 1, "/ban <name|#>"}, {"unban", 1, "/unban <name|steam:id|#n|all>"},
-    {"bans", 1, "/bans"}, {"lock", 1, "/lock"}, {"unlock", 1, "/unlock"}, {"teamsize", 1, "/teamsize N"},
-    {"restart", 1, "/restart"}, {"ready", 1, "/ready [vote]"}, {"bots", 1, "/bots on|off|default"}, {"say", 1, "/say <message>"},
+static const struct { const char *name; int perm; const char *usage; } CMDS[] = {
+    {"help", CMD_ANYONE, "/help"}, {"join", CMD_ANYONE, "/join steam:<id64> (or <ip[:port]> with host_ip=1)"},
+    {"host", CMD_ANYONE, "/host"}, {"leave", CMD_ANYONE, "/leave"}, {"players", CMD_ANYONE, "/players"},
+    {"flashlight", CMD_ANYONE, "/flashlight [on|off|auto]"}, {"thirdperson", CMD_ANYONE, "/thirdperson [on|off]"},
+    {"ping", CMD_ANYONE, "/ping"},
+    {"kick", CMD_HOST, "/kick <name|#>"}, {"ban", CMD_HOST, "/ban <name|#>"}, {"unban", CMD_HOST, "/unban <name|steam:id|#n|all>"},
+    {"bans", CMD_HOST, "/bans"}, {"lock", CMD_HOST, "/lock"}, {"unlock", CMD_HOST, "/unlock"}, {"teamsize", CMD_HOST, "/teamsize N"},
+    {"restart", CMD_HOST, "/restart"}, {"ready", CMD_HOST, "/ready [vote]"}, {"bots", CMD_HOST, "/bots on|off|default"},
+    {"say", CMD_HOST, "/say <message>"},
 };
 #define N_CMDS ((int)(sizeof CMDS / sizeof CMDS[0]))
 
 static void help(Out *o) {
-    out_printf(o, "b4bcoop %s (protocol %d)\n/join steam:<id64>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n",
+    out_printf(o, "b4bcoop %s (protocol %d)\n/join steam:<id64>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n"
+                  "/thirdperson  (your own camera)\n",
                coop_version(), coop_protocol());
     if (is_client()) { out_printf(o, "(/kick /ban /lock ... are for the host)\n"); return; }
     out_printf(o, "host: /kick /ban <name|#>  /unban  /bans\n/lock  /unlock  /teamsize N  /bots on|off\n"
@@ -637,14 +643,17 @@ void admin_slash(char *line, Out *o) {
     for (char *c = verb; *c; c++) *c = (char)tolower((unsigned char)*c);
     int i = 0;
     for (; i < N_CMDS && strcmp(CMDS[i].name, verb); i++) {}
-    if (i == N_CMDS && cheats_slash(verb, rest, o)) return;   // cheats.c: /cheats, /god, /fly, ... (host only)
-    if (i == N_CMDS) { out_printf(o, "unknown command /%s (/help)\n", verb); return; }
-    if (CMDS[i].admin && is_client()) { out_printf(o, "/%s: host only (you are a client)\n", verb); return; }
+    int perm = i < N_CMDS ? CMDS[i].perm : cheats_perm(verb);
+    if (perm < 0) { out_printf(o, "unknown command /%s (/help)\n", verb); return; }
+    if (perm != CMD_ANYONE && is_client()) { out_printf(o, "/%s: host only (you are a client)\n", verb); return; }
+    if (perm == CMD_CHEAT && !cheats_enabled()) { out_printf(o, "/%s: cheats are off (the host types /cheats on first)\n", verb); return; }
+    if (i == N_CMDS) { cheats_slash(verb, rest, o); return; }   // cheats.c: /cheats, /god, /fly, ...
     LOG("admin: /%s %s", verb, rest ? rest : "");
     if (!strcmp(verb, "help")) help(o);
     else if (!strcmp(verb, "players")) players(o);
     else if (!strcmp(verb, "ping")) ping(o);
     else if (!strcmp(verb, "flashlight")) cmd_flashlight(rest && *rest ? rest : "toggle", o);
+    else if (!strcmp(verb, "thirdperson")) cmd_thirdperson(rest, o);
     else if (!strcmp(verb, "join")) {
         if (!rest || !*rest) { out_printf(o, "usage: %s\n", CMDS[i].usage); return; }
         out_printf(o, "joining %s ...\n", rest);

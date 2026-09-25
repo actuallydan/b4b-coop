@@ -25,6 +25,10 @@ const char *cmds_config_path(void);    // b4bcoop.ini, or B4B_COOP_CONFIG
 int flashlight_init(void);
 void flashlight_tick(float dt);
 void cmd_flashlight(const char *arg, Out *o);
+// thirdperson.c: /thirdperson, the local player's own over-the-shoulder camera (#25; everyone, no cheats)
+void thirdperson_tick(float dt);
+void cmd_thirdperson(const char *arg, Out *o);          // on|off|status, NULL = toggle
+int thirdperson_cmd(const char *verb, char *rest, Out *o);   // dev builds: `thirdperson [on|off|view [1|2|3]]`
 int testing_cmd(const char *verb, char *rest, Out *o); // testing.c (dev builds): test commands; 1 if handled
 int teamsize_init(void);
 int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled (also chat /teamsize)
@@ -119,8 +123,17 @@ void admin_display_name(UObject *ps, char *buf, size_t n);   // player name, or 
 int admin_is_client(void);                              // connected to someone else's session
 void admin_notice(const char *fmt, ...);                // "[b4bcoop] <text>" to every player (host notice)
 
-// cheats.c: opt-in host-only sandbox (#14, docs/commands-cheats.md)
-int cheats_slash(const char *verb, char *rest, Out *o); // 1 if verb is a cheat command (handled or refused)
+// Who may run a chat command; admin.c checks it before any handler runs (admin.c CMDS, cheats.c VERBS).
+enum {
+    CMD_ANYONE,   // every player, host or client: acts on their own game only (own camera, own light, lists, join/leave)
+    CMD_HOST,     // this machine must be the server (listen host or standalone); a client gets "host only"
+    CMD_CHEAT,    // host, and cheats on (/cheats on)
+};
+
+// cheats.c: opt-in host-only sandbox (#14, docs/COMMANDS.md "Cheats")
+int cheats_perm(const char *verb);                      // CMD_HOST / CMD_CHEAT for a cheats.c verb, -1 if not one
+int cheats_enabled(void);                               // /cheats on
+void cheats_slash(const char *verb, char *rest, Out *o); // run a cheats.c verb (permission already checked)
 void cheats_tick(float dt);
 int rewards_execute_local(UObject *ppc, void *cmd);     // rewards.c: a profile command on the host's own profile
 int cheats_tainted(void);                               // cheats were on during this map: rewards.c forwards nothing

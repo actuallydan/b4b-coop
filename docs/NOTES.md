@@ -84,3 +84,5 @@ Transport: PacketRelayNetDriver (IpNetDriver subclass) on UDP 7777 with DTLSHand
 - Ridden classes: TallboyBasic/Squeezer (Crusher)/Smasher (Bruiser), BloaterBasic (Reeker)/Exploder/Vomiter (Retch),
   ChaserBasic (Stinger)/BunnyKick (Stalker)/Chucker (Hocker) are ZombieCharacters; Common_, Hag_, Snitcher_, Brute_
   (Ogre) _AICharacterBP are plain GobiCharacters. Paths in native/src/cheats_ridden.h.
+- Third person (#25): PlayerViewComponent +0x200 = requested view (1 FP, 2 TP, 3 orbit; only OnOwnerTagChange
+  0x141C26C40 writes it), UpdateView(this, bForce) 0x141C27250 applies it. docs/investigations/third-person.md.
