@@ -2,8 +2,10 @@
 # Stop the local test instances started by launch/multi.sh / instance.sh — only processes running on a test prefix
 # (B4B_PREFIX under ~/.local/share/b4b-coop/prefixes), matched by PID via /proc/<pid>/environ.
 # A game on the real prefix is never touched. `multi-stop.sh 3` stops only test3; `--list` only prints PIDs.
+# Per lane (launch/lane.sh): B4B_LANE=2 stops only lane 2's (prefixes/lane2/test*), lane 1 only prefixes/test*.
 set -uo pipefail
-root="${B4B_TEST_ROOT:-$HOME/.local/share/b4b-coop/prefixes}"
+source "$(dirname "$0")/lane.sh"
+root="${B4B_TEST_ROOT:-$lane_root}"
 list=0; [[ ${1:-} == --list ]] && { list=1; shift; }   # --list: print matching PIDs, kill nothing
 one="${1:-}"
 want="B4B_PREFIX=$root/test$one"   # exported by instance.sh; Proton resets STEAM_COMPAT_DATA_PATH in the game
