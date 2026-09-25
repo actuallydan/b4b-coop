@@ -111,7 +111,7 @@ ElementCount i32, SizeOnDisk i32, OffsetInFile i64} + inline payload, SizeX/Y/Z.
 | Seen in 370 textures (Walker, weapons, shared, UI) | |
 |---|---|
 | Formats | `PF_DXT1` (BC1: base colour, drench masks), `PF_BC5` (normals), `PF_BC7` (PBR/masks/heads/gear), UI `PF_BC7` without mips |
-| Sizes | 4096², 2048², 1024², 256², 128² (+ 320×208 UI); always the full mip chain down to 1×1 |
+| Sizes | 4096², 2048², 1024², 512², 256², 128² (+ 320×208 UI); always the full mip chain down to 1×1 |
 | Streamed mips | every mip > 64 px: flags `0x10501` (PayloadAtEndOfFile, PayloadInSeperateFile, Force_NOT_Inline, NoOffsetFixUp), payload in `.ubulk` at `OffsetInFile` (relative to the `.ubulk`, largest first, no padding) |
 | Inline mips | 64 px and below (7 mips): flags `0x48` (ForceInline, SingleUse), `OffsetInFile` = absolute offset of the payload |
 | Round trip | `b4bmod texcheck`: **370/370 re-write byte-identically** (native data and `.ubulk`) |
