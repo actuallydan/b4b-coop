@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """b4bmodel: a modder's model (FBX, glTF, OBJ, .blend) -> a Back 4 Blood survivor outfit or weapon, cooked, textured,
-ready for `addon.py pack`. Guide: docs/investigations/mesh-mods.md §7 ("Make a survivor model", "Make a weapon model").
+ready for `addon.py pack`. Mod makers run it as `b4bmod survivor|weapon ...` (which also extracts the templates, packs
+and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
 
   b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir>
         [--slot MAT=SLOT]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
@@ -22,7 +23,7 @@ ready for `addon.py pack`. Guide: docs/investigations/mesh-mods.md §7 ("Make a 
      metallic, AO; missing channels filled from the retail texture's average) and encodes them into the template's own
      texture packages with `b4bmod texture` (only textures in the template's own folder are replaced; shared ones such
      as micro-detail maps are never touched).
-Blender: B4B_BLENDER=<path> or `blender` on PATH. Texture encoding: modkit/b4bmod.py (needs `b4bmod setup`).
+Blender: B4B_BLENDER=<path> or `blender` on PATH. Texture encoding: b4bmod.py next to this file (needs `b4bmod setup`).
 """
 import json, math, os, re, shutil, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,10 +34,8 @@ FIT = os.path.join(HERE, "blender", "b4bfit.py")
 
 
 def find_b4bmod():
-    for p in (os.path.join(HERE, "b4bmod.py"), os.path.join(HERE, "..", "..", "modkit", "b4bmod.py"),
-              os.path.join(HERE, "..", "modkit", "b4bmod.py")):
-        if os.path.exists(p): return os.path.abspath(p)
-    return None
+    p = os.path.join(HERE, "b4bmod.py")
+    return p if os.path.exists(p) else None
 
 
 def die(msg):
@@ -184,7 +183,7 @@ def linear_to_srgb(c): return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 /
 class TexTool:
     """Collects texture jobs (compose in Blender, encode with b4bmod texture)."""
     def __init__(self, o):
-        self.b4bmod = find_b4bmod() or die("modkit/b4bmod.py not found (texture encoding)")
+        self.b4bmod = find_b4bmod() or die(f"b4bmod.py not found next to {__file__} (texture encoding)")
         self.src = src_dir(o)
         self.moddir = o["out"]
         self.quality = o.get("quality", "balanced")

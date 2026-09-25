@@ -376,7 +376,7 @@ def blender_exe():
 
 
 def to_gltf(src, tmpdir=None):
-    """FBX/OBJ/DAE/.blend -> glb through Blender (tools/modkit/blender/b4bfit.py convert). glTF passes through."""
+    """FBX/OBJ/DAE/.blend -> glb through Blender (blender/b4bfit.py convert, next to this file). glTF passes through."""
     if not src.lower().endswith(MODEL_EXTS):
         return src
     import subprocess, tempfile

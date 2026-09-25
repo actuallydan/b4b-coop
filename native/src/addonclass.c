@@ -4,7 +4,7 @@
 //
 // A package (.uasset; B4B: legacy version -7, unversioned, split .uasset/.uexp) is judged by the classes of all its
 // exports, read from the package summary, name map, import map and export map (the export's ClassIndex; export
-// entries are 104 bytes in this build, tools/modkit/upkg.py). Cosmetic = every export's class is in the cosmetic
+// entries are 104 bytes in this build, modkit/upkg.py). Cosmetic = every export's class is in the cosmetic
 // table below; anything else (physics assets, data/curve tables, blueprints, skeletons, maps,
 // configs, unknown classes and file types) is gameplay. The author's `content=` line in the addoninfo is never
 // trusted: addons.c logs when it differs.

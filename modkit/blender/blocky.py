@@ -1,7 +1,7 @@
 """Blender (headless) test-mesh generator: replace the mesh of a skmgltf.py export with boxes rigidly skinned to
 bones (a "new mesh" made in Blender, not derived from the retail one).
 
-  blender -b --python tools/modkit/blender/blocky.py -- <in.glb from skmgltf export> <out.glb> fp|3p
+  blender -b --python blender/blocky.py -- <in.glb from skmgltf export> <out.glb> fp|3p
 
 Material names select the template's material slots on import (slot names of the template mesh).
 """

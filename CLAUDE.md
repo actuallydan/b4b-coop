@@ -122,11 +122,15 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 - `modkit/` — the mod maker's kit (#21), a separate deliverable (players never need it; nothing of it is in the player
   zip or the agent): `b4bmod.py` (one command: setup/status/config, find/extract (offline, `dotnet/pakx` = CUE4Parse
   from NuGet with its managed Oodle decoder), info/tree/export/texture/mi (`dotnet/b4bmod`, UAssetAPI), mesh
-  info/export/import/edit (wraps `tools/modkit/skm.py`/`skmgltf.py`; FBX via headless Blender), pack/install/check
-  (`addon.py`)), `b4bmod.cmd`/`b4bmod.sh`, `README.md` (Windows first; how to get every third-party piece), `docs/`
-  (author guides), `package.sh` → `dist/modkit/b4bcoop-modkit-<version>.zip` (reproducible; refuses 64-hex strings).
-  The pak AES key is never in the repo: modders give it (`b4bmod config aes_key`, `B4B_AES_KEY`, `--aes-key`); pakx
-  checks it against every pak index SHA1. Data: `~/.local/share/b4b-coop/` (`%LOCALAPPDATA%\b4b-coop` on Windows).
+  info/export/import/edit (`skm.py`, `skmgltf.py`, `upkg.py`), survivor/weapon (`b4bmodel.py` + `blender/b4bfit.py`
+  in headless Blender, static meshes `sm.py`: model → fitted, LODs, textures, then packed/installed), pack/install/
+  check (`addon.py`)), `b4bmod.cmd`/`b4bmod.sh`, `README.md` (Windows first; how to get every third-party piece),
+  `docs/` (author guides; models: `docs/meshes.md`), `package.sh` → `dist/modkit/b4bcoop-modkit-<version>.zip`
+  (reproducible; refuses 64-hex strings). The pak AES key is built into b4bmod.py (public, same for every copy;
+  `config aes_key`, `B4B_AES_KEY`, `--aes-key` override); pakx checks it against every pak index SHA1. No native
+  Oodle, ever: CUE4Parse's OodleSharp only. Dev-only asset tools stay in `tools/modkit/` (`pakscan.py`,
+  `customversions.py`, `assetcheck/`, `uassetrt/`, `testassets/`). Data: `~/.local/share/b4b-coop/`
+  (`%LOCALAPPDATA%\b4b-coop` on Windows).
 - `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
 

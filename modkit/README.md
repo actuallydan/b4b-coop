@@ -58,7 +58,7 @@ Everywhere in the guides, `b4bmod` means `./b4bmod.sh` on Linux.
 | BCnEncoder.Net, StbImageSharp, StbImageWriteSharp | texture compression, PNG read/write | MIT / Unlicense | NuGet, same as above |
 | Oodle | the game's files are Oodle-compressed | | **Not needed**: CUE4Parse decompresses with OodleSharp (open source, above). The kit uses no proprietary Oodle library |
 | The AES key | the game's pak index is encrypted | (a number) | built into b4bmod: [The AES key](#the-aes-key) |
-| Blender 4.2+ | editing models, FBX conversion | GPL | [blender.org](https://www.blender.org/download/) (only for models) |
+| Blender 4.2+ (tested 5.1) | models: fitting your model onto the game's meshes, FBX/OBJ/.blend import (b4bmod runs it in the background) | GPL | [blender.org/download](https://www.blender.org/download/) (Windows installer; Linux tarball or your distribution). Only for models. b4bmod finds it on PATH or in `C:\Program Files\Blender Foundation\`; else `b4bmod config blender "<path to blender.exe>"`. **No add-ons or extensions** needed (FBX/glTF/OBJ are built in). MPFB/MakeHuman is not needed: it only made our test character. DAE needs Blender 4.x |
 | Back 4 Blood (Steam) | the game files everything starts from | | read only; b4bmod writes into the game folder only for `install` / `uninstall` (`b4bcoop-addons`) |
 | The b4bcoop mod | loads add-ons in the game | | the player zip from the b4bcoop releases, to test your add-on |
 
@@ -74,20 +74,17 @@ update ever changes the key, status says `WRONG`; then set the new one with `b4b
 the environment variable `B4B_AES_KEY`, or `--aes-key <key>` on any command.
 
 ## From an FBX to an add-on
-The short version, for a survivor outfit (details: [docs/meshes.md](docs/meshes.md), [docs/textures.md](docs/textures.md)):
+A survivor outfit (details and a weapon: [docs/meshes.md](docs/meshes.md)):
 ```
-b4bmod find "Heroes/Walker/Meshes/Elite/Elite_00/.*_SKM$"                         1. pick the game mesh to replace
-b4bmod mesh info   /Game/Characters/Heroes/Walker/Meshes/Elite/Elite_00/3P_Walker_Elite_00_SKM
-b4bmod mesh export /Game/Characters/Heroes/Walker/Meshes/Elite/Elite_00/3P_Walker_Elite_00_SKM ref.glb
-    2. in Blender: import ref.glb and your FBX, fit your model to the reference skeleton and pose, skin it to that
-       armature, name its materials after the slots, delete the reference mesh, export FBX (Add Leaf Bones off)
-b4bmod mesh import /Game/Characters/Heroes/Walker/Meshes/Elite/Elite_00/3P_Walker_Elite_00_SKM my.fbx -o mymod
-b4bmod tree        /Game/Characters/Heroes/Walker/Meshes/Elite/Elite_00/3P_Walker_Elite_00_SKM     3. its textures
-b4bmod texture     /Game/.../Textures/Walker_Elite_00_A_Body_BC_T my_body_color.png -o mymod           (one per texture)
-b4bmod pack mymod -o my_walker.pak --title "My Walker" --author me --version 1.0 --category survivors --zip   4.
-b4bmod install my_walker.pak                                                                       5. start the game
+b4bmod find "Heroes/Mom/Meshes/Elite/.*_SKM$"                                          1. pick the outfit to replace
+b4bmod mesh info /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM         2. its slots
+b4bmod survivor mymodel.fbx --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM
+    --fp /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM
+    --slot body=Head --slot jacket=Torso --slot boots=Legs -o mymod --title "My survivor" --zip --install    3.
 ```
-Do the same for the first-person arms (`FP_Walker_Elite_00_SKM`): they have their own pose. Share `my_walker.zip`.
+(one command on one line.) Step 3 extracts what it needs from the game, fits your model (rigged or not) onto the
+game's skeleton in Blender, makes the LODs and the textures, and writes `mymod.pak` (the add-on), `mymod.zip` (to
+share) and installs it. Start the game and wear the outfit. Weapons: `b4bmod weapon mygun.fbx --fp-mesh ...`.
 
 ## Commands
 `b4bmod help` prints all of them. The main ones:
@@ -100,7 +97,8 @@ Do the same for the first-person arms (`FP_Walker_Elite_00_SKM`): they have thei
 | `info`, `tree <asset>` | what an asset is; mesh → materials → textures |
 | `export <texture> <out.png>`, `texture <texture> <in.png> -o <moddir>` | texture to PNG and back |
 | `mi <material instance> [set <param> <value>...] -o <moddir>` | material parameters |
-| `mesh info / export / import / edit` | skeletal meshes: slots and LODs; to glTF; your FBX/glTF back; quick edits |
+| `survivor <model> --outfit ... [--fp ...] -o <moddir>`, `weapon <model> --fp-mesh ... [--static ...] -o <moddir>` | your model, fitted in Blender, to a survivor outfit or a weapon, packed (`--install` installs it) |
+| `mesh info / export / import / edit` | skeletal meshes: slots and LODs; to glTF; your own fitted FBX/glTF back; quick edits |
 | `pack <moddir> -o <name>.pak [--title ...] [--zip]` | the add-on |
 | `install <pak>`, `uninstall <name>`, `check [<pak>]` | into / out of `<game>\b4bcoop-addons`; what the game will load |
 
@@ -131,7 +129,7 @@ Do the same for the first-person arms (`FP_Walker_Elite_00_SKM`): they have thei
 ## Tested on
 - **Linux** (Arch, Python 3.14, .NET SDK 10.0.401, Blender 5.1): everything, from a fresh unzip of this kit
   (`setup` downloading .NET and UAssetAPI) through `find`, `extract`, `tree`, `export`, `texture`, `mi`, `mesh
-  export/import` (FBX and glTF), `pack`, `install`, `check`. Extracted files are byte-identical to what the running
+  export/import` (FBX and glTF), `survivor` and `weapon` (FBX), `pack`, `install`, `check`. Extracted files are byte-identical to what the running
   game reads (801/801 files of a survivor).
 - **Windows**: not yet run on a Windows PC. Run under Wine with Windows Python 3.12: `b4bmod.cmd`, `status`,
   `config`, `mesh info/export/import`, `pack`, `install`, `check`, `uninstall` (Windows paths, `%LOCALAPPDATA%`);

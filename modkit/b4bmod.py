@@ -21,6 +21,14 @@
   mesh import <template asset> <model.fbx|.glb|.gltf> -o <moddir> [--lods N] [--material NAME=SLOT]...
                                           your model (rigged to the template's skeleton) -> the game's mesh
   mesh edit <asset> -o <moddir> [--inflate CM] [--scale-section L:S:F] [--material L:S:M]
+  survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
+  weapon <model> --fp-mesh <FP SKM> [--3p-mesh <3P SKM>] [--static <SM>]... [--mag-static <SM>] -o <moddir>
+         [--slot MAT=SLOT]... [--tex MAT=PREFIX]... [--forward +x] [--up +z] [--part REGEX=BONE]...
+                                          your model (FBX, glTF, OBJ, .blend; rigged or not) fitted onto the game's
+                                          meshes in Blender, with LODs and textures; then packed into <moddir>.pak.
+                                          --pak NAME.pak, --title/--author/--version/--description, --zip, --install,
+                                          --no-pack; all other options: b4bmod model help. Guide: docs/meshes.md
+  model <b4bmodel.py arguments>           the model pipeline as is (e.g. model textures <manifest.json> ...)
   pack <moddir> [-o NAME.pak] [--title T] [--author A] [--version V] [--category C] [--description D] [--zip]
                                           <moddir> -> one add-on .pak (+ a zip for players with --zip)
   install <addon.pak> | uninstall <name>  copy into / remove from <game>/b4bcoop-addons (restart the game)
@@ -43,8 +51,6 @@ else:
 # third-party pieces `setup` fetches: <kit>/deps, or the repo's vendor/ (developers already have them there)
 DEPS = os.environ.get("B4B_MODKIT_DEPS") or (os.path.join(REPO, "vendor") if REPO else os.path.join(KIT, "deps"))
 CONFIG = os.path.join(DATA, "b4bmod.ini")
-# mesh tools: next to this file in the kit; in the repo still in tools/modkit/ (until models-fullmodel is merged)
-MESH = KIT if os.path.exists(os.path.join(KIT, "skmgltf.py")) else os.path.join(REPO or KIT, "tools", "modkit")
 
 UASSETAPI_COMMIT = "3228c1e86261aa08131f7ec0ff1a395f5d0b2a84"   # MIT, github.com/atenfyr/UAssetAPI (tested)
 UASSETAPI_ZIP_SHA256 = "3c044cc871c41e877f76ce42ced31f0d700ae9febe959d35b03a41ded8c4e92f"
@@ -243,8 +249,21 @@ def pakx(args, capture=False):
     return r
 
 
+def tool_env():
+    """What the mesh tools and b4bmodel need from b4bmod's settings: Blender, game folder, AES key."""
+    env = dict(os.environ)
+    bl = blender_exe()
+    if bl:
+        env["B4B_BLENDER"] = bl
+    if OPTS.get("--game"):
+        env["B4B_GAME"] = OPTS["--game"]
+    if OPTS.get("--aes-key"):
+        env["B4B_AES_KEY"] = OPTS["--aes-key"]
+    return env
+
+
 def python_tool(script, args):
-    return subprocess.run([sys.executable, script] + args).returncode
+    return subprocess.run([sys.executable, script] + args, env=tool_env()).returncode
 
 
 # ---- assets -----------------------------------------------------------------------------------------------------
@@ -338,7 +357,6 @@ def cmd_status(a):
         print(f"AES key     set (from {src}), not checked yet")
     bl = blender_exe()
     print(f"Blender     {bl or 'not found (only for meshes): install Blender, or b4bmod config blender <path to blender>'}")
-    print(f"mesh tools  {MESH}")
     print(f"extract to  {src_dir()}")
     print(f"settings    {CONFIG}")
     print("\nready." if ok else "\nnot ready yet: fix the lines above.")
@@ -439,6 +457,18 @@ def cmd_extract(a):
     return 0
 
 
+def extract_refs(a):
+    """`tree` of an asset, after extracting what it references (materials, textures, parents), a level per round."""
+    for _ in range(8):
+        r = run_dotnet_tool("b4bmod", ["tree"] + a + ["--src", src_dir()], capture=True)
+        missing = sorted(set(re.findall(r"(/(?:Game|Engine)/\S+)  \(not extracted\)", r.stdout)))
+        if r.returncode or not missing:
+            break
+        print(f"extracting {len(missing)} referenced asset(s) ...", file=sys.stderr)
+        extract([asset_regex(m) for m in missing], quiet=True)
+    return r
+
+
 def cmd_dotnet(cmd, a):
     """info/tree/export/texture/mi/...: the .NET tool, after extracting the assets it names."""
     for x in a:
@@ -447,14 +477,7 @@ def cmd_dotnet(cmd, a):
             if cmd != "info":
                 break
     if cmd == "tree":
-        # extract what the tree references (materials, textures, parents), a level per round, then print it
-        for _ in range(8):
-            r = run_dotnet_tool("b4bmod", [cmd] + a + ["--src", src_dir()], capture=True)
-            missing = sorted(set(re.findall(r"(/(?:Game|Engine)/\S+)  \(not extracted\)", r.stdout)))
-            if r.returncode or not missing:
-                break
-            print(f"extracting {len(missing)} referenced asset(s) ...", file=sys.stderr)
-            extract([asset_regex(m) for m in missing], quiet=True)
+        r = extract_refs(a)
         sys.stdout.write(r.stdout)
         sys.stderr.write(r.stderr)
         return r.returncode
@@ -470,37 +493,20 @@ def blender_exe():
     return b
 
 
-FBX2GLB = r"""
-import bpy, sys
-src, dst = sys.argv[sys.argv.index("--") + 1:][:2]
-bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.fbx(filepath=src)
-bpy.ops.export_scene.gltf(filepath=dst, export_format="GLB", export_all_influences=True, export_animations=False)
-"""
+MODEL_EXTS = (".fbx", ".glb", ".gltf", ".obj", ".dae", ".blend")
 
 
-def to_gltf(model):
+def model_file(model):
+    """A model file the mesh tools read: glTF as is; FBX/OBJ/DAE/.blend need Blender (they convert it themselves)."""
     ext = os.path.splitext(model)[1].lower()
-    if ext in (".glb", ".gltf"):
-        return model
-    if ext != ".fbx":
-        die(f"{model}: give a .fbx, .glb or .gltf file")
-    h = subprocess.run([sys.executable, os.path.join(MESH, "skmgltf.py"), "import", "-h"], capture_output=True, text=True)
-    if "fbx" in (h.stdout + h.stderr).lower():
-        return model   # the mesh tool reads FBX itself
-    bl = blender_exe()
-    if not bl:
-        die("FBX needs Blender to convert it (or export glTF from your 3D tool): install Blender, or\n"
+    if ext not in MODEL_EXTS:
+        die(f"{model}: give a .fbx, .glb, .gltf, .obj, .dae or .blend file")
+    if not os.path.exists(model):
+        die(f"{model}: not found")
+    if ext not in (".glb", ".gltf") and not blender_exe():
+        die(f"{ext} needs Blender to read it (or export glTF from your 3D tool): install Blender (blender.org), or\n"
             "  b4bmod config blender <path to blender(.exe)>")
-    out = os.path.join(DATA, "tmp", os.path.splitext(os.path.basename(model))[0] + ".glb")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    print(f"converting {model} to glTF with Blender ...", file=sys.stderr)
-    r = subprocess.run([bl, "-b", "--factory-startup", "--python-expr", FBX2GLB, "--", os.path.abspath(model), out],
-                       capture_output=True, text=True)
-    if r.returncode or not os.path.exists(out):
-        sys.stderr.write(r.stdout[-3000:] + r.stderr[-3000:])
-        die("Blender could not convert the FBX")
-    return out
+    return os.path.abspath(model)
 
 
 def moddir_file(moddir, asset):
@@ -516,9 +522,7 @@ def cmd_mesh(a):
     if not a or a[0] not in ("info", "export", "import", "edit"):
         die("usage: b4bmod mesh info|export|import|edit ...  (b4bmod help)", 2)
     sub, a = a[0], a[1:]
-    skm, skmgltf = os.path.join(MESH, "skm.py"), os.path.join(MESH, "skmgltf.py")
-    if not os.path.exists(skmgltf):
-        die(f"mesh tools not found in {MESH}")
+    skm, skmgltf = os.path.join(KIT, "skm.py"), os.path.join(KIT, "skmgltf.py")
     if sub == "info":
         for x in a:
             ensure(x)
@@ -543,7 +547,7 @@ def cmd_mesh(a):
             m = re.search(r"\blods (\d+)", info)
             if m:
                 extra += ["--lods", m.group(1)]
-        rc = python_tool(skmgltf, ["import", asset_file(a[0]), to_gltf(a[1]), out] + extra)
+        rc = python_tool(skmgltf, ["import", asset_file(a[0]), model_file(a[1]), out] + extra)
         if rc == 0:
             print(f"-> {out} (+ .uexp). Next: b4bmod pack {moddir}")
         return rc
@@ -551,6 +555,50 @@ def cmd_mesh(a):
         die("usage: b4bmod mesh edit <asset> -o <moddir> [--inflate CM] ...", 2)
     ensure(a[0])
     return python_tool(skm, ["edit", asset_file(a[0]), moddir_file(moddir, a[0])] + a[1:])
+
+
+TEMPLATE_FLAGS = {"survivor": ("--outfit", "--fp"), "weapon": ("--fp-mesh", "--3p-mesh", "--static", "--mag-static")}
+
+
+def cmd_model(kind, a):
+    """survivor / weapon: extract the templates and what they reference, run b4bmodel.py, pack, install."""
+    pak, install = take(a, "--pak"), "--install" in a
+    nopack, zipit = "--no-pack" in a, "--zip" in a
+    a = [x for x in a if x not in ("--install", "--no-pack", "--zip")]
+    meta = {k: take(a, "--" + k) for k in ("title", "author", "version", "category", "description")}
+    moddir = take(a, "-o") or take(a, "--out")
+    if not a or a[0].startswith("-") or not moddir:
+        die(f"usage: b4bmod {kind} <model> {'--outfit <3P SKM> [--fp <FP SKM>]' if kind == 'survivor' else '--fp-mesh <SKM> [--3p-mesh <SKM>] [--static <SM>]...'} "
+            "-o <moddir> [options]  (b4bmod help)", 2)
+    if install and nopack:
+        die("--install needs the pack step (drop --no-pack)", 2)
+    model_file(a[0])
+    templates = [a[i + 1] for i, x in enumerate(a[:-1]) if x in TEMPLATE_FLAGS[kind]]
+    need = {"survivor": "--outfit", "weapon": "--fp-mesh"}[kind]
+    if need not in a:
+        die(f"b4bmod {kind} needs {need} <game mesh> (see docs/meshes.md)", 2)
+    for t in templates:
+        if t.startswith(("/Game/", "/Engine/")):
+            ensure(t)
+            r = extract_refs([t])   # its materials, their parents and textures: b4bmodel reads them all
+            if r.returncode:
+                sys.stderr.write(r.stdout + r.stderr)
+                die(f"{t}: could not list what it references")
+    if kind == "survivor" and "--fp" not in a:
+        print("note: no --fp: only the third-person outfit is replaced; in first person you keep the original arms",
+              file=sys.stderr)
+    rc = python_tool(os.path.join(KIT, "b4bmodel.py"), [kind] + a + ["-o", moddir, "--src", src_dir()])
+    if rc or nopack:
+        return rc
+    out = pak or os.path.abspath(moddir).rstrip("/\\") + ".pak"
+    meta["category"] = meta["category"] or {"survivor": "survivors", "weapon": "weapons"}[kind]
+    args = ["pack", moddir, "-o", out] + [x for k, v in meta.items() if v for x in ("--" + k, v)]
+    rc = python_tool(os.path.join(KIT, "addon.py"), args + (["--zip"] if zipit else []))
+    if rc or not install:
+        if rc == 0:
+            print(f"next: b4bmod install {out}")
+        return rc
+    return cmd_install([out])
 
 
 def addons_dir():
@@ -612,6 +660,11 @@ def main(argv):
         return {"setup": cmd_setup, "status": cmd_status, "config": cmd_config, "find": cmd_find,
                 "extract": cmd_extract, "mesh": cmd_mesh, "install": cmd_install, "uninstall": cmd_uninstall,
                 "check": cmd_check}[cmd](rest)
+    if cmd in ("survivor", "weapon"):
+        return cmd_model(cmd, rest)
+    if cmd == "model":   # the lower-level b4bmodel.py as is (e.g. `b4bmod model textures <manifest> ...`)
+        help_ = not rest or rest[0] in ("-h", "--help", "help")
+        return python_tool(os.path.join(KIT, "b4bmodel.py"), rest + ([] if help_ else ["--src", src_dir()]))
     if cmd == "pack":
         return python_tool(os.path.join(KIT, "addon.py"), ["pack"] + rest)
     if cmd == "pak":   # advanced: plain mod pak for the dev build's modpaks= (no addoninfo)

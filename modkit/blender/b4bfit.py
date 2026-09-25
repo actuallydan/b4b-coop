@@ -1,17 +1,18 @@
 """Fit a modder's model (FBX, glTF, OBJ, .blend) onto a B4B template skeleton, headless in Blender. Writes glTF files
 that `skmgltf.py import` turns into a cooked skeletal mesh, plus a manifest (materials -> template slots, textures,
-atlas rectangles) for the texture step. Driven by tools/modkit/b4bmodel.py; usable on its own. mesh-mods.md §6-§7.
+atlas rectangles) for the texture step. Driven by b4bmodel.py (`b4bmod survivor|weapon`); usable on its own.
+Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
 
-  blender -b --python tools/modkit/blender/b4bfit.py -- character --template T.glb --source model.fbx --out DIR
+  blender -b --python blender/b4bfit.py -- character --template T.glb --source model.fbx --out DIR
         [--mode 3p|fp] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05] [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
-  blender -b --python tools/modkit/blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
+  blender -b --python blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
         [--forward +x] [--up +z] [--scale fit|<factor>] [--anchor trigger|grip|none] [--part REGEX=BONE]...
         [--slot SRCMAT=SLOT]... [--lods 1,0.5] [--textures DIR]
-  blender -b --python tools/modkit/blender/b4bfit.py -- convert <in> <out.glb>
-  blender -b --python tools/modkit/blender/b4bfit.py -- inspect <in> <out.json>     objects, materials, bones
-  blender -b --python tools/modkit/blender/b4bfit.py -- compose <jobs.json>          texture sets -> PNGs (b4bmodel)
+  blender -b --python blender/b4bfit.py -- convert <in> <out.glb>
+  blender -b --python blender/b4bfit.py -- inspect <in> <out.json>     objects, materials, bones
+  blender -b --python blender/b4bfit.py -- compose <jobs.json>          texture sets -> PNGs (b4bmodel)
 
 character: the source's armature is mapped onto the template's bones by name (UE4 mannequin names as is, Mixamo,
   3ds Max Biped; or --bonemap {"srcbone": "b4bbone"}), turned to face +X like the template, then posed bone by bone
