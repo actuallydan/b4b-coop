@@ -56,6 +56,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.
+  - `overlay.cpp` the `~` power-user window (#26): Dear ImGui over the game's D3D12 swap chain, game input blocked while
+    open; ini `overlay=0`, `overlay_key`, `overlay_scale`. docs/investigations/overlay.md. **It replaces the chat
+    commands:** port every chat command into it; once it has them all, new features get overlay controls (+ ini keys)
+    only, not new chat commands. Don't remove existing chat commands (keep `/say`).
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
     replies as local chat lines; host notices via ClientTeamMessage with our own type. Test: `type <text>` (real key
     presses), `click <x> <y>` (mouse click, e.g. post-round Continue), `chat status`, `popup [close]` (dev builds).
