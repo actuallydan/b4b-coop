@@ -47,7 +47,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`,
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
     never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
-    (hand a pickup, e.g. a duffel bag, to a hero), `duffelreward <slot> <product guid> [delta]`.
+    (hand a pickup, e.g. a duffel bag, to a hero; `giveitem <slot> row <DataTable> <Row>` any item row, e.g. a weapon),
+    `duffelreward <slot> <product guid> [delta]`.
   - `paks.c` (model mods #23) the engine's pak layer. Both builds: mounts our unsigned paks right after the retail
     ones, exempted by identity from the three signature paths (player builds hook nothing when there is no add-on).
     Dev only: `dumpassets <glob> [outdir]` extracts files as the engine reads them (IterateDirectory + OpenRead on
@@ -99,7 +100,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `steam_p2p=0`. Its `bind` hook puts the game exe's wildcard UDP binds on 127.0.0.1 unless `host_ip=1` (not other
     modules': Windows steamclient64 binds in-process). USteamNetDriver can't work here (no STEAM socket subsystem).
     docs/investigations/steam-p2p.md (incl. "Loopback binding", "Two-account result").
-  - `cmds.c` dev commands: `status players host join leave exec find call peek`; config = `b4bcoop.ini` next to the DLL
+  - `cmds.c` dev commands: `status players host join leave exec find call peek poke`; config = `b4bcoop.ini` next to the DLL
     or `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; no ini = defaults; keys `host` (default 1, 0 when
     `join=` is set) `join host_ip steam_p2p allow_joins allow_steamids flashlight_*`, dev `offline allow_self
     b4bcoop_protocol_override`). `coop_join(target)` = join entry point (`steam:<id64>`; `ip[:port]` only 127.x unless
