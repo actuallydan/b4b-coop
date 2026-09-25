@@ -401,7 +401,7 @@ co-op; Steam and the co-op connection are not affected. `log` only writes what i
 it off. Try `netguard=off` only if something won't start or connect, and tell us.
 
 **`join`**: optional; **Join Game** in Steam is the normal way to join. With `join=steam:<host's Steam ID>` your game
-joins that host by itself whenever you're alone in your offline Fort Hope (you still sign in Offline yourself), and
+joins that host by itself whenever you're alone in your offline Fort Hope (you still sign in Offline yourself; it waits until you have), and
 tries again every 20 seconds until it gets in. Several hosts can be listed with commas; they're tried in turn. It
 turns hosting off (unless `host=1`). A Steam **Join Game** click overrides it.
 ```ini
