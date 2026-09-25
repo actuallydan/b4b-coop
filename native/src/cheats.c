@@ -4,7 +4,7 @@
 //  - Every cheat is a chat command run by admin.c's dispatcher (`/god`, `/fly`, ...). Nothing works until the host types
 //    `/cheats on`; `/cheats off` or the next map change that lands in Fort Hope (camp) or the menus turns them off.
 //  - Host only: the machine must be the server (listen host or standalone). A client's `/cheat ...` never leaves its
-//    machine (chat.c) and gets "host only".
+//    machine (chat.c) and gets "host only". admin.c enforces it from VERBS' permissions (CMD_HOST / CMD_CHEAT).
 //  - Transparent: enabling/disabling, and every cheat that touches another player or the whole session, is announced to
 //    every player with admin.c's host notice (ClientTeamMessage, our own type; the same path as /say).
 //  - No client save is ever written: cheats act on the live session, or on the HOST's own offline profile (`/supply`,
@@ -1103,8 +1103,20 @@ static void set_on(int en, Out *o) {
     notice(en ? "host enabled cheats (this map's rewards aren't sent to other players' saves)" : "host disabled cheats");
 }
 
-static const char *const VERBS[] = {"cheats", "god", "heal", "revive", "ammo", "copper", "card", "fly", "noclip", "walk",
-    "tp", "freecam", "size", "horde", "director", "spawn", "killall", "freeze", "slomo", "win", "lose", "unlockall", "supply"};
+// Chat verbs and who may run them (admin.c checks the permission before cheats_slash runs): /cheats is the host's,
+// every other one also needs cheats on.
+static const struct { const char *name; int perm; } VERBS[] = {{"cheats", CMD_HOST}, {"god", CMD_CHEAT},
+    {"heal", CMD_CHEAT}, {"revive", CMD_CHEAT}, {"ammo", CMD_CHEAT}, {"copper", CMD_CHEAT}, {"card", CMD_CHEAT},
+    {"fly", CMD_CHEAT}, {"noclip", CMD_CHEAT}, {"walk", CMD_CHEAT}, {"tp", CMD_CHEAT}, {"freecam", CMD_CHEAT},
+    {"size", CMD_CHEAT}, {"horde", CMD_CHEAT}, {"director", CMD_CHEAT}, {"spawn", CMD_CHEAT}, {"killall", CMD_CHEAT},
+    {"freeze", CMD_CHEAT}, {"slomo", CMD_CHEAT}, {"win", CMD_CHEAT}, {"lose", CMD_CHEAT}, {"unlockall", CMD_CHEAT},
+    {"supply", CMD_CHEAT}};
+
+int cheats_perm(const char *verb) {
+    for (int i = 0; i < (int)(sizeof VERBS / sizeof VERBS[0]); i++) if (!strcmp(VERBS[i].name, verb)) return VERBS[i].perm;
+    return -1;
+}
+int cheats_enabled(void) { return on; }
 
 static void help(Out *o) {
     out_printf(o, "cheats (host only, after /cheats on; [p] = player name, #n, me or all):\n"
@@ -1117,11 +1129,8 @@ static void help(Out *o) {
     out_printf(o, "\n");
 }
 
-int cheats_slash(const char *verb, char *rest, Out *o) {
-    int i = 0;
-    for (; i < (int)(sizeof VERBS / sizeof VERBS[0]) && strcmp(VERBS[i], verb); i++) {}
-    if (i == (int)(sizeof VERBS / sizeof VERBS[0])) return 0;
-    if (admin_is_client()) { out_printf(o, "/%s: host only (you are a client)\n", verb); return 1; }
+// a verb from VERBS whose permission admin.c already checked
+void cheats_slash(const char *verb, char *rest, Out *o) {
     while (rest && *rest == ' ') rest++;
     if (rest && !*rest) rest = NULL;
     if (rest) { char *e = rest + strlen(rest); while (e > rest && e[-1] == ' ') *--e = 0; }
@@ -1131,10 +1140,9 @@ int cheats_slash(const char *verb, char *rest, Out *o) {
         else if (!_stricmp(rest, "on")) set_on(1, o);
         else if (!_stricmp(rest, "off")) set_on(0, o);
         else out_printf(o, "usage: /cheats on|off|help\n");
-        return 1;
+        return;
     }
-    if (!on) { out_printf(o, "/%s: cheats are off (the host types /cheats on first)\n", verb); return 1; }
-    if (!ue_world() || !game_state() || !host_pc()) { out_printf(o, "/%s: not now (loading)\n", verb); return 1; }
+    if (!ue_world() || !game_state() || !host_pc()) { out_printf(o, "/%s: not now (loading)\n", verb); return; }
     if (!strcmp(verb, "god")) cmd_god(rest, o);
     else if (!strcmp(verb, "heal")) cmd_heal(rest, o);
     else if (!strcmp(verb, "revive")) cmd_revive(rest, o);
@@ -1154,7 +1162,6 @@ int cheats_slash(const char *verb, char *rest, Out *o) {
     else if (!strcmp(verb, "win") || !strcmp(verb, "lose")) cmd_endmission(!strcmp(verb, "win"), o);
     else if (!strcmp(verb, "supply")) cmd_supply(rest, o);
     else if (!strcmp(verb, "unlockall")) cmd_unlockall(rest, o);
-    return 1;
 }
 
 // Map change: per-map effects end with the map (their actors are gone); back in camp or the menus turns cheats off.
@@ -1167,6 +1174,45 @@ static void on_world_change(void) {
     taint_world = ue_world();   // still on: this map's rewards stay with the host
     world_check = 1;
 }
+
+#ifndef B4B_RELEASE
+// dev: `cheatprobe press <vk|lmb|rmb> <seconds>` holds a key or mouse button on this game's window (window messages;
+// the game ignores posted mouse buttons in play; `cheatprobe input ...` sends them through SendInput instead, which
+// works for fire/ADS when the window is raised, e.g. wmctrl -a)
+static int press_what, press_si;   // vk, or -1 lmb, -2 rmb; press_si: SendInput (this prefix's own wineserver queue)
+static float press_left;
+static void press_input(int what, int down) {
+    if (press_si) {   // "hardware" input: goes through the same path as real devices (the game ignores posted mouse buttons)
+        INPUT in = {0};
+        if (what < 0) {
+            in.type = INPUT_MOUSE;
+            in.mi.dwFlags = what == -1 ? (down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP) : (down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP);
+        } else {
+            in.type = INPUT_KEYBOARD;
+            in.ki.wVk = (WORD)what;
+            in.ki.wScan = (WORD)MapVirtualKeyW(what, 0);
+            in.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+        }
+        SendInput(1, &in, sizeof in);
+        return;
+    }
+    HWND w = NULL;
+    while ((w = FindWindowExW(NULL, w, L"UnrealWindow", NULL))) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        if (pid == GetCurrentProcessId() && IsWindowVisible(w)) break;
+    }
+    if (!w) return;
+    RECT r; GetClientRect(w, &r);
+    LPARAM at = MAKELPARAM((r.right - r.left) / 2, (r.bottom - r.top) / 2);
+    if (what == -1) PostMessageW(w, down ? WM_LBUTTONDOWN : WM_LBUTTONUP, down ? MK_LBUTTON : 0, at);
+    else if (what == -2) PostMessageW(w, down ? WM_RBUTTONDOWN : WM_RBUTTONUP, down ? MK_RBUTTON : 0, at);
+    else {
+        UINT sc = MapVirtualKeyW(what, 0);
+        PostMessageW(w, down ? WM_KEYDOWN : WM_KEYUP, what, 1 | (sc << 16) | (down ? 0 : 0xC0000000u));
+    }
+}
+#endif
 
 static int own_window_focused(void) {
     DWORD pid = 0;
@@ -1222,6 +1268,9 @@ void cheats_tick(float dt) {
         }
         if (f8) { static Out tmp; out_reset(&tmp); cmd_freecam(&tmp); LOG("cheats: F8: %s", tmp.buf); }
     }
+#ifndef B4B_RELEASE
+    if (press_left > 0 && (press_left -= dt) <= 0) press_input(press_what, 0);
+#endif
     static float acc;
     if (!on || (acc += dt) < 0.5f) return;
     acc = 0;
@@ -1233,14 +1282,18 @@ void cheats_tick(float dt) {
 }
 
 #ifndef B4B_RELEASE
-// Dev CLI: `cheat <command line>` = the host typing /<command line> (e.g. `cheat god all`); `cheatprobe ...` finds
+// Dev CLI: `cheat <command line>` = the host typing /<command line> (e.g. `cheat god all`; admin.c's dispatcher, so
+// the same permission checks); `cheatprobe ...` finds
 // class paths, card names and saferooms for testing.
 int cheats_cmd(const char *verb, char *rest, Out *o) {
     if (!strcmp(verb, "cheat")) {
         if (!rest || !*rest) { help(o); return 1; }
-        char *v = strtok(rest, " "), *r = strtok(NULL, "");
-        if (v[0] == '/') v++;
-        if (!cheats_slash(v, r, o)) out_printf(o, "not a cheat command: %s\n", v);
+        if (rest[0] == '/') rest++;
+        char verb1[32];
+        size_t k = strcspn(rest, " ");
+        snprintf(verb1, sizeof verb1, "%.*s", (int)k, rest);
+        if (cheats_perm(verb1) < 0) { out_printf(o, "not a cheat command: %s\n", verb1); return 1; }
+        admin_slash(rest, o);
         return 1;
     }
     if (strcmp(verb, "cheatprobe")) return 0;
@@ -1334,6 +1387,39 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
             out_printf(o, "%s of %s: clip %d reserve %d infinite %d\n", ue_obj_name(a, b, sizeof b), owner ? ue_obj_name(owner, a2, sizeof a2) : "-",
                        clip, res, f >= 0 ? *((uint8_t *)a + f) : -1);
         }
+    } else if (what && (!strcmp(what, "press") || !strcmp(what, "input")) && arg) {   // press|input <vk|lmb|rmb> [seconds]:
+        char *secs = strtok(NULL, " ");                                                // hold it (released by the tick);
+        if (press_left > 0) press_input(press_what, 0);                                // input = SendInput
+        press_si = !strcmp(what, "input");
+        press_what = !strcmp(arg, "lmb") ? -1 : !strcmp(arg, "rmb") ? -2 : (int)strtol(arg, NULL, 0);
+        press_left = secs ? (float)atof(secs) : 0.2f;
+        press_input(press_what, 1);
+        out_printf(o, "holding %s for %.1f s\n", arg, press_left);
+    } else if (what && !strcmp(what, "bind")) {   // bind [<Action> <Key>]: InputSettings action mappings (list / add one)
+        UObject *is = class_cdo("InputSettings");
+        char *key = strtok(NULL, " ");
+        if (!is) { out_printf(o, "no InputSettings\n"); return 1; }
+        int axis = arg && !strcmp(arg, "axis");   // bind axis <Axis> <Key>: an axis mapping, scale 1
+        if (axis) { arg = key; key = strtok(NULL, " "); }
+        if (arg && key) {
+            Call c;
+            if (!call_prep(&c, is, axis ? "AddAxisMapping" : "AddActionMapping")) { out_printf(o, "no Add*Mapping\n"); return 1; }
+            uint8_t *m = carg(&c, "KeyMapping");
+            wchar_t wa[64], wk[64];
+            mbstowcs(wa, arg, 63); wa[63] = 0; mbstowcs(wk, key, 63); wk[63] = 0;
+            ((FNameCtorFn)ADDR_FNAME_CTOR)((FName *)m, wa, 1);
+            ((FNameCtorFn)ADDR_FNAME_CTOR)((FName *)(m + 0x10), wk, 1);
+            if (axis) *(float *)(m + 8) = 1.f;   // FInputAxisKeyMapping {FName AxisName, float Scale, FKey Key}
+            SET(&c, "bForceRebuildKeymaps", uint8_t, 1);
+            call_go(&c);
+            out_printf(o, "added %s -> %s\n", arg, key);
+        }
+        TArray *am = (TArray *)((char *)is + 0x88);
+        for (int j = 0; j < am->num; j++) {
+            uint8_t *e = (uint8_t *)am->data + j * 0x28;
+            out_printf(o, "%s=%s ", ue_name(*(FName *)e, a, sizeof a), ue_name(*(FName *)(e + 0x10), b, sizeof b));
+        }
+        out_printf(o, "\n%d action mapping(s)\n", am->num);
     } else if (what && !strcmp(what, "cm")) {   // the host PC's CheatManager
         UObject *pc = host_pc();
         out_printf(o, "pc %p cheatmanager %p class %p\n", (void *)pc, (void *)(pc ? ue_get_ptr(pc, "CheatManager") : NULL),

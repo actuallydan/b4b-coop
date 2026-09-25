@@ -16,6 +16,7 @@ local chat line from `coop`.
 | `/leave` | client | yes (from a mission) | disconnect, own offline camp, ini auto-join off for the session |
 | `/players` | all | yes (`client-reply-mission.jpg`) | host also sees ping and Steam id; bots marked |
 | `/flashlight [on\|off\|auto]` | all | yes (client in mission: host saw the client's light on, manual) | no argument = toggle |
+| `/thirdperson [on\|off]` | all | yes (host and client, cheats off, 2026-09-25) | own camera only; `thirdperson.c`, docs/investigations/third-person.md |
 | `/ping` | client | yes (56 ms locally) | own `PlayerState.Ping` × 4 |
 | `/kick <name\|#>` | host | yes | player leaves at once; can come back with `/join` |
 | `/ban <name\|#>` | host | yes, incl. host restart | `b4bcoop-bans.txt` next to the agent config; enforced at PreLogin |
@@ -27,6 +28,11 @@ local chat line from `coop`.
 | `/bots on\|off\|default` | host | yes (off: next chapter had 2 heroes, `bots-off-two-heroes.jpg`) | see below |
 | `/say <msg>` | host | yes (`client-host-notice.jpg`) | shown on every client as `<host name>: [host] msg` |
 | `//text` | all | - | sends `/text` as a normal message |
+
+Who may run what: every command has a permission in the dispatcher (`cmds.h`): `CMD_ANYONE` (all players; acts on
+their own game only), `CMD_HOST` (the "host" rows; a client gets `/<cmd>: host only (you are a client)`), `CMD_CHEAT`
+(host and `/cheats on`, cheats.c's verbs via `cheats_perm()`; else `cheats are off`). `admin_slash` checks it once
+before any handler, so a new personal command only needs a `CMD_ANYONE` row.
 
 Dropped: **`/difficulty`**. A new run's difficulty is already picked in the war table (host's own UI, the path
 `mission` uses: `Matchmaking::JoinRun(..., Difficulty, ...)`), and a run in progress keeps the difficulty stored with
