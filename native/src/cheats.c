@@ -37,6 +37,7 @@
 #include "log.h"
 #include "cmds.h"
 #include "MinHook.h"
+#include "overlay.h"
 
 typedef FName *(*FNameCtorFn)(FName *self, const wchar_t *name, int find_type);
 #define ADDR_FNAME_CTOR VA(0x1424BC8E0ull)
@@ -1279,6 +1280,138 @@ void cheats_tick(float dt) {
         god_sync(&gods[i]);
     }
     if (ammo_inf) ammo_sync();
+}
+
+// ---- ~ overlay tab "Cheats" (overlay.h): every cheat verb as a control, run through admin_slash (ov_run), so the
+// permissions (host; cheats on), the host notices and the rewards rule are the chat command's ----
+static char tgt_items[18][72];
+static const char *tgt_ptrs[18];
+static char tgt_spec[18][8];
+static int n_tgt;
+static void targets_refresh(int with_all) {   // "me", ["all"], "#n Name" for every player with a hero
+    n_tgt = 0;
+    snprintf(tgt_items[n_tgt], sizeof tgt_items[0], "me (host)"); snprintf(tgt_spec[n_tgt++], 8, "me");
+    if (with_all) { snprintf(tgt_items[n_tgt], sizeof tgt_items[0], "everyone"); snprintf(tgt_spec[n_tgt++], 8, "all"); }
+    UObject **pa; int n = admin_player_array(&pa);
+    UObject *me = host_ps();
+    for (int i = 0; i < n && n_tgt < 18; i++) {
+        if (pa[i] == me || !ps_pawn(pa[i])) continue;
+        char nm[64];
+        who_name(pa[i], nm, sizeof nm);
+        snprintf(tgt_items[n_tgt], sizeof tgt_items[0], "#%d %s", i, nm);
+        snprintf(tgt_spec[n_tgt++], 8, "#%d", i);
+    }
+    for (int i = 0; i < n_tgt; i++) tgt_ptrs[i] = tgt_items[i];
+}
+static void cheats_panel(void) {
+    static int tgt, tp_dest, spawn_type, spawn_n = 1, copper = 500, supply = 1000;
+    static float size = 1.f, speed = 1.f;
+    static char card[80];
+    ov_begin_perm(CMD_HOST);
+    int en = on;
+    if (ov_checkbox("Cheats on##cheats", &en)) ov_run(en ? "cheats on" : "cheats off");
+    ov_tooltip("Host only. Everyone is told. Rewards of a map with cheats on are not sent to the other players' saves. "
+               "Off again back in Fort Hope.");
+    ov_end_perm();
+    if (on) ov_text_dim("god on %d hero(es), ammo %s, speed %.2fx%s%s", n_gods, ammo_inf ? "infinite" : "normal", slomo,
+                        frozen ? ", AI frozen" : "", freecam ? ", free camera" : "");
+    ov_begin_perm(CMD_CHEAT);
+    targets_refresh(1);
+    ov_width(12);
+    ov_combo("Player##target", &tgt, tgt_ptrs, n_tgt);
+    const char *who = tgt_spec[tgt < n_tgt ? tgt : 0];
+    ov_same_line();
+    ov_text_dim("for the buttons marked *");
+
+    ov_heading("Survival");
+    if (ov_button("God on *")) ov_run("god %s on", who);
+    ov_same_line();
+    if (ov_button("God off *")) ov_run("god %s off", who);
+    ov_same_line();
+    if (ov_button("Heal *")) ov_run("heal %s", who);
+    ov_same_line();
+    if (ov_button("Revive *")) ov_run("revive %s", who);
+    int inf = ammo_inf;
+    if (ov_checkbox("Infinite reserve ammo (everyone)##ammo", &inf)) ov_run(inf ? "ammo infinite" : "ammo off");
+    ov_width(7);
+    ov_input_int("##copper", &copper, -100000, 100000);
+    ov_same_line();
+    if (ov_button("Give copper *")) ov_run("copper %+d %s", copper ? copper : 1, who);
+    ov_width(12);
+    int give = ov_input_text("##card", card, sizeof card, "card name");
+    ov_same_line();
+    if ((ov_button("Give card *") || give) && card[0]) ov_run("card %s %s", card, who);
+    ov_same_line();
+    if (ov_button("List cards")) ov_run("card list %s", card);
+
+    ov_heading("Movement and camera");
+    if (ov_button("Fly *")) ov_run("fly %s", who);
+    ov_same_line();
+    ov_begin_disabled(strcmp(who, "me") != 0, "Noclip is for your own hero only (another player's game still collides).");
+    if (ov_button("Noclip")) ov_run("noclip");
+    ov_end_disabled();
+    ov_same_line();
+    if (ov_button("Walk *")) ov_run("walk %s", who);
+    ov_same_line();
+    if (ov_button("Free camera")) ov_run("freecam");
+    ov_tooltip("Only your view; F8 comes back.");
+    static const char *base_dest[] = {"the end saferoom", "the start saferoom"};
+    const char *dest_items[20]; char dest_spec[20][8]; int nd = 0;
+    for (int i = 0; i < 2; i++) { dest_items[nd] = base_dest[i]; snprintf(dest_spec[nd++], 8, "%s", i ? "start" : "saferoom"); }
+    for (int i = 0; i < n_tgt && nd < 20; i++) {
+        if (!strcmp(tgt_spec[i], "all")) continue;
+        dest_items[nd] = tgt_items[i]; snprintf(dest_spec[nd++], 8, "%s", tgt_spec[i]);
+    }
+    ov_width(12);
+    ov_combo("##tpdest", &tp_dest, dest_items, nd);
+    ov_same_line();
+    if (ov_button("Teleport * there")) ov_run("tp %s %s", who, dest_spec[tp_dest < nd ? tp_dest : 0]);
+    ov_width(12);
+    ov_slider("##size", &size, 0.25f, 4.f, "size %.2f");
+    if (ov_edit_done()) ov_run("size %.2f", size);
+    ov_tooltip("Your own hero only (1 = normal); applied when you let go.");
+
+    ov_heading("World and director");
+    if (ov_button("Horde")) ov_run("horde");
+    ov_same_line();
+    if (ov_button("Kill all ridden")) ov_run("killall");
+    ov_same_line();
+    if (ov_button(frozen ? "Unfreeze AI" : "Freeze AI")) ov_run("freeze");
+    static const char *phases[] = {"calm", "build", "peak", "fade", "recover"};
+    ov_text("Director:");
+    for (int i = 0; i < 5; i++) { ov_same_line(); if (ov_button(phases[i])) ov_run("director %s", phases[i]); }
+    const char *types[N_RIDDEN]; int nt = 0;
+    for (int k = 0; k < N_RIDDEN; k++) if (k == 0 || strcmp(RIDDEN[k].name, RIDDEN[k - 1].name)) types[nt++] = RIDDEN[k].name;
+    ov_width(9);
+    ov_combo("##spawntype", &spawn_type, types, nt);
+    ov_same_line();
+    ov_width(7);
+    ov_slider_int("##spawnn", &spawn_n, 1, 10);
+    ov_same_line();
+    if (ov_button("Spawn")) ov_run("spawn %s %d", types[spawn_type < nt ? spawn_type : 0], spawn_n);
+    ov_width(12);
+    ov_slider("##speed", &speed, 0.1f, 5.f, "game speed %.2fx");
+    if (ov_edit_done()) ov_run("slomo %.2f", speed);
+    ov_same_line();
+    if (ov_button("Normal speed")) { speed = 1.f; ov_run("slomo 1"); }
+    if (ov_button_confirm("Win the mission", "Sure? Win")) ov_run("win");
+    ov_same_line();
+    if (ov_button_confirm("Lose the mission", "Sure? Lose")) ov_run("lose");
+
+    ov_heading("Your own save (permanent)");
+    ov_width(8);
+    ov_input_int("##supply", &supply, 1, 100000);
+    ov_same_line();
+    if (ov_button_confirm("Add supply points", "Sure? Permanent")) ov_run("supply %d", supply);
+    ov_same_line();
+    if (ov_button_confirm("Unlock all", "Sure? Permanent")) ov_run("unlockall");
+    ov_text_dim("Only your own save (a backup is made first). Never sent to the other players.");
+    ov_end_perm();
+}
+
+int cheats_init(void) {
+    overlay_add_panel("Cheats", 50, cheats_panel);
+    return 0;
 }
 
 #ifndef B4B_RELEASE
