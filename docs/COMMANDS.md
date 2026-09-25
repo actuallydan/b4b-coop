@@ -30,7 +30,7 @@ Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](
 | `/players` | Lists everyone in the game, with numbers | `/players` |
 | `/ping` | Your ping to the host | `/ping` |
 | `/flashlight` | Turns your flashlight on or off | `/flashlight`, `/flashlight on` |
-| `/thirdperson` | Over-the-shoulder camera for your own hero | `/thirdperson`, `/thirdperson off` |
+| `/thirdperson` | Over-the-shoulder camera for your own hero | `/thirdperson`, `/thirdperson off`, `/thirdperson distance 150` |
 | `/join steam:<id>` | Joins a friend by their Steam ID | `/join steam:7656119XXXXXXXXXX` |
 | `/leave` | Leaves the host's game, back to your own Fort Hope | `/leave` |
 | `/host` | Starts hosting your Fort Hope (only needed with `host=0`) | `/host` |
@@ -55,7 +55,7 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 - `/flashlight auto` (host only) hands your light back to the game's automatic switching right away. On a client
   it replies `auto: host only (a client's override lasts until the next map)`.
 
-**`/thirdperson`**: no word = toggle. Also `on`, `off`, `status`.
+**`/thirdperson`**: no word = toggle. Also `on`, `off`, `status`, and the camera settings below.
 - A third-person camera behind your own hero. **Aiming** (right mouse) switches to first person while you hold it,
   and back when you let go.
 - Only your own view changes: the other players see nothing different, and nothing is sent to them. Host and clients
@@ -66,7 +66,23 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 - The **N** key toggles it too (see `thirdperson_key`).
 - Moments where the game itself switches to a view from behind (healing, being grabbed or pounced, ...) are left to
   the game.
-- There is no third-person crosshair: the normal centre-of-screen one is used.
+- There is no third-person crosshair: the normal centre-of-screen one is used. With the camera straight behind
+  your hero (the default), shots land exactly under it, but your hero's head covers it; aim with right mouse for
+  precise shots.
+- Camera settings (only your view, applied at once, kept for every map until the game quits; put them in
+  `b4bcoop.ini` to keep them):
+
+| Setting | Default | Values | What it does |
+|---|---|---|---|
+| `/thirdperson distance <n>` | `180` | `50`-`600` | How far behind your hero the camera is (the game's own is 300) |
+| `/thirdperson side <n>` | `0` | `-150`-`150`, `left`, `right`, `swap` | Over the shoulder: positive = right, negative = left. `left`/`right` pick a shoulder (40 if it was 0), `swap` switches shoulders |
+| `/thirdperson height <n>` | `0` | `-100`-`150` | Raises (or lowers) the camera |
+| `/thirdperson fov <n>` | the game's | `60`-`130`, `0` = the game's | Field of view in third person |
+| `/thirdperson reset` | | | Back to these defaults |
+
+- **Aim with a side or height offset**: your shots still come from your hero's eyes, not from the camera, so they
+  land that many units beside (or below) the point under the crosshair: `side 40` = 40 cm to the left of it, at
+  every range (a lot up close, little far away). The command reminds you. Aiming with right mouse is always exact.
 
 **`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope.
 - `<id>` is the host's 17-digit Steam ID. The host finds it in Steam: click your account name at the top right →
@@ -359,6 +375,10 @@ Rules:
 | `flashlight_sticky` | `1` | `0`, `1` | Host: a manual flashlight choice stays until the next map |
 | `thirdperson` | `0` | `0`, `1` | `1`: start in third person (`/thirdperson`) |
 | `thirdperson_key` | `N` | a letter, a digit, a key code, or `off` | The third-person toggle key |
+| `thirdperson_distance` | `180` | `50`-`600` | Third-person camera distance (`/thirdperson distance`) |
+| `thirdperson_side` | `0` | `-150`-`150` | Over-the-shoulder offset, negative = left (`/thirdperson side`) |
+| `thirdperson_height` | `0` | `-100`-`150` | Camera height offset (`/thirdperson height`) |
+| `thirdperson_fov` | `0` (game's) | `60`-`130` | Third-person field of view (`/thirdperson fov`) |
 | `allow_joins` | `friends` | `friends`, `anyone` | Host: who may join |
 | `allow_steamids` | none | Steam IDs | Host: these players may always join |
 | `presence` | `1` | `0`, `1` | `0`: friends don't see **Join Game** on you |
@@ -403,6 +423,15 @@ thirdperson=1
 thirdperson_key=0x74
 ```
 (`0x74` = F5.)
+
+**`thirdperson_distance`** / **`thirdperson_side`** / **`thirdperson_height`** / **`thirdperson_fov`**: the camera
+settings of `/thirdperson distance|side|height|fov`, from the start of every game. A closer camera over the right
+shoulder with a wider view:
+```ini
+thirdperson_distance=150
+thirdperson_side=40
+thirdperson_fov=100
+```
 
 **`allow_joins`**: host only. `friends` (default): only your Steam friends can join. `anyone`: anyone who can reach
 you, friends or not. Someone refused shows up in your chat: `Refused a join from Alex (steam:7656119...): not on the

@@ -90,7 +90,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `thirdperson.c` `/thirdperson` (CMD_ANYONE, host and clients, no cheats): the local hero's own over-the-shoulder
     camera (PlayerViewComponent +0x200 + UpdateView), first person while aiming, game's own 3P moments left alone; on
     until toggled off (all maps, sessions; not saved). Local only, no protocol bump. Ini `thirdperson=1` (start on),
-    `thirdperson_key=` (toggle, default N). Dev `thirdperson view [1|2|3]`. docs/investigations/third-person.md.
+    `thirdperson_key=` (toggle, default N); camera settings `/thirdperson distance|side|height|fov|reset` + ini
+    `thirdperson_distance|side|height|fov` (default distance 180, centred: shots come from the eyes, so side/height
+    offsets move hits off the crosshair). Dev `thirdperson view|aim|arm|decals|watch`. docs/investigations/third-person.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
