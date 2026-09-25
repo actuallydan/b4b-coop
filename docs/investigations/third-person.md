@@ -95,14 +95,15 @@ cheat; now a personal chat command for everyone: `/thirdperson` (`native/src/thi
 
 ## Camera settings (accessibility, 2026-09-25)
 - `/thirdperson distance|side|height|fov <n>`, `side left|right|swap`, `reset`; ini `thirdperson_distance`
-  (default **180**, game 300), `thirdperson_side` (0), `thirdperson_height` (0), `thirdperson_fov` (0 = game's).
+  (default **180**, game 300), `thirdperson_side` (40, right shoulder; Dan's call until aim correction exists), `thirdperson_height` (0), `thirdperson_fov` (0 = game's).
   distance = ThirdPersonSpringArm.TargetArmLength (+0x230), side/height = SocketOffset.Y/Z (+0x234), fov =
   ThirdPersonCamera.FieldOfView (+0x230). Found by name on the hero with the PlayerViewComponent (one scan per
   hero), written every tick while on (float stores; covers a new hero), the game's values restored on
   `/thirdperson off`. The game's own 3P moments get the same camera while /thirdperson is on.
 - Live: default 180 applied in camp and on the mission hero; chat (`type`) `/thirdperson side right` → SocketOffset
   (0, 40, 0), `height 20` → (0, 40, 20), `fov 100` → PlayerCameraManager.GetFOVAngle 100; screenshots over the right
-  shoulder. Defaults keep side/height 0 so aim stays exact (the command prints the aim offset when they aren't).
+  shoulder. Default side 40 (over the shoulder: the head no longer covers the crosshair; hits land 40 units beside it until
+  aim correction exists); the command prints the aim offset when side/height aren't 0.
 - Local only: component values on the local hero, nothing replicated, no protocol change. `e2e.py --quick` 12/12.
 
 ## Weapon switch in 3P
