@@ -175,7 +175,7 @@ static void ctm_detour(UObject *pc, UObject *sender, const FString *s, FName typ
     ue_name(type, tn, sizeof tn);
     if (strcmp(tn, "Event")) LOG("chat: received %s message from %s: %s", tn, name, text);   // Event: game debug lines
     FName nt = chat_notice_type(0), kt = chat_notice_type(1);
-    if (type.idx == nt.idx && type.num == nt.num) { show_text(name[0] ? name : "host", text); return; }
+    if (type.idx == nt.idx && type.num == nt.num) { models_host_notice(text); show_text(name[0] ? name : "host", text); return; }
     if (type.idx == kt.idx && type.num == kt.num) {
         // only honoured from the server we are connected to (a client RPC can only come from it)
         LOG("chat: the host removed us: %s", text);

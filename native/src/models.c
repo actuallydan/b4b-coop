@@ -261,6 +261,8 @@ static void build_npcs(void) {
         }
         n->name[k] = 0;
     }
+    for (int i = 1; i < n_npcs; i++)   // by name
+        for (int j = i; j > 0 && strcmp(npcs[j - 1].name, npcs[j].name) > 0; j--) { Npc t = npcs[j]; npcs[j] = npcs[j - 1]; npcs[j - 1] = t; }
     LOG("models: %d NPC bodies in the asset registry", n_npcs);
 }
 static Npc *npc_by_name(const char *name) {
@@ -515,18 +517,20 @@ static void tick_me(float dt) {
     if (!ready_slot(slot)) return;
     int32_t key = U_INDEX(slot) * 64 + slot_hero(slot);
     if (key != me.slot_idx) { me.slot_idx = key; me.tries = 0; me.gave_up = 0; me.wait = 3; }   // let the game's own sends settle
-    if (matches(cur, &me)) { me.tries = 0; return; }
+    if (matches(cur, &me)) { me.tries = 0; me.gave_up = 0; return; }
+    // A host with b4bcoop and /models off answers with a notice (models_host_notice); otherwise the host accepts, but
+    // the slot's replication can lag seconds behind (e.g. right after a checkpoint restart): resend slowly, then stop.
     if (me.gave_up || (me.wait -= dt) > 0) return;
-    if (me.tries >= 3) {
+    if (me.tries >= 10) {
         me.gave_up = 1;
-        chat_local("The host did not accept your model (the host may have turned models off: /models).");
+        LOG("models: %s still not applied after %d tries, giving up for this map", me.label, me.tries);
         return;
     }
     CustSet s;
     if (!is_client()) note_clean(slot, cur);
     compose(cur, &me, slot_hero(slot), &s);
     if (send_select(ps, &s)) return;
-    me.tries++; me.wait = 4;
+    me.tries++; me.wait = me.tries < 3 ? 5 : 10;
     LOG("models: sent %s (try %d)", me.label, me.tries);
 }
 
@@ -612,6 +616,12 @@ void models_tick(float dt) {
     tick_others(dt);
 }
 
+// Client: a notice from the host (chat.c). The host refused our look: stop resending until the next /model.
+#define REFUSED_NOTICE "The host turned model swaps off"
+void models_host_notice(const char *text) {
+    if (me.on && !strncmp(text, REFUSED_NOTICE, sizeof REFUSED_NOTICE - 1)) { me.gave_up = 1; LOG("models: refused by the host"); }
+}
+
 // ---- host: lock ----
 typedef void (*SelectSetFn)(UObject *ps, const CustSet *set);
 static SelectSetFn orig_selectset;
@@ -630,7 +640,7 @@ static void selectset_detour(UObject *ps, const CustSet *set) {
             UObject *pc = ue_get_ptr(ps, "Owner");
             static ULONGLONG last_told; static UObject *last_pc;
             if (pc && (pc != last_pc || GetTickCount64() - last_told > 10000)) {
-                admin_notice(pc, "The host turned model swaps off (/models).");
+                admin_notice(pc, REFUSED_NOTICE " (/models).");
                 last_pc = pc; last_told = GetTickCount64();
             }
             return;

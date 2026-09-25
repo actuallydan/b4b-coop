@@ -121,3 +121,4 @@ int models_init(void);
 void models_tick(float dt);
 int models_cmd(const char *verb, char *rest, Out *o);  // dev builds: `model`, `models`, `mdl ...`
 void models_slash(const char *verb, char *rest, Out *o); // chat /model, /models
+void models_host_notice(const char *text);               // chat.c: a host notice arrived (client)
