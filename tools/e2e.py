@@ -15,14 +15,14 @@
 Uses the installed DLL as is (launch/install.sh first). Holds launch/gamelock.sh as "e2e" unless --no-lock (the
 caller already holds it). Everything (logs, agent outputs, profile snapshots and diffs, ss samples, screenshots) goes
 to a timestamped directory, default /tmp/b4b-e2e-<time>. Exit status 1 if any check failed.
+B4B_LANE=2 runs it on the second live-test lane (launch/lane.sh: Flatpak game copy, its own lock, prefixes, ports and
+window names; artifacts /tmp/b4b-e2e-l2-<time>); both lanes can run at the same time.
 """
 import argparse, datetime, glob, ipaddress, json, os, re, shutil, socket, subprocess, sys, threading, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GAME = os.environ.get("B4B_DIR", os.path.expanduser("~/.local/share/Steam/steamapps/common/Back 4 Blood"))
+from lane import LANE, GAME, ROOT, PORT_BASE, WIN   # B4B_LANE=2: second live-test lane (tools/lane.py)
 BIN = os.path.join(GAME, "Gobi/Binaries/Win64")
-ROOT = os.path.expanduser(os.environ.get("B4B_TEST_ROOT", "~/.local/share/b4b-coop/prefixes"))
-PORT_BASE = int(os.environ.get("B4B_PORT_BASE", "47112"))
 PROFILE = "pfx/drive_c/users/steamuser/AppData/Local/Back4Blood/Steam/Saved/SaveGames/PlayerProfileSettings.json"
 MAP_B, MAP_C = "Evansburgh_B", "Evansburgh_C"
 
@@ -95,7 +95,7 @@ def window_id(n):
     except (OSError, subprocess.TimeoutExpired):
         return None
     for line in out.splitlines():
-        if f"B4B #{n}" in line and (n != 1 or "HOST" in line) and not re.search(rf"B4B #{n}\d", line):
+        if f"{WIN} #{n}" in line and (n != 1 or "HOST" in line) and not re.search(rf"{WIN} #{n}\d", line):
             return line.split()[0]
     return None
 
@@ -312,6 +312,9 @@ def pick_card(cards, avoid=()):
 def duo(args):
     """The 2-instance regression: everything in --quick."""
     S = Session("duo", 2)
+    for i in (1, 2):   # a lane's first run: create the prefixes now, so "before" is the cloned profile, not nothing
+        if not os.path.isdir(os.path.join(ROOT, f"test{i}", "pfx")):
+            sh([sys.executable, os.path.join(REPO, "tools/testprefix.py"), str(i)], timeout=300)
     before = {i: load_profile(profile_path(i)) for i in (1, 2)}
     for i in (1, 2):
         if before[i]: shutil.copy(profile_path(i), os.path.join(OUT, f"profile{i}-before.json"))
@@ -533,14 +536,14 @@ def main():
     ap.add_argument("--no-lock", action="store_true", help="don't take launch/gamelock.sh (caller holds it)")
     ap.add_argument("--out", help="output directory (default /tmp/b4b-e2e-<time>)")
     a = ap.parse_args()
-    OUT = a.out or f"/tmp/b4b-e2e-{datetime.datetime.now():%Y%m%d-%H%M%S}"
+    OUT = a.out or f"/tmp/b4b-e2e-{'' if LANE == '1' else 'l' + LANE + '-'}{datetime.datetime.now():%Y%m%d-%H%M%S}"
     os.makedirs(OUT, exist_ok=True)
     lock = os.path.join(REPO, "launch/gamelock.sh")
     if not a.no_lock:
         log("waiting for the game lock (launch/gamelock.sh acquire e2e)")
         subprocess.run([lock, "acquire", "e2e"], check=True)
     dlls = [os.path.join(BIN, n) for n in ("X3DAudio1_7.dll", "dwmapi.dll") if os.path.exists(os.path.join(BIN, n))]
-    log(f"output {OUT}; installed DLL " +
+    log(f"lane {LANE} ({GAME}); output {OUT}; installed DLL " +
         (", ".join(f"{os.path.basename(d)} {time.ctime(os.path.getmtime(d))}" for d in dlls) or "MISSING"))
     try:
         duo(a)

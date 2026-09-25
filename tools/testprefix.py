@@ -4,6 +4,7 @@
     testprefix.py N [--fresh] [--blank] [--host | --join ADDR] [--force]   (--host: no join=, i.e. the default: host)
 
 Prefix:  ~/.local/share/b4b-coop/prefixes/test<N>  (cloned from steamapps/compatdata/924970, ~600 MB)
+         B4B_LANE=2: ~/.local/share/b4b-coop/prefixes/lane2/test<N> (same source; tools/lane.py)
 Config:  <prefix>/b4bcoop.ini  (pass to the agent via B4B_COOP_CONFIG)
 Patches (test copy only): muted, small window, low quality, ui cvars in Engine.ini.
 --blank: delete the copy's profile save -> the game starts a fresh offline profile (no decks/unlocks), a
@@ -13,10 +14,11 @@ Refuses (exit 1) to change a prefix while a game process runs on it (B4B_PREFIX 
 launch/multi-stop.sh matches), unless --force. Change prefixes only while holding launch/gamelock.sh.
 """
 import os, re, shutil, subprocess, sys
+import lane
 
 STEAM = os.path.expanduser("~/.local/share/Steam")
 REAL = os.path.join(STEAM, "steamapps/compatdata/924970")
-ROOT = os.path.expanduser(os.environ.get("B4B_TEST_ROOT", "~/.local/share/b4b-coop/prefixes"))
+ROOT = lane.ROOT
 SAVED = "pfx/drive_c/users/steamuser/AppData/Local/Back4Blood/Steam/Saved"
 
 # Registered cvars in this build (strings next to their registration): skip intro movies/MOTD/tutorials, start

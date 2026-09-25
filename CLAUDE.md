@@ -118,6 +118,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   mirroring the game folder, its `b4bcoop-README.txt` (CRLF, mirrors README's player section: keep in sync) +
   `dist/SHA256SUMS`, reproducible), `run.sh` (Proton, no EAC; `B4B_PREFIX` = alternate compatdata; writes
   `steam_appid.txt`), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test instances, below), `gamelock.sh`,
+  `lane.sh`/`lane-restore.sh` (live-test lanes, below),
   `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
 - `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
@@ -180,6 +181,18 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   (success) or `endmission 0` (failure). The post-round screen times out after ~2 min and moves on to the next chapter.
 - Profile saves are deferred (~30 s after `ApplyCommandToOfflineData`); wait before `multi-stop.sh` (SIGKILL) or diffing.
 - `-Port=` on the command line sets the listen port (UE `FURL` default port); in use → it binds the next one.
+- **Lanes**: two independent live-test setups so two agents can run instances at the same time. `B4B_LANE=2` (default
+  1) is read by every launch script and `tools/{b4b,testprefix,e2e}.py` (table: `launch/lane.sh`, `tools/lane.py`).
+  Lane 1 = everything above. Lane 2 = the Flatpak Steam copy of the game (same build;
+  `~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/Back 4 Blood`), lock
+  `/tmp/b4b-game-lane2.lock`, prefixes `prefixes/lane2/test<n>`, game port 7887, agent ports 47140+, windows
+  "B4B L2 #n", artifacts `/tmp/b4b-e2e-l2-<time>`; still run with the native Steam/Proton (one Steam id).
+  Each lane's `gamelock.sh`, `multi-stop.sh` (matches only its own prefix root) and instances are independent.
+  That folder is also the player build of Dan's second account (dreamsofants): `B4B_LANE=2 gamelock.sh acquire`
+  (and install.sh/run.sh) backs up its top-level player files (`launch/lane-restore.sh`, into
+  `~/.local/share/b4b-coop/lane2-player-backup/`), `release` stops lane-2 instances and restores them sha256-exact
+  (lane test logs move to `~/.local/share/b4b-coop/lane2-logs/`); acquire waits while that account's game runs.
+  Usage: `export B4B_LANE=2; launch/gamelock.sh acquire <me>; launch/install.sh; launch/multi.sh 2; ...; release`.
 - 5 players: `B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5` (opt-in `teamsize` in `native/src/teamsize.c`). Verified: a
   full mission and 2 chapter transitions with 5 humans. Without it, a 5th joiner is refused with "Server full."
   (`slotguard.c`; before that it crashed the host). Results: `docs/investigations/five-players.md` §5,
@@ -196,7 +209,8 @@ amount exactly, host only its own), the 0.3.0 defaults (host without `host=`, pr
 sampler). `--full` adds a vanilla
 `multi.sh 5` (5th refused "Server full.", host survives) and a `teamsize=5` round (5 follow, SP forwarded to all 4
 clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
-screenshots in `/tmp/b4b-e2e-<time>/` (`--out`).
+screenshots in `/tmp/b4b-e2e-<time>/` (`--out`). `B4B_LANE=2 tools/e2e.py --quick` runs it on lane 2 (above), in
+parallel with a lane-1 run; lane 2's lock release restores the second account's player build.
 
 ## Branches
 - `main`: shippable. Releases are tagged from here.

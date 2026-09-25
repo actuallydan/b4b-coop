@@ -12,14 +12,17 @@
 # (hosting is the default); joiners get join=127.0.0.1:<port> (loopback: allowed without host_ip=1, and the game's
 # sockets are bound to 127.0.0.1). All copies share one Steam account: same player name and
 # same offline.<steamid64> id on the host.
+# B4B_LANE=2 (launch/lane.sh): the second live-test lane (Flatpak game copy, prefixes/lane2/test<n>, game port 7887,
+# agent ports 47140+, windows "B4B L2 #n"), independent of lane 1; hold that lane's gamelock.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
+source "$here/lane.sh"
 n="${1:?usage: multi.sh N (1-5)}"
 [[ $n =~ ^[1-5]$ ]] || { echo "N must be 1-5" >&2; exit 2; }
-root="${B4B_TEST_ROOT:-$HOME/.local/share/b4b-coop/prefixes}"
-game_port="${B4B_GAME_PORT:-7787}"
-port_base="${B4B_PORT_BASE:-47112}"
+root="${B4B_TEST_ROOT:-$lane_root}"
+game_port="${B4B_GAME_PORT:-$lane_game_port}"
+port_base="${B4B_PORT_BASE:-$lane_port_base}"
 stagger="${B4B_STAGGER:-20}"
 timeout="${B4B_TIMEOUT:-600}"
 py="$repo/.venv/bin/python"; [[ -x $py ]] || py=python3
@@ -73,7 +76,7 @@ deadline=$(( SECONDS + timeout ))
 while (( SECONDS < deadline )); do
   for i in $(seq "$n"); do
     [[ -n ${labelled[$i]:-} ]] && continue
-    if [[ $i == 1 ]]; then t="B4B #1 HOST"; else t="B4B #$i"; fi
+    if [[ $i == 1 ]]; then t="$lane_win #1 HOST"; else t="$lane_win #$i"; fi
     label "$i" "$t" && labelled[$i]=1
   done
   players=$(agent 1 players | sed -n 's/^\([0-9]\+\) player state.*/\1/p')
