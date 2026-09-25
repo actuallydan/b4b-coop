@@ -1,7 +1,8 @@
 # New assets under new paths: add-ons that add instead of replace (design, #20/#21, epic #23)
 
-Status 2026-09-25, build 14216215, branch `models-next`. Design; the package side works (`b4bmod rename`, §2,
-loaded in game from an add-on, §5); selecting it (§3-§4) is not built yet. Today every add-on replaces game files at their paths: a survivor model *is*
+Status 2026-09-25, build 14216215. Package side (`b4bmod rename`, §2, §5) and added survivor outfits (§8:
+`b4bmod survivor --as`, addoninfo `outfit=`, `/model <outfit>`) work live; weapons (§6) and the customization
+screen are not built. Today every add-on replaces game files at their paths: a survivor model *is*
 Mom's Elite 04 for whoever has the add-on. Goal: an add-on that brings an **extra** outfit (or weapon look) at its own
 paths, selectable next to the game's, with nothing of the game's replaced.
 
@@ -95,8 +96,64 @@ row) is gameplay content (data tables, blueprints) and out of scope for cosmetic
    checkpoint restart, campaign-run save.
 5. Later: weapon skins, customization-screen rows.
 
-## 8. Added outfits: state (WIP, 2026-09-25, branch `models-outfits`)
-Stopped at setup (PC needed): worktree created from `origin/models`, no code written, no live test, no lock taken.
-Next: steps 1-4 of §7 (`b4bmod survivor --as <name>` -> `/Game/b4bcoop/outfits/<name>/`, addoninfo `outfit=` lines,
-addons.c list, models.c rows + `/model list`, decide protocol bump for the new row type), then `multi.sh 2` on lane 1
-(with/without the add-on, chapter transition, campaign save), docs (meshes.md, COMMANDS.md), `e2e.py --quick --no-lock`.
+## 8. Added outfits: implemented (2026-09-25, branch `models-outfits`, build 14216215, Proton, lane 1)
+- **modkit** (`b4bmodel.py as_outfit`, `b4bmod survivor ... --as <name> [--title T]`): the pipeline writes into
+  `<work>/stage` at the template's paths; then every package it wrote (meshes, textures, hair MI) and every
+  `MaterialInstanceConstant` of the template's own folder the meshes import (directly or as a parent) is copied with
+  `b4bmod rename` to `/Game/b4bcoop/outfits/<name>/<same base name>` with one `--ref` per copied package (so only
+  package-path names change). Unchanged retail textures, skeleton, physics asset, shared/master materials stay
+  referenced. Checked after: no copy imports a package that was copied. `<moddir>/addoninfo.txt` gets
+  `outfit=<name>|<template survivor>|<3P object path>|<FP object path>|<title>` (replaced per name, several allowed);
+  `addon.py pack` keeps these lines (also when repacking a pak), refuses one whose meshes aren't in the add-on.
+  Test: CC0 MakeHuman `survivor.fbx` on Mom Elite 04 -> `casual_joe`, 23 packages (12 textures, 9 MIs, 3P + FP
+  mesh), 58 files, cosmetic, ~55 s. The pak holds nothing outside `Gobi/Content/b4bcoop/`.
+- **Agent**: `addons.c` parses `outfit=` lines (name `[a-z][a-z0-9_]{0,31}`, `/Game/` ASCII paths, `Pkg` ->
+  `Pkg.Pkg`); `addons_outfits()` = those of mounted add-ons, a name in two add-ons: the later one wins. `models.c`:
+  row `b4bcoop.outfit.<name>` in the wearer's own customization table (like `b4bcoop.npc.*`, §4), resolved after
+  catalogue rows and survivor names, before NPCs. `tick_npc` on every machine: body = the 3P mesh (skeleton checked
+  `3P_Biped_SK`), head/legs emptied, `FirstPersonArms` = the FP mesh (`FP_Biped_SK`). `compose` completes the set's
+  head/torso/legs for made-up rows, which is what machines without the add-on (or b4bcoop) show. Host:
+  `set_sane` accepts any well-formed outfit name (the host needn't have the add-on); refused under `/models off`
+  (foreign row) and `addons_policy=none` (notice `The host turned model swaps off for add-on outfits
+  (addons_policy=none).`); the campaign-run hook and `/models off` reset already cover it (a made-up row is foreign).
+- **Protocol: no new bump.** The made-up outfit row needs host support (older hosts refuse it as "not a
+  customization row"), which is what protocol 2 (the NPC-body bump on `models`, not released; `main` is 1) already
+  stands for; outfits ship in the same unreleased protocol 2.
+- Chat: `/model list outfits` (title, add-on), overview line `add-on outfits (/model list outfits): ...`, reply
+  `(an add-on outfit: players without that add-on see your survivor)`.
+
+### Live results (`multi.sh 3`: host + client 2 with `casual_joe.pak` via `addons_dir=`, client 3 without)
+- Fort Hope: host (Holly) and client 2 (Doc) `/model casual_joe`: `models: hero slot 0/1 wears outfit casual_joe` on
+  both; `mdl dump` there: `CharacterMesh0` = `/Game/b4bcoop/outfits/casual_joe/3P_Mom_Elite_04_SKM`,
+  `FirstPersonArms` = `.../FP_Mom_Elite_04_SKM`, head/legs empty, overrides 0. Client 3 (no add-on): same set
+  (`b4bcoop.outfit.casual_joe`), shows `3P_Doc_Head_03` + `Torso_00` + `Legs_00` (and Holly's pieces): the survivor.
+  Screenshots `forthope_1/2.png` (each sees the other in the casual outfit).
+- Mission Evansburgh B after character select (timer pick, heroes changed to Evangelo/Holly): re-applied on all
+  three machines as above; host view `missionB_host.png` (client's hero in the outfit, host's FP arms in the
+  outfit's sleeve). `ready` + `endmission 1`: `models: campaign run saved with 2 survivor(s) in their own look`;
+  seamless transition to C: re-applied on all three. No `b4bcoop` string in any profile `.json`/`.sav` afterwards.
+- `/models off`: `2 look(s) reset`, client's next `/model casual_joe` refused (`models are off`); `/models on` +
+  `/addons policy none`: refused (`add-on outfit, addons_policy=none`), client stops resending.
+- Second run (`multi.sh 2`, host with the add-on, client without): the client sees the host's Holly in her base
+  pieces (`forthope_client_noaddon.png`), not invisible. Client 3's window in the first run never repainted (stale
+  title screen), so its view is only from `mdl dump`.
+- Screenshots: `~/.local/share/b4b-coop/outfits/shots/` (not committed). `tools/e2e.py --quick` on this build:
+  13/13 PASS.
+
+### Limits / open
+- Without the add-on you see the wearer's base pieces, not their equipped Elite outfit (the set holds one outfit
+  handle; the made-up row takes it).
+- Same name in two different add-ons (or versions) = each player sees their own version.
+- Weapons (`--as` for `b4bmod weapon`, skins as made-up rows, §6): not done.
+
+### Customization screen (not built; Dan undecided)
+It would take: a real `CharacterCustomizationRow` (0x320) inserted into `<Hero>_Customization_DT.RowMap` at runtime on
+every machine (copy of the template row, `ThirdPersonMeshDefinition.Mesh`/`FirstPersonMeshDefinition.Mesh` soft
+paths set to the add-on meshes, material overrides emptied, a stable GUID row name derived from the outfit name);
+the unlock/entitlement check (`Products_DT` / owned-items lookup the screen uses to grey out or hide rows) passed or
+hooked; a display name (FText) and thumbnail (the screen shows a render/texture per row; an add-on would need one);
+then the profile: `EquipCharacterCustomizationSetCommand` saves the row into
+`equippedCharacterCustomizationSets`, so a machine that later starts without the add-on must survive an unknown row
+(`GetProfileCustomization` drops locked/invalid sets to the default skin: needs a live check), and remote players
+without the add-on would get a GUID row the game can't find (same fallback as now, but through the game's path
+instead of ours). The campaign-run hook would have to treat these rows like made-up ones.

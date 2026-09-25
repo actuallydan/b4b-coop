@@ -38,6 +38,8 @@ description=...
 content=cosmetic (textures)
 ```
 `content=` is written by `addon.py pack` from the files (§6); the agent derives it again and only logs a mismatch.
+`outfit=<name>|<survivor>|<3P mesh>|<FP mesh>|<title>` lines (any number) name added outfits for `/model <name>`
+(new-assets.md §8; written by `b4bmod survivor --as`).
 The parser also takes L4D KeyValues lines (`addontitle "..."`, `addonauthor ...`; the `addon` prefix is dropped, braces
 ignored), so an L4D-style addoninfo.txt mostly works as is. Suggested categories (free text):
 survivors ridden weapons items ui sounds maps misc.
