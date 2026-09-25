@@ -129,6 +129,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     presence_init();
     joinpolicy_init();
     models_init();
+    addons_init();
 #ifndef B4B_RELEASE
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
 #endif
@@ -172,9 +173,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
 #endif
         LOG("b4bcoop %s (protocol %d)", B4B_VERSION, B4B_PROTOCOL);
         netguard_init();   // before any game code runs: hooks name resolution / TCP connect / EOS (netguard.c)
-#ifndef B4B_RELEASE
-        paks_early_init(); // before the engine creates FPakPlatformFile (paks.c: mod paks, asset extraction)
-#endif
+        paks_early_init(); // before the engine creates FPakPlatformFile (paks.c/addons.c: add-ons; dev: extraction)
         CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
     }
     return TRUE;

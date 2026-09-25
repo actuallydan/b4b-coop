@@ -115,9 +115,17 @@ int rewardguard_init(void);
 void rewardguard_tick(float dt);
 int rewardguard_cmd(const char *verb, char *rest, Out *o);  // dev builds: `rewardguard`, host `rewardtest ...`
 
-// paks.c (dev builds only): engine pak layer, model mods (docs/investigations/model-mods-paks.md)
-void paks_early_init(void);                                // DllMain: hook FPakPlatformFile::Initialize, ini modpaks=
-int paks_cmd(const char *verb, char *rest, Out *o);        // `paks`, `mountpak`, `dumpassets`; 1 if handled
+// paks.c: engine pak layer (docs/investigations/model-mods-paks.md). Both builds: mounts the add-ons (addons.c).
+void paks_early_init(void);                                // DllMain: hook FPakPlatformFile::Initialize (if needed)
+int paks_mount_unsigned(const wchar_t *path, uint32_t order); // addons_mount only: mount one of our unsigned paks
+int paks_cmd(const char *verb, char *rest, Out *o);        // dev builds: `paks`, `mountpak`, `dumpassets`; 1 if handled
+// addons.c: L4D-style add-ons, <game>\b4bcoop-addons\*.pak + addonlist.txt (docs/investigations/addons.md)
+#define MAX_ADDONS 128
+int addons_scan(void);                        // DllMain: config, folder, load order, conflicts; number to mount
+void addons_unavailable(const char *why);     // paks.c: hooks unavailable, nothing gets mounted
+void addons_mount(void);                      // FPakPlatformFile::Initialize hook, right after the retail paks
+void addons_init(void);                       // init_thread: queue the player notice (conflicts, bad add-ons)
+void addons_slash(const char *verb, char *rest, Out *o);  // chat /addons (any thread that runs chat commands)
 // models.c: runtime model swaps (#19, docs/investigations/model-swap.md)
 int models_init(void);
 void models_tick(float dt);

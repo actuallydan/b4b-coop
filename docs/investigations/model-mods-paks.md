@@ -1,7 +1,7 @@
 # Model mods: extracting through the engine's pak layer (#16) and mounting our own paks (#17)
 
 Status 2026-09-24, build 14216215 / CL 1108676, Proton, test instance `launch/multi.sh 1`. Epic #23. Code:
-`native/src/paks.c` (dev builds only), `tools/b4bpak.py` (pak writer), `tools/modkit/assetcheck` (CUE4Parse checks).
+`native/src/paks.c` (mount + signature exemptions in both builds since #20, the rest dev-only), `tools/b4bpak.py` (pak writer), `tools/modkit/assetcheck` (CUE4Parse checks).
 
 ## TL;DR
 - **#16 works.** The agent enumerates the pak directory index and reads files through `FPakPlatformFile`, so it
@@ -162,8 +162,8 @@ never committed.
 - **Biggest risk for the epic: authoring new content, not delivering it.** Byte-level edits and existing-asset swaps
   now go end to end. New skeletal meshes still need #18's converter: stock 4.25 cooks lack the ray-tracing data and
   the 8-byte skeletal-mesh trailer. New master materials would also need B4B-compatible shaders.
-- The signature exemptions and the whole mod path are dev-only (`#ifndef B4B_RELEASE`). A player build needs them
-  plus a pak location outside the game folder. They rest on 5 byte-signed hooks (Initialize, precacher lambda,
+- Since #20 the mount path and the signature exemptions are in player builds too, for the add-ons in
+  `<game>\b4bcoop-addons\` (docs/investigations/addons.md); `modpaks=` stays a dev-only raw mount (order 3000+). They rest on 5 byte-signed hooks (Initialize, precacher lambda,
   DoSignatureCheck layout, GetPakSignatureFile, Mount) and will break with any game update (the build is pinned).
 - Everyone in a session needs the same mod paks: content can decide gameplay (collision, hitboxes). A later
   add-on system (#20-#22) should put a pak hash into the join handshake.
