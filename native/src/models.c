@@ -1062,13 +1062,8 @@ int models_cmd(const char *verb, char *rest, Out *o) {
         if (!c) { out_printf(o, "no hero/component\n"); return 1; }
         UObject *m = load_asset(a3);
         if (!m) { out_printf(o, "load failed: %s\n", a3); return 1; }
-        UFunction *f = fn_of(c, "SetSkeletalMesh");
-        int32_t pm = parm_off(f, "NewMesh"), pr = parm_off(f, "bReinitPose");
-        uint8_t p[32] = {0};
-        *(UObject **)(p + pm) = m;
-        if (pr >= 0) p[pr] = 1;
-        ue_process_event(c, f, p);
-        out_printf(o, "SetSkeletalMesh done\n");
+        set_mesh(c, m);   // also empties OverrideMaterials: the mesh's own slot materials show
+        out_printf(o, "SetSkeletalMesh done (material overrides cleared)\n");
         return 1;
     }
     if (!strcmp(sub, "load") && a1) {

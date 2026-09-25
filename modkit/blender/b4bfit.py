@@ -512,7 +512,7 @@ def keep_arms(m):
 TEX_KEYS = {"basecolor": ("albedo", "basecolor", "base_color", "diffuse", "color", "_bc", "_d", "col"),
             "normal": ("normal", "_n", "nrm", "norm"),
             "roughness": ("rough",), "metallic": ("metal",), "ao": ("_ao", "occlusion", "ambient"),
-            "orm": ("rmao", "orm", "_arm")}
+            "orm": ("rmao", "orm", "_arm"), "alpha": ("alpha", "opacity")}
 
 
 def socket_image(sock, seen=None):
@@ -920,6 +920,51 @@ def lin2srgb(c):
     return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
 
 
+def tile_alpha(tx, pw):
+    """A tile's opacity: its alpha texture (A if it has an alpha channel, else R), else the base colour's alpha."""
+    import numpy as np
+    for k in ("alpha", "basecolor"):
+        p = tx.get(k)
+        if p and os.path.exists(p):
+            a = load_px(p, pw)
+            if a[..., 3].min() < 0.99: return a[..., 3]
+            if k == "alpha": return a[..., 0]
+    return np.ones((pw, pw), np.float32)
+
+
+def hair_multimask(j, size):
+    """Master_Hair_M's "Hair MultiMask" (Enable MultiMask on): A = strand alpha (masked, dithered). R/G/B (root, depth,
+    id-style masks) = the retail texture's average inside its strands. Also writes <out>.json with the hair colour
+    (mean base colour of the opaque texels, linear) for the MI's RootColor/TipColor."""
+    import numpy as np
+    canvas = np.zeros((size, size, 4), np.float32)
+    rgb = np.array([0.45, 0.28, 0.3], np.float32)
+    if j.get("mean_from"):
+        r = load_px(j["mean_from"], 256)
+        m = r[..., 3] > 0.5
+        if m.any(): rgb = r[..., :3][m].mean(axis=0)
+    canvas[..., :3] = rgb
+    cols, weights = [], []
+    for t in j["tiles"]:
+        x0, y0, w, h = t["rect"]
+        px, py, pw = int(round(x0 * size)), int(round(y0 * size)), int(round(w * size))
+        tx, val = t.get("textures", {}), t.get("values", {})
+        a = tile_alpha(tx, pw)
+        canvas[py:py + pw, px:px + pw, 3] = a
+        if tx.get("basecolor") and os.path.exists(tx["basecolor"]):
+            c = load_px(tx["basecolor"], pw)[..., :3]
+            m = a > 0.5
+            if m.any():
+                cols.append(c[m].mean(axis=0)); weights.append(float(m.sum()))
+        elif "basecolor" in val:
+            cols.append(np.array([lin2srgb(x) for x in val["basecolor"]])); weights.append(1.0)
+    srgb = np.average(np.array(cols), axis=0, weights=weights) if cols else np.array([0.3, 0.2, 0.12])
+    lin = [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in srgb.tolist()]
+    json.dump({"color_linear": lin, "color_srgb": srgb.tolist(), "retail_rgb": rgb.tolist()}, open(j["out"] + ".json", "w"))
+    log("hair: colour (sRGB)", [round(x, 3) for x in srgb.tolist()], "multimask RGB", [round(float(x), 3) for x in rgb])
+    return canvas
+
+
 def compose(job_path):
     """Jobs: [{out, size, role basecolor|normal|pbr|zero|mean, tiles, mean_from, normal_dx}]"""
     import numpy as np
@@ -930,6 +975,8 @@ def compose(job_path):
         role = j["role"]
         if role == "zero":
             canvas = np.zeros((size, size, 4), np.float32)
+        elif role == "hairmm":
+            canvas = hair_multimask(j, size)
         elif role == "mean":
             canvas = np.tile(mean.astype(np.float32), (size, size, 1))
         else:

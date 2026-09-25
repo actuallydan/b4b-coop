@@ -1448,7 +1448,65 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
                        ls ? call_bool(ls, "IsAlive") : -1, ls ? call_bool(ls, "IsIncapped") : -1, mm >= 0 ? *((uint8_t *)cmc + mm) : -1,
                        col >= 0 ? *((uint8_t *)pawn + col) : -1, v[0], v[1], v[2]);
         }
-    } else out_printf(o, "usage: cheatprobe classes <Base> | live <Class> | cm | state\n");
+    } else if (what && (!strcmp(what, "spawnactor") || !strcmp(what, "emitter")) && arg) {
+        // spawnactor <Blueprint class path> [dist] [dz]: spawn an actor (e.g. a weapon's world pickup,
+        //   /Game/Items/Weapons/Assault/AR02/AR02_1_Pickup_BP.AR02_1_Pickup_BP_C) in front of the host's hero;
+        // emitter <particle system path> [dist] [dz]: play a particle system there (e.g. a dropped magazine,
+        //   /Game/VFX/Systems/EmptyMags/VFX_EmptyMag_AR02_3P_P.VFX_EmptyMag_AR02_3P_P). Model-mod checks (dev).
+        char *ds = strtok(NULL, " "), *zs = ds ? strtok(NULL, " ") : NULL;
+        float d = ds ? (float)atof(ds) : 150.f, dz = zs ? (float)atof(zs) : 0.f, at[3], fwd[3];
+        UObject *pawn = ps_pawn(host_ps()), *gs = class_cdo("GameplayStatics");
+        if (actor_loc(pawn, at) || actor_fwd(pawn, fwd) || !gs) { out_printf(o, "no hero\n"); return 1; }
+        float loc[3] = {at[0] + fwd[0] * d, at[1] + fwd[1] * d, at[2] + dz};
+        Call c;
+        if (!strcmp(what, "spawnactor")) {
+            UClass *cl = load_class(arg);
+            float xf[12] = {0, 0, 0, 1, loc[0], loc[1], loc[2], 0, 1, 1, 1, 0};   // FTransform: quat, translation, scale
+            if (!cl || !call_prep(&c, gs, "BeginDeferredActorSpawnFromClass")) { out_printf(o, "can't load %s\n", arg); return 1; }
+            SET(&c, "WorldContextObject", UObject *, ue_world());
+            SET(&c, "ActorClass", UObject *, (UObject *)cl);
+            void *t = carg(&c, "SpawnTransform");
+            if (t) memcpy(t, xf, sizeof xf);
+            SET(&c, "CollisionHandlingOverride", uint8_t, 1);   // AlwaysSpawn
+            call_go(&c);
+            UObject **r = carg(&c, "ReturnValue"), *a = r ? *r : NULL;
+            if (!a || !call_prep(&c, gs, "FinishSpawningActor")) { out_printf(o, "spawn failed\n"); return 1; }
+            SET(&c, "Actor", UObject *, a);
+            t = carg(&c, "SpawnTransform");
+            if (t) memcpy(t, xf, sizeof xf);
+            call_go(&c);
+            LOG("cheatprobe: spawned %s at %.0f %.0f %.0f -> %p", arg, loc[0], loc[1], loc[2], (void *)a);
+            out_printf(o, "spawned %p at %.0f %.0f %.0f\n", (void *)a, loc[0], loc[1], loc[2]);
+        } else {
+            // KismetSystemLibrary::LoadAsset_Blocking(TSoftObjectPtr): {FWeakObjectPtr, int32 tag, FSoftObjectPath}
+            UObject *ps = NULL;
+            if (call_prep(&c, class_cdo("KismetSystemLibrary"), "LoadAsset_Blocking")) {
+                uint8_t *soft = carg(&c, "Asset");
+                static wchar_t w[256];
+                int n = 0;
+                for (; arg[n] && n < 255; n++) w[n] = (wchar_t)arg[n];
+                w[n] = 0;
+                if (soft) {
+                    *(int32_t *)soft = -1;
+                    ((FNameCtorFn)ADDR_FNAME_CTOR)((FName *)(soft + 0x10), w, 1);
+                    call_go(&c);
+                    UObject **r = carg(&c, "ReturnValue");
+                    ps = r ? *r : NULL;
+                }
+            }
+            if (!ps || !call_prep(&c, gs, "SpawnEmitterAtLocation")) { out_printf(o, "can't load %s\n", arg); return 1; }
+            SET(&c, "WorldContextObject", UObject *, ue_world());
+            SET(&c, "EmitterTemplate", UObject *, ps);
+            float *l = carg(&c, "Location"), *s = carg(&c, "Scale");
+            if (l) memcpy(l, loc, sizeof loc);
+            if (s) s[0] = s[1] = s[2] = 1.f;
+            SET(&c, "bAutoDestroy", uint8_t, 1);
+            call_go(&c);
+            UObject **r = carg(&c, "ReturnValue");
+            LOG("cheatprobe: emitter %s at %.0f %.0f %.0f -> %p", arg, loc[0], loc[1], loc[2], r ? (void *)*r : NULL);
+            out_printf(o, "emitter %p at %.0f %.0f %.0f\n", r ? (void *)*r : NULL, loc[0], loc[1], loc[2]);
+        }
+    } else out_printf(o, "usage: cheatprobe classes <Base> | live <Class> | cm | state | spawnactor <class> | emitter <ps>\n");
     return 1;
 }
 #endif

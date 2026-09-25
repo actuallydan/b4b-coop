@@ -16,14 +16,18 @@
                                           your PNG -> the game's texture (same format, full mip chain)
   mi <asset> [list]                       material instance parameters
   mi <asset> set <param> <value> [set <param> <value>...] [parent <path>] -o <moddir>
+  rename <asset> </Game/new/Path/Name> -o <moddir> [--ref </Game/old>=</Game/new>]...
+                                          a copy of an asset as a NEW package (adds, replaces nothing); --ref points
+                                          its references at other renamed copies (MI -> textures, mesh -> MIs)
   mesh info <asset>                       materials (slots), LODs, bones of a skeletal mesh
   mesh export <asset> <out.glb> [--lod N] the game's mesh with its skeleton, to open in Blender
   mesh import <template asset> <model.fbx|.glb|.gltf> -o <moddir> [--lods N] [--material NAME=SLOT]...
                                           your model (rigged to the template's skeleton) -> the game's mesh
   mesh edit <asset> -o <moddir> [--inflate CM] [--scale-section L:S:F] [--material L:S:M]
   survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
-  weapon <model> --fp-mesh <FP SKM> [--3p-mesh <3P SKM>] [--static <SM>]... [--mag-static <SM>] -o <moddir>
-         [--slot MAT=SLOT]... [--tex MAT=PREFIX]... [--forward +x] [--up +z] [--part REGEX=BONE]...
+  weapon <model> --fp-mesh <FP SKM | code like AR02> -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
+         [--forward +x] [--up +z] [--part REGEX=BONE]...   the 3P/static/magazine meshes are found in the FP mesh's
+         folder (override: --3p-mesh <SKM>, --static <SM>..., --mag-static <SM>, each also `none`; --no-infer)
                                           your model (FBX, glTF, OBJ, .blend; rigged or not) fitted onto the game's
                                           meshes in Blender, with LODs and textures; then packed into <moddir>.pak.
                                           --pak NAME.pak, --title/--author/--version/--description, --zip, --install,
@@ -471,7 +475,7 @@ def extract_refs(a):
 
 def cmd_dotnet(cmd, a):
     """info/tree/export/texture/mi/...: the .NET tool, after extracting the assets it names."""
-    for x in a:
+    for x in (a[:1] if cmd == "rename" else a):   # rename: the new path is not in the game
         if x.startswith(("/Game/", "/Engine/")):
             ensure(x, folder=(cmd == "tree"))
             if cmd != "info":
@@ -560,6 +564,74 @@ def cmd_mesh(a):
 TEMPLATE_FLAGS = {"survivor": ("--outfit", "--fp"), "weapon": ("--fp-mesh", "--3p-mesh", "--static", "--mag-static")}
 
 
+def game_name(pak_file_path):
+    """Gobi/Content/X/Y.uasset -> /Game/X/Y (None for other files)."""
+    if not pak_file_path.startswith("Gobi/Content/") or not pak_file_path.endswith(".uasset"):
+        return None
+    return "/Game/" + pak_file_path[len("Gobi/Content/"):-len(".uasset")]
+
+
+def weapon_code_mesh(code):
+    """A weapon code (AR02, hg01) -> its first-person mesh /Game/[TUxx/]Items/Weapons/<Class>/<Code>/Meshes/<Code>_SKM."""
+    rx = re.compile(r"^/Game/(TU[0-9]+/)?Items/Weapons/[^/]+/" + re.escape(code) + r"/Meshes/" + re.escape(code) + "_SKM$",
+                    re.I)
+    hits = sorted({g for g in (game_name(p) for p, _ in listing()) if g and rx.match(g)})
+    if len(hits) != 1:
+        die(f"--fp-mesh {code}: {'no weapon with that code' if not hits else 'several: ' + ', '.join(hits)} "
+            f"(b4bmod find \"Weapons/.*/Meshes/.*_SKM$\" lists them; give the full path)", 2)
+    return hits[0]
+
+
+def infer_weapon_meshes(a):
+    """Fill in the weapon's other meshes from the first-person mesh's folder: the 3P skeletal mesh (3P_<Code>_SKM), the
+    static meshes other players and world pickups show (3P_<Code>_SM, <Code>_Pickup_SM) and the dropped empty magazine
+    (the folder's *Empty*_SM). Only flags the modder didn't give; `--3p-mesh none`, `--static none`, `--mag-static none`
+    leave one out, --no-infer turns it off."""
+    i = a.index("--fp-mesh")
+    fp = a[i + 1]
+    if "/" not in fp and not fp.endswith(".uasset"):
+        fp = a[i + 1] = weapon_code_mesh(fp)
+        print(f"weapon: --fp-mesh {fp}", file=sys.stderr)
+    if "--no-infer" in a:
+        a.remove("--no-infer")
+        return
+    if not fp.startswith("/Game/"):
+        return   # a .uasset file: no folder in the game to look in
+    folder, name = fp.rsplit("/", 1)
+    code = re.sub(r"_SKM$", "", name, flags=re.I)
+    norm = lambda s: s.lower().replace("_", "")
+    names = sorted(g.rsplit("/", 1)[1] for g in (game_name(p) for p, _ in listing())
+                   if g and g.rsplit("/", 1)[0].lower() == folder.lower())
+    c = norm(code)
+    found = {
+        "--3p-mesh": [n for n in names if norm(n) == f"3p{c}skm"],
+        "--static": [n for n in names if norm(n) in (f"3p{c}sm", f"{c}picksm", f"{c}pickupsm")],
+        "--mag-static": [n for n in names if n.lower().endswith("_sm") and "empty" in n.lower()],
+    }
+    if len(found["--3p-mesh"]) > 1 or len(found["--mag-static"]) > 1:
+        die(f"{folder}: more than one candidate ({found}); give --3p-mesh / --mag-static yourself", 2)
+    inferred = []
+    for flag, hits in found.items():
+        if flag in a:
+            continue
+        for n in hits:
+            a += [flag, f"{folder}/{n}"]
+            inferred.append(f"{flag} {folder}/{n}")
+    # `none` removes a flag (the modder wants that mesh left as the game's)
+    j = 0
+    while j < len(a) - 1:
+        if a[j] in ("--3p-mesh", "--static", "--mag-static") and a[j + 1].lower() == "none":
+            del a[j:j + 2]
+        else:
+            j += 1
+    used = {x.rsplit("/", 1)[-1] for x in a}
+    other = [n for n in names if n.lower().endswith(("_sm", "_skm")) and n not in used and n != name]
+    for x in inferred:
+        print(f"weapon: {x}", file=sys.stderr)
+    if other:
+        print(f"weapon: not replaced (the game's own look stays): {', '.join(other)}", file=sys.stderr)
+
+
 def cmd_model(kind, a):
     """survivor / weapon: extract the templates and what they reference, run b4bmodel.py, pack, install."""
     pak, install = take(a, "--pak"), "--install" in a
@@ -568,15 +640,17 @@ def cmd_model(kind, a):
     meta = {k: take(a, "--" + k) for k in ("title", "author", "version", "category", "description")}
     moddir = take(a, "-o") or take(a, "--out")
     if not a or a[0].startswith("-") or not moddir:
-        die(f"usage: b4bmod {kind} <model> {'--outfit <3P SKM> [--fp <FP SKM>]' if kind == 'survivor' else '--fp-mesh <SKM> [--3p-mesh <SKM>] [--static <SM>]...'} "
+        die(f"usage: b4bmod {kind} <model> {'--outfit <3P SKM> [--fp <FP SKM>]' if kind == 'survivor' else '--fp-mesh <SKM or code>'} "
             "-o <moddir> [options]  (b4bmod help)", 2)
     if install and nopack:
         die("--install needs the pack step (drop --no-pack)", 2)
     model_file(a[0])
-    templates = [a[i + 1] for i, x in enumerate(a[:-1]) if x in TEMPLATE_FLAGS[kind]]
     need = {"survivor": "--outfit", "weapon": "--fp-mesh"}[kind]
     if need not in a:
         die(f"b4bmod {kind} needs {need} <game mesh> (see docs/meshes.md)", 2)
+    if kind == "weapon":
+        infer_weapon_meshes(a)
+    templates = [a[i + 1] for i, x in enumerate(a[:-1]) if x in TEMPLATE_FLAGS[kind]]
     for t in templates:
         if t.startswith(("/Game/", "/Engine/")):
             ensure(t)
@@ -669,7 +743,7 @@ def main(argv):
         return python_tool(os.path.join(KIT, "addon.py"), ["pack"] + rest)
     if cmd == "pak":   # advanced: plain mod pak for the dev build's modpaks= (no addoninfo)
         return python_tool(os.path.join(KIT, "b4bpak.py"), ["pack"] + rest)
-    if cmd in ("info", "tree", "export", "texture", "mi", "deps", "props", "texcheck"):
+    if cmd in ("info", "tree", "export", "texture", "mi", "deps", "props", "texcheck", "rename"):
         return cmd_dotnet(cmd, rest)
     die(f"unknown command {cmd!r} (b4bmod help)", 2)
 

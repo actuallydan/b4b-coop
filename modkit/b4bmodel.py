@@ -180,6 +180,12 @@ def srgb_to_linear(c): return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.05
 def linear_to_srgb(c): return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
 
 
+# hero hair (Master_Hair_M, BLEND_Masked, two-sided, dithered): with its static switch "Enable MultiMask" (all retail
+# hero hair MIs) it samples one RGBA "Hair MultiMask" on UV0 whose A is the strand alpha; colour = RootColor..TipColor
+HAIR_MASTER_RX = re.compile(r"/Master_Hair_M(\.|$)")
+HAIR_ROOT_DARKEN = 0.6
+
+
 class TexTool:
     """Collects texture jobs (compose in Blender, encode with b4bmod texture)."""
     def __init__(self, o):
@@ -191,6 +197,7 @@ class TexTool:
         self.work = o["work"]
         self.jobs = []
         self.done = set()
+        self.hair_mis = []
 
     def retail_png(self, tex_file):
         png = os.path.join(self.work, "retail_" + os.path.basename(tex_file)[:-7] + ".png")
@@ -201,9 +208,10 @@ class TexTool:
                 if r.returncode == 0 and os.path.exists(png): break
         return png if os.path.exists(png) else None
 
-    def compose_set(self, set_info, params, owned):
+    def compose_set(self, set_info, params, owned, master=None, mi=None):
         """params: {param name: texture path} of the slot's MI chain. set_info: manifest set (grid, tiles)."""
         tiles = set_info["tiles"]
+        hair = bool(master and HAIR_MASTER_RX.search(master))
         g = set_info.get("grid", 1)
         base = 1024
         for t in tiles:
@@ -214,14 +222,20 @@ class TexTool:
         for param, tex in params.items():
             if tex in self.done or not tex.startswith(owned): continue
             role = role_of(param)
+            if hair and param.lower() == "hair multimask": role = "hairmm"
             if role is None: continue
             f = upkg.game_path_to_file(tex, self.src)
             if not f or not os.path.exists(f): continue
             out = os.path.join(self.work, os.path.basename(f)[:-7] + ".png")
-            self.jobs.append({"out": out, "size": size if role in ("basecolor", "normal", "pbr") else 256,
+            self.jobs.append({"out": out, "size": size if role in ("basecolor", "normal", "pbr", "hairmm") else 256,
                               "role": role, "tiles": tiles, "mean_from": self.retail_png(f),
                               "normal_dx": self.normal_dx, "asset": f, "path": tex})
             self.done.add(tex)
+            if role == "hairmm":
+                # Master_Hair_M has no colour texture: the colour is RootColor -> TipColor along the strand (MultiMask).
+                # Take it from the model's hair texture (compose writes its average next to the PNG).
+                if mi and mi.startswith(owned): self.hair_mis.append((mi, out + ".json"))
+                else: log(f"  hair: {mi} is shared with other outfits: its colours stay the game's")
 
     def run(self):
         if not self.jobs: return
@@ -235,6 +249,17 @@ class TexTool:
                 sys.stderr.write(r.stdout + r.stderr); die(f"texture encoding failed for {j['path']}")
             log(f"  {j['path'].split('/')[-1].split('.')[0]}: {j['role']} {j['size']}x{j['size']}")
         self.jobs = []
+        for mi, stats in self.hair_mis:
+            c = json.load(open(stats))["color_linear"]
+            root = ",".join(f"{x * HAIR_ROOT_DARKEN:.4f}" for x in c) + ",1"
+            tip = ",".join(f"{x:.4f}" for x in c) + ",1"
+            r = subprocess.run([sys.executable, self.b4bmod, "mi", mi.split(".")[0], "set", "RootColor", root,
+                                "set", "TipColor", tip, "-o", self.moddir, "--src", self.src],
+                               capture_output=True, text=True)
+            if r.returncode:
+                sys.stderr.write(r.stdout + r.stderr); die(f"hair material {mi}: setting its colours failed")
+            log(f"  {mi.split('.')[-1]}: hair colour root {root} tip {tip} (linear)")
+        self.hair_mis = []
 
 
 def png_size(p):
@@ -255,7 +280,7 @@ def textures_for(manifest, mesh_file, tt, static=False):
             log(f"  texture set {set_name}: no slot of that name in {os.path.basename(mesh_file)}"); continue
         mi, params, master = slots[set_name]
         log(f"texture set {set_name} ({mi.split('.')[-1]}): tiles {[t['material'] for t in info['tiles']]}")
-        tt.compose_set(info, params, owned)
+        tt.compose_set(info, params, owned, master, mi)
     tt.run()
 
 
@@ -334,7 +359,8 @@ def survivor(o):
                  "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06")] + fit_args(o.o) + atlas_args +
                 slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")])
     man3 = json.load(open(os.path.join(d3, "manifest.json")))
-    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir))
+    hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)}
+    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair)
     mans = [(man3, tp)]
     if fp:
         df = os.path.join(work, "fitfp")
@@ -408,18 +434,43 @@ def weapon(o):
         bones = weapon_bones(man3, tpm)
         skmgltf.import_gltf(tpm, man3["lods"], out_file(tpm, moddir), bones=bones)
         mans.append((man3, tpm))
-        for spec in o.o["static"]:
-            smf = asset_file(spec, src)
-            sm.import_static_from_skinned(smf, man3["lods"], tpm, out_file(smf, moddir), slot_map=None)
-        if o.get("mag_static"):
-            smf = asset_file(o["mag_static"], src)
-            sm.import_static_from_skinned(smf, man3["lods"], tpm, out_file(smf, moddir), only_bone="mag")
+    # static meshes (what other players, world pickups and the dropped magazine show): moved over from the 3P fit, or
+    # from the FP fit for the many weapons without a 3P skeletal mesh (retail FP and 3P static meshes are the same
+    # size, only turned: the transform between the retail meshes carries the model over)
+    sman, sref = (man3, tpm) if tpm else (manf, fpm)
+    for spec in o.o["static"]:
+        smf = asset_file(spec, src)
+        sm.import_static_from_skinned(smf, sman["lods"], sref, out_file(smf, moddir), slot_map=None)
+    if o.get("mag_static"):
+        smf = asset_file(o["mag_static"], src)
+        sm.import_static_from_skinned(smf, sman["lods"], sref, out_file(smf, moddir), only_bone="mag")
     tt = TexTool(o.o)
     for man, mesh in mans:
         textures_for(man, mesh, tt)
+    # textures only the static meshes' materials use (e.g. a 3P normal map on a weapon without a 3P skeletal mesh)
+    for spec in o.o["static"] + ([o["mag_static"]] if o.get("mag_static") else []):
+        smf = asset_file(spec, src)
+        textures_for(static_manifest(sman, sref, smf, src), smf, tt, static=True)
     if o.get("skins", "retarget") == "retarget":
         retarget_skins(fpm, tt, o.o)
     log("done:", moddir)
+
+
+def static_manifest(man, mesh_file, sm_file, src):
+    """The fit's texture sets renamed to the static mesh's slots: the slot with the same material instance, else the
+    same name without _FP/_3P/_LOD, else the same base colour texture, else the only slot."""
+    ks = mesh_slots(mesh_file, src)
+    ss = mesh_slots(sm_file, src, static=True)
+    base = lambda mi: re.sub(r"_(fp|3p|lod)(?=_|$)", "", mi.split(".")[-1].lower())
+    sets = {}
+    for k, kmi, ktex, _ in ks:
+        if k not in man["sets"]: continue
+        hit = [s for s, mi, t, _ in ss if mi == kmi] or [s for s, mi, t, _ in ss if base(mi) == base(kmi)] or \
+              [s for s, mi, t, _ in ss if basecolor_of(t) and basecolor_of(t) == basecolor_of(ktex)]
+        if hit: sets.setdefault(hit[0], man["sets"][k])
+    if not sets and len(ss) == 1 and man["sets"]:
+        sets[ss[0][0]] = next(iter(man["sets"].values()))
+    return {"sets": sets}
 
 
 def retarget_skins(fp_mesh, tt, o):

@@ -70,6 +70,16 @@ Values: a number (scalar), `r,g,b[,a]` (colour, linear 0-1), a `/Game/...` textu
 `b4bmod mi <parent>` shows the names). Static switches can't be changed (they select compiled shaders).
 Edits read the asset from `-o <moddir>` if it is already there, so several commands build one mod.
 
+## 4b. A copy under a new path (experimental)
+```
+b4bmod rename /Game/.../Walker_Elite_00_A_Body_BC_T /Game/b4bcoop/mymod/MyBody_BC_T -o mymod
+b4bmod rename /Game/.../Walker_Elite_00_A_Body_MI /Game/b4bcoop/mymod/MyBody_MI ^
+    --ref /Game/.../Walker_Elite_00_A_Body_BC_T=/Game/b4bcoop/mymod/MyBody_BC_T -o mymod
+```
+Writes a new package (the game's stays untouched); `--ref` makes the copy use other copies (an MI's textures, a mesh's
+MIs). Nothing in the game uses a new path by itself: `b4bmod mi <game MI> set "Base Color" /Game/b4bcoop/mymod/...`
+points a game material at your copy. Keep new paths under `/Game/b4bcoop/<your mod>/` so add-ons never collide.
+
 ## 5. Pack, install, test
 ```
 b4bmod pack mymod -o walker_red.pak --title "Walker red jacket" --author you --version 1.0 --category survivors --zip
@@ -79,8 +89,7 @@ Start the game, type `/addons` in chat to see it loaded, and look at the survivo
 outfit). Details and sharing: addons.md.
 
 ## Limits
-- Only textures that exist are replaced (same path). A texture under a new path works as a material reference only if
-  it is inside the add-on (not tested yet).
+- Textures are replaced at their game path; new paths (`rename`) only show where a game material points at them.
 - Weapon skins: `Skin_Sets/<set>/Textures/` hold each skin's own textures; the default look is `<Code>/Textures/`.
   FP (first person) and 3P (world model) materials are separate.
 - Not supported: static switches, new master materials, virtual textures, cubemaps, texture arrays. Pixel formats:

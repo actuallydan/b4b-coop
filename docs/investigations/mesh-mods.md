@@ -198,8 +198,28 @@ Import rules (skmgltf.py):
   `bolt`, …), float UVs, vertex colours, 2 LODs. **3P weapons** (`3P_<Id>_SKM`) have their own skeleton (`AR01_SK`).
 - **What other players see**: the weapon actor (`AR02_1_BP_C` ...) has `BaseSkeletalMesh_1P` (the FP SKM),
   `BarrelStaticMesh_1P`/`HipSightStaticMesh_1P`/`ADSSightStaticMesh_1P` (attachments), and for third person
-  **`BaseStaticMesh_3P` = `3P_<Id>_SM`** (+ `BarrelMesh_3P`, `SightMesh_3P`). World pickups use `<Id>_Pickup_SM`, the
-  dropped magazine `<Id>_MagEmpty_3P_SM`. `3P_<Id>_SKM` exists for AR01, AR02, LMG01, Sni01 only; we replace it too.
+  **`BaseStaticMesh_3P` = `3P_<Id>_SM`** (+ `BarrelMesh_3P`, `SightMesh_3P`). `3P_<Id>_SKM` exists for AR01, AR02,
+  LMG01, Sni01 only; we replace it too.
+- **Who references which weapon mesh** (name maps of all 115,815 retail `.uasset` headers, `b4bmod extract --regex
+  '\.uasset$'`, 4 s, 321 MB): world pickups `<Id>_N_Pickup_BP` show **`3P_<Id>_SM`** (with `Skin_Default/*_3P_Glint_MI`
+  overrides), not `<Id>_Pickup_SM`: no package references `AR02_Pickup_SM`, `HG01_Pickup_SM`, ... (guns; melee
+  `Hatchet01_Pickup_SM` is used). The dropped magazine is the Cascade system `VFX/Systems/EmptyMags/
+  VFX_EmptyMag_<Id>_3P_P` (mesh particles of `<Id>_MagEmpty_3P_SM` with `Weapon_<Id>_Mag_FP_MI`), fired by the 3P
+  reload montage `BaseAnims3P/.../WPN_<Id>_Stand_Reload_AM`; only 8 exist (AR02, AR03, AR04, HG01, HG03, LMG02, SMG02,
+  SMG03; `HG04_Mag_Empty_3P_SM` is only in `ChendaVendor_BP`). `3P_AR02_SKM` is used only by two Finleyville church
+  cinematics; `3P_LMG01_SKM` is LMG01's 3P weapon (`LMG01_BP`); `3P_AR01_SKM`, `3P_Sni01_SKM` are unreferenced.
+  Other 3P pieces in the weapon BPs: `3P_<Id>_Ironsights_SM` (AR01/03/05, SG02, SMG05, Sni01/02),
+  `3P_AR04_Carry_Handle_SM`.
+- `b4bmod weapon` infers the meshes from the FP mesh's folder (listing only, no extraction): `3P_<Id>_SKM`,
+  `3P_<Id>_SM` + `<Id>_Pickup_SM` (names compared without `_` and case), the folder's one `*Empty*_SM`; the rest is
+  printed as "not replaced". Without a 3P SKM the static meshes come from the FP fit (`sm.py from-skinned` with the FP
+  SKM as reference): retail FP SKM and 3P SM have the same principal sizes (AR02 17.5/4.5/1.1 vs 17.9/4.4/1.1 cm, HG01,
+  SMG01, SG01, AR03, Sni01 alike), rotated 90° about X. Static meshes' own textures (e.g. `SMG02_Primary_3P_N_T`) are
+  built too (fit set -> static slot by MI, MI name without `_FP/_3P`, or base colour). AK on AR02 with only `--fp-mesh`:
+  pak byte-identical to the explicit-path run (sha256 d49da7d1...). Live: a spawned `AR02_1_Pickup_BP` shows our AK
+  (`cheatprobe spawnactor`, `pickup2_crop.png`), with the pickup glint sweep of `Skin_Default/*_3P_Glint_MI` over it.
+  Dropped magazine not seen: `cheatprobe emitter VFX_EmptyMag_<Id>_3P_P` shows nothing for the retail HG01 either (the
+  test path, not the mesh), and an emptied-clip reload by a bot 1.5 m away showed no falling magazine in 12 frames.
 - Sockets: the FP weapon SKM has `SkeletalMeshSocket` exports relative to `gun` (`muzzle`, `holo`, `scope`, `laser`,
   ...); the 3P weapon skeleton has a `muzzle` **bone**. `skmgltf.py import --socket muzzle=x,y,z` / `--bone muzzle=...`
   move them (b4bmodel does it from the model's muzzle marker or barrel tip).
@@ -223,13 +243,11 @@ modded packages (the only streaming errors are retail `MAP_Evansburgh_B_Debug` o
 settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write every LOD they keep).
 
 ## 5. Next / open
-- Firing / muzzle flash position and the pickup / dropped-magazine static meshes are not seen live yet (fire and weapon
+- Firing / muzzle flash position and the dropped magazine are not seen live yet (pickup: seen, §3) (fire and weapon
   drops can't be triggered unattended; `giveitem` replaces without dropping).
 - ADS: the sight line follows the template's `ironsights` bones; a model with a different sight height aims slightly
   off through its own sights (the AK is within ~1.5 cm). Moving those bones per weapon is untested.
-- Hair: hero hair uses `Master_Hair_M` with shared alpha/depth/root textures (Holly's), so a model's alpha-card hair
-  goes on an opaque outfit slot (a "helmet" look). Pointing the Hair MI at our own alpha texture (a repurposed texture
-  package of the outfit) is the next step.
+- Hair: done (§9).
 - Face animation: the model's face is skinned to `head` (and jaw if the rig has one); B4B's face bones (eyelids, lips)
   don't move it. `--weights transfer` copies the template face's weights instead (untested in game).
 - New bones (rebuild the ref skeleton from the Skeleton asset), cloth, new material masters: not supported.
@@ -310,3 +328,23 @@ parsing `Weapons_DT` for `AR02_1_BP`), `poke <addr> <bytes>` (clip count: `ClipA
 No `Fatal`/`LogSkeletalMesh`/`LogStaticMesh` errors in any log. Key presses (`cheatprobe key 0x52` = R, bound to
 `AbilityReload`) and mouse clicks don't trigger game actions in an unfocused test window (chat keys do), so reload was
 triggered by emptying the clip and firing wasn't tested.
+
+## 9. Hair (models-next, 2026-09-25)
+- `Master_Hair_M`: BLEND_Masked, two-sided, DitherOpacityMask, shading model from the material. Every retail hero
+  hair MI sets static switch **Enable MultiMask** (+ Use AO, Use PDO, useFacingAO, UsesVertexColors, Variation,
+  useFlowMapTexture, SubtractTipFromDepth). Textures: `Hair MultiMask` (the outfit's own `*_Hair_MM_T`, BC7 RGBA) +
+  shared Holly `Root/Alpha/ID/Depth` (DXT1, unused with MultiMask on: the MM's channels look like them). On UV0 of
+  Mom Elite 04's hair section, MM **A** is the strand coverage (0.27 mean at triangle centres vs 0.24 image mean, 0 in
+  gaps); RGB inside strands ~(0.45, 0.28, 0.3). No colour texture: colour = `RootColor` -> `TipColor` (vectors).
+- Retail hair vertex colours are mostly **black** (8 % white): with UsesVertexColors, `Vertex Color Multiplier`
+  (Mom Elite 04: 0.51, 0, 0.536 = purple) tints the white-coloured strands. Our meshes were white everywhere ->
+  purple hair (seen live, `hair_face2_crop.png`).
+- Pipeline (`b4bmodel.py`/`b4bfit.py`): a model material put on a slot whose master is `Master_Hair_M` (`--slot
+  hair=Hair`) gets role `hairmm`: A = the model's alpha (alpha map, else base colour's alpha), RGB = the retail MM's
+  in-strand average; the Hair MI (if owned by the template's folder) gets `RootColor` = 0.6 x and `TipColor` = the
+  model's mean hair colour (linear), via `b4bmod mi`; the hair section's vertex colours are written black
+  (`skmgltf.import_gltf(slot_colors=)`).
+- Live (MakeHuman `short02` hair, 2048² RGBA with alpha, on Mom Elite 04 `Hair`): dark brown hair with see-through
+  strand edges at fringe and sideburns (`hair_face3_crop.png`, `hair_face3_zoom.png`) instead of the opaque helmet.
+  Screenshots in `~/.local/share/b4b-coop/fullmodel/shots_next/` (not committed).
+- Limits: one colour gradient per hair (no per-strand texture colour: the master has none); FP arms never show hair.

@@ -21,6 +21,9 @@ const string Usage = @"b4bmod <command> ...   (assets: /Game/... paths looked up
   mi <asset> set <param> <value> [set <param> <value>...] [parent <path>] -o <outdir>
                                           value: number (scalar), r,g,b[,a] (vector, linear 0-1),
                                           /Game/... texture path, or 'none'
+  rename <asset> </Game/new/Path/Name> -o <outdir> [--ref </Game/old>=</Game/new>]...
+                                          a copy of the asset as a new package (adds, replaces nothing); --ref points
+                                          its references to other renamed copies (e.g. an MI's textures)
 Checks: texcheck <dir> (every texture re-writes byte-identically?), deps <asset>, props <asset>
 Common: --src <dir containing Gobi/> (default $B4B_EXTRACT, else %LOCALAPPDATA%\b4b-coop\extract on Windows,
 ~/.local/share/b4b-coop/extract elsewhere).
@@ -38,6 +41,7 @@ try
         case "texture": Commands.TextureImport(opt, opt.Pos(1), opt.Pos(2)); break;
         case "mi": Commands.Mi(opt); break;
         case "texcheck": Commands.TexCheck(opt.Pos(1)); break;
+        case "rename": Commands.Rename(opt, opt.Pos(1), opt.Pos(2)); break;
         case "deps": Commands.Deps(opt, opt.Pos(1)); break;
         case "props": Commands.Props(opt, opt.Pos(1)); break;
         default: Console.Error.WriteLine(Usage); return 2;
@@ -54,12 +58,14 @@ class Opts
     public readonly List<string> Positional = new();
     public readonly Dictionary<string, string> Named = new();
     public readonly HashSet<string> Flags = new();
+    public readonly List<string> Refs = new();
     public Opts(string[] args)
     {
         for (int i = 0; i < args.Length; i++)
         {
             string s = args[i];
             if (s is "-o" or "--out" or "--src" or "--mip" or "--quality") { if (i + 1 >= args.Length) throw new UsageException($"{s} needs a value"); Named[s == "-o" ? "--out" : s] = args[++i]; }
+            else if (s is "--ref") { if (i + 1 >= args.Length) throw new UsageException("--ref needs old=new"); Refs.Add(args[++i]); }
             else if (s is "--resize") Flags.Add(s);
             else Positional.Add(s);
         }
@@ -299,6 +305,62 @@ static class Commands
         if (ub != null) File.WriteAllBytes(ubPath, ub); else if (File.Exists(ubPath)) File.Delete(ubPath);
         Console.WriteLine($"wrote {outAsset} (+ .uexp{(ub != null ? $", .ubulk {ub.Length} bytes" : "")})");
         Verify(outAsset);
+    }
+
+    // ---- new packages: a renamed copy of a game asset (the base of add-ons that add instead of replace)
+    static (string pkg, string name) Split(string gamePath)
+    {
+        var p = gamePath; int dot = p.LastIndexOf('.'); if (dot > p.LastIndexOf('/')) p = p[..dot];
+        if (!p.StartsWith("/Game/") || p.EndsWith("/")) throw new UsageException($"{gamePath}: expected /Game/Folder/Name");
+        return (p, p[(p.LastIndexOf('/') + 1)..]);
+    }
+
+    public static void Rename(Opts o, string asset, string newPath)
+    {
+        string outdir = o.Out;
+        var (file, rel) = Resolve(o, asset);
+        var a = Load(file);
+        var (oldPkg, oldName) = Split(GamePath(rel));
+        var (newPkg, newName) = Split(newPath);
+        // name map entries: the package path and the asset's name, plus each --ref (an import's package and name).
+        // Entries are changed in place, so every FName index in the export data stays valid.
+        var map = new Dictionary<string, string> { [oldPkg] = newPkg, [oldName] = newName };
+        foreach (var r in o.Refs)
+        {
+            int eq = r.IndexOf('=');
+            if (eq < 0) throw new UsageException($"--ref {r}: expected /Game/old=/Game/new");
+            var (op, on) = Split(r[..eq]); var (np, nn) = Split(r[(eq + 1)..]);
+            map[op] = np; map[on] = nn;
+        }
+        var names = a.GetNameMapIndexList();
+        int changed = 0;
+        for (int i = 0; i < names.Count; i++)
+            if (names[i]?.Value != null && map.TryGetValue(names[i].Value, out var nv)) { a.SetNameReference(i, new FString(nv)); changed++; }
+        if (a.AssetRegistryRecords != null)
+            foreach (var rec in a.AssetRegistryRecords)
+            {
+                if (map.TryGetValue(rec.Path, out var np2)) rec.Path = np2;
+                foreach (var k in rec.TagMap.Keys.ToList())
+                    foreach (var (ov, nv2) in map)
+                        if (ov.StartsWith("/Game/") && rec.TagMap[k].Contains(ov + "."))
+                            rec.TagMap[k] = rec.TagMap[k].Replace(ov + "." + ov[(ov.LastIndexOf('/') + 1)..], nv2 + "." + nv2[(nv2.LastIndexOf('/') + 1)..]);
+            }
+        var newRel = "Gobi/Content/" + newPkg["/Game/".Length..] + ".uasset";
+        var e = MainExport(a);
+        Console.WriteLine($"{oldPkg} -> {newPkg}: {changed} name(s) changed ({ClassOf(a, e)})");
+        if (ClassOf(a, e) == "Texture2D")
+        {
+            // textures hold absolute offsets that move with the (now longer or shorter) header: rewrite them
+            var t = Texture2DData.Read(a, e, file);
+            WriteTexture(a, e, t, outdir, newRel);
+            return;
+        }
+        var outAsset = Path.Combine(outdir, newRel);
+        Directory.CreateDirectory(Path.GetDirectoryName(outAsset)!);
+        a.Write(outAsset);
+        foreach (var ext in new[] { ".ubulk", ".uptnl" })
+            if (File.Exists(Path.ChangeExtension(file, ext))) File.Copy(Path.ChangeExtension(file, ext), Path.ChangeExtension(outAsset, ext), true);
+        Console.WriteLine($"wrote {outAsset} (+ .uexp)");
     }
 
     static void Verify(string outAsset)
