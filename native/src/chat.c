@@ -235,7 +235,10 @@ void chat_on_join_failed(const char *error) {
     if (strstr(error, "same version")) {
         cmds_auto_join_stop();
         if (cmds_session_join()[0]) cmds_set_session_join(NULL);
-    } else if (strstr(error, "banned")) cmds_auto_join_stop();
+    } else if (strstr(error, "banned")) {
+        cmds_auto_join_stop();
+        if (cmds_session_join()[0]) cmds_set_session_join(NULL);
+    }
     else if (strstr(error, "locked") || strstr(error, "Steam friends")) cmds_auto_join_backoff(60);
     chat_local_later(msg);
 }

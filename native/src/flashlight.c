@@ -190,7 +190,7 @@ void flashlight_tick(float dt) {
     was_down = down;
 }
 
-// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; 0 disables), flashlight_sticky=1
+// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; 0/off disables), flashlight_sticky=1
 static void load_config(void) {
     FILE *f = fopen(cmds_config_path(), "r");
     if (!f) return;
@@ -202,7 +202,8 @@ static void load_config(void) {
         while (*v == ' ') v++;
         if (!strcmp(line, "flashlight_sticky")) sticky = atoi(v);
         else if (!strcmp(line, "flashlight_key")) {
-            if (v[0] && !v[1] && ((v[0] >= 'a' && v[0] <= 'z') || (v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= '0' && v[0] <= '9')))
+            if (!strcmp(v, "0") || !_stricmp(v, "off") || !_stricmp(v, "none")) hotkey = 0;   // documented "0 disables"
+            else if (v[0] && !v[1] && ((v[0] >= 'a' && v[0] <= 'z') || (v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= '0' && v[0] <= '9')))
                 hotkey = (v[0] >= 'a' && v[0] <= 'z') ? v[0] - 32 : v[0];
             else hotkey = (int)strtol(v, NULL, 0);
         }

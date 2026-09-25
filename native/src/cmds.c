@@ -353,6 +353,7 @@ void coop_host(void) {
 // coop_leave (client): drop the connection and go back to our own offline camp; no auto-rejoin afterwards.
 void coop_leave(void) {
     cmds_auto_join_stop();
+    if (session_join[0]) cmds_set_session_join(NULL);   // also drop a Steam Join Game target, or we'd rejoin in ~20s
     travel_set_host("");
     game_exec("disconnect");
 }
