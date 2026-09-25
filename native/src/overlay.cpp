@@ -305,8 +305,9 @@ extern "C" void overlay_add_panel(const char *name, int order, OverlayDrawFn dra
 
 // ---- test driving (dev `overlay press|set`): a control consumes a pending request that names its label ----
 static char drive_label[128], drive_value[256], drive_result[200], cur_tab[32], select_tab[32];
-static int drive_kind;          // 0 none, 1 press, 2 set
+static int drive_kind;          // 0 none, 1 press, 2 set, 3 locate (report the control's rectangle)
 static unsigned drive_frames;   // frames the request has waited
+static ULONGLONG drive_t0;
 static int drive_done_item;     // the last control was set by a request: ov_edit_done() returns 1
 static int label_match(const char *label, const char *want) {
     if (!_stricmp(label, want)) return 1;
@@ -318,6 +319,13 @@ static struct { int disabled; const char *why; } dis[8];   // ov_begin_disabled 
 static int dis_n, dis_depth;    // stack size, levels that actually disable
 static const char *drive_take(const char *label, int kind) {   // the value (or "") if this control is the target
     drive_done_item = 0;
+    if (drive_kind == 3 && label_match(label, drive_label)) {
+        ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        snprintf(drive_result, sizeof drive_result, "'%s' at %.0f,%.0f-%.0f,%.0f (centre %.0f %.0f)%s", label, a.x, a.y, b.x,
+                 b.y, (a.x + b.x) / 2, (a.y + b.y) / 2, dis_depth ? ", disabled" : "");
+        drive_kind = 0;
+        return nullptr;
+    }
     if (!drive_kind || dis_depth || !label_match(label, drive_label)) return nullptr;
     if (kind == 1 && drive_kind != 1) return nullptr;
     snprintf(drive_result, sizeof drive_result, "%s '%s'%s%s in %s", drive_kind == 1 ? "pressed" : "set", label,
@@ -529,10 +537,12 @@ extern "C" int ov_allowed(int perm, const char **why) {
     if (perm == CMD_CHEAT && !cheats_enabled()) { *why = "Turn cheats on first (Cheats on, above)."; return 0; }
     return 1;
 }
+static const char *warned;   // the reason ov_begin_perm last printed in this panel (printed once)
 extern "C" int ov_begin_perm(int perm) {
     const char *why;
     int ok = ov_allowed(perm, &why);
-    if (!ok) ov_text_warn("%s", why);
+    if (!ok && why != warned) ov_text_warn("%s", why);
+    warned = why;
     ov_begin_disabled(!ok, why);
     return ok;
 }
@@ -550,6 +560,7 @@ extern "C" void ov_run(const char *fmt, ...) {
     if (o.len) overlay_note(o.buf);
 }
 extern "C" void ov_setting(const char *key, const char *val, int save) {
+    if (!val && !cmds_ini_value(key)) save = 0;   // back to the default and not in the file: nothing to write
     int r = cmds_ini_apply(key, val, save);
     if (save) notef(r ? "could not write %s to b4bcoop.ini" : val ? "b4bcoop.ini: %s=%s" : "b4bcoop.ini: %s back to the default",
                     key, val ? val : "");
@@ -672,6 +683,7 @@ static void build_frame(void) {
         }
         if (!show) continue;
         dis_n = dis_depth = 0;
+        warned = nullptr;
         panels[i].draw();
         LOCKED;
         while (dis_n) { dis_n--; ImGui::EndDisabled(); }   // a panel that forgot ov_end_perm
@@ -691,7 +703,7 @@ static void build_frame(void) {
     ImGui::Render();
     snapshot();
     n_built++;
-    if (drive_kind && ++drive_frames > 30) {   // nothing on the shown tab has that label
+    if (drive_kind && ++drive_frames > 10 && GetTickCount64() - drive_t0 > 3000) {   // nothing on the shown tab has that label
         snprintf(drive_result, sizeof drive_result, "no control '%s' on tab %s (or it is disabled)", drive_label, cur_tab);
         LOG("overlay: test %s", drive_result);
         drive_kind = 0;
@@ -835,7 +847,7 @@ extern "C" void overlay_tick(float) {
 extern "C" int overlay_is_open(void) { return open_ != 0; }
 
 #ifndef B4B_RELEASE
-// dev: overlay [open|close|status|log|tab <name>|press <label>|set <label> <value>]
+// dev: overlay [open|close|status|log|tab <name>|press <label>|set <label> <value>|locate <label>|mouse <x> <y>]
 extern "C" int overlay_cmd(const char *verb, char *rest, Out *o) {
     if (strcmp(verb, "overlay")) return 0;
     char *a = rest ? strtok(rest, " ") : nullptr, *b = a ? strtok(nullptr, "") : nullptr;
@@ -843,7 +855,11 @@ extern "C" int overlay_cmd(const char *verb, char *rest, Out *o) {
     if (a && !strcmp(a, "open")) { if (!open_) try_open(); }
     else if (a && !strcmp(a, "close")) { if (open_) set_open(0); }
     else if (a && !strcmp(a, "tab") && b) { LOCKED; snprintf(select_tab, sizeof select_tab, "%s", b); }
-    else if (a && (!strcmp(a, "press") || !strcmp(a, "set")) && b) {
+    else if (a && !strcmp(a, "mouse") && b) {   // put the software cursor there (client pixels), for a real click
+        LOCKED;
+        float x, y;
+        if (sscanf(b, "%f %f", &x, &y) == 2 && imgui_ready) { mouse_x = x; mouse_y = y; ImGui::GetIO().AddMousePosEvent(x, y); }
+    } else if (a && (!strcmp(a, "press") || !strcmp(a, "set") || !strcmp(a, "locate")) && b) {
         LOCKED;
         char lab[128] = "", *val = nullptr;
         if (*b == '"') { char *e = strchr(b + 1, '"'); snprintf(lab, sizeof lab, "%.*s", e ? (int)(e - b - 1) : (int)strlen(b + 1), b + 1); val = e ? e + 1 : nullptr; }
@@ -851,7 +867,8 @@ extern "C" int overlay_cmd(const char *verb, char *rest, Out *o) {
         while (val && *val == ' ') val++;
         snprintf(drive_label, sizeof drive_label, "%s", lab);
         snprintf(drive_value, sizeof drive_value, "%s", val ? val : "");
-        drive_kind = !strcmp(a, "press") ? 1 : 2; drive_frames = 0; drive_result[0] = 0;
+        drive_kind = !strcmp(a, "press") ? 1 : !strcmp(a, "set") ? 2 : 3; drive_frames = 0; drive_result[0] = 0;
+        drive_t0 = GetTickCount64();
         out_printf(o, "queued %s '%s'%s%s\n", a, lab, val ? " = " : "", val ? val : "");
         return 1;
     } else if (a && !strcmp(a, "log")) {
@@ -864,6 +881,15 @@ extern "C" int overlay_cmd(const char *verb, char *rest, Out *o) {
                enabled, (int)open_, hooks, render_failed ? "FAILED" : imgui_ready ? "ready" : "not yet", n_built, n_drawn,
                cur_tab[0] ? cur_tab : "-", n_panels, ov_key_name(key), ui_scale);
     out_printf(o, "last test: %s%s\n", drive_kind ? "pending " : "", drive_kind ? drive_label : drive_result[0] ? drive_result : "-");
+    UObject *pc = ue_local_pc(), *pawn = pc ? (UObject *)ue_get_ptr(pc, "Pawn") : nullptr;   // input-leak checks: does the hero move?
+    UFunction *f = pawn ? ue_find_function(U_CLASS(pawn), "K2_GetActorLocation") : nullptr;
+    FField *rv = f ? ue_find_prop(f, "ReturnValue") : nullptr;
+    if (rv && UFN_PARMSSIZE(f) <= 64) {
+        uint8_t p[64] = {0};
+        ue_process_event(pawn, f, p);
+        const float *l = (const float *)(p + FP_OFFSET(rv));
+        out_printf(o, "hero at %.0f %.0f %.0f; cursor %.0f %.0f of %.0fx%.0f\n", l[0], l[1], l[2], mouse_x, mouse_y, disp_w, disp_h);
+    }
     return 1;
 }
 #endif

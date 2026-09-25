@@ -698,8 +698,9 @@ static void players_panel(void) {
             char nm[64], key[80], bn[64];
             UObject *ps = pa[i], *owner = ue_get_ptr(ps, "Owner");
             ps_name(ps, nm, sizeof nm);
-            int is_bot = !client ? !is_pc(owner) : (!nm[0] && bot_name(ps, bn, sizeof bn));
+            int is_bot = !client ? !is_pc(owner) : !nm[0];   // a client: a nameless player state is a bot (or an NPC ally)
             if (is_bot && !nm[0] && !bot_name(ps, nm, sizeof nm)) snprintf(nm, sizeof nm, "-");
+            (void)bn;
             ov_push_id(i);
             ov_table_next(); ov_text("%d", i);
             ov_table_next(); ov_text("%s%s%s", nm, ps == my_ps ? " (you)" : "", is_bot ? " [bot]" : "");

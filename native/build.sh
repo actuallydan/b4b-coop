@@ -37,13 +37,14 @@ cxx_obj() {   # cxx_obj <source> -> $obj/<name>.o (rebuilt when the source is ne
   if [[ ! -f $o || $1 -nt $o || $here/build.sh -nt $o || ( $1 == */overlay.cpp && -n $(find "$here/src" -name '*.h' -newer "$o") ) ]]; then
     "$zig" c++ -target x86_64-windows-gnu -c -O2 -g0 -std=c++17 -fno-exceptions -fno-rtti -Wall -Wno-unused-function -Wno-unused-but-set-variable \
       -DWIDL_EXPLICIT_AGGREGATE_RETURNS -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_DISABLE_DEMO_WINDOWS \
-      -DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS -I"$im" -I"$im/backends" -I"$mh/include" -I"$here/src" -I"$gen" "${defs[@]}" "$1" -o "$o"
+      -DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS -I"$im" -I"$im/backends" -I"$mh/include" -I"$here/src" -I"$gen" "${defs[@]}" "$1" -o "$o" ||
+      { rm -f "$o"; return 1; }   # never link a stale object
   fi
   echo "$o"
 }
 cxx_objs=()
 for f in "$im"/imgui.cpp "$im"/imgui_draw.cpp "$im"/imgui_tables.cpp "$im"/imgui_widgets.cpp "$im"/backends/imgui_impl_dx12.cpp \
-         "$here"/src/overlay.cpp; do cxx_objs+=("$(cxx_obj "$f")"); done
+         "$here"/src/overlay.cpp; do o=$(cxx_obj "$f") || exit 1; cxx_objs+=("$o"); done
 agent() {   # agent <proxy name> <output file>
   cc -I"$mh/include" -I"$here/src" \
     "$here"/src/*.c "$here/proxy/$1.c" "$mh"/src/hook.c "$mh"/src/buffer.c "$mh"/src/trampoline.c "$mh"/src/hde/hde64.c \
