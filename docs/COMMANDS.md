@@ -93,6 +93,12 @@ own offline Fort Hope while playing alone. Replies:
 - `you are in someone's session: /leave first`
 - `go back to Fort Hope first`
 
+**The `~` window (experimental)**: press `~` (the key left of `1`) in game for a small settings window over the game:
+third person on/off, aim correction, and sliders for distance, side, height and FOV, applied at once; **Save to
+b4bcoop.ini** keeps them. While it is open the mouse moves its own cursor and your hero doesn't move or shoot; `~` or
+`Esc` closes it. `overlay=0` in `b4bcoop.ini` turns it off, `overlay_key=` picks another key, `overlay_scale=` sizes it
+(default `1.25`).
+
 ## Host-only commands
 
 **Who is the host?** The player whose Fort Hope (and missions) everyone else is in. Everyone who joined them is a
@@ -268,8 +274,9 @@ Rules:
 - No `b4bcoop.ini` at all = all defaults.
 - **Applied while the game runs:** `thirdperson`, `thirdperson_key`, `thirdperson_distance`, `thirdperson_side`,
   `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `flashlight_key`, `flashlight_sticky`,
-  `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map). Only the lines you changed count: an edit
-  doesn't undo what you set with a chat command this session. Deleting or commenting out a line = back to its default.
+  `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
+  `overlay_scale`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
+  session. Deleting or commenting out a line = back to its default.
 - **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
   `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.
 - **Updating b4bcoop** (extracting a new zip) replaces `b4bcoop.ini` with a fresh one: note your changes first.
@@ -290,6 +297,9 @@ Rules:
 | `thirdperson_height` | `0` | `-100`-`150` | Camera height offset (`/thirdperson height`) |
 | `thirdperson_fov` | `0` (game's) | `60`-`130` | Third-person field of view (`/thirdperson fov`) |
 | `thirdperson_aimfix` | `1` | `0`, `1` | `0`: no aim correction, shots land beside the crosshair by the camera offset |
+| `overlay` | `1` | `0`, `1` | `0`: no `~` settings window |
+| `overlay_key` | `~` | a letter, a digit, a key code, or `off` | The key that opens the `~` window |
+| `overlay_scale` | `1.25` | `0.5`-`4` | Size of the `~` window's text |
 | `allow_joins` | `friends` | `friends`, `anyone` | Host: who may join |
 | `allow_steamids` | none | Steam IDs | Host: these players may always join |
 | `presence` | `1` | `0`, `1` | `0`: friends don't see **Join Game** on you |
