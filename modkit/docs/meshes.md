@@ -167,9 +167,10 @@ b4bmod weapon ak.fbx --fp-mesh AR02 ^
   `weapon=ak47|AR02|/Game/b4bcoop/weapons/ak47/AR02_SKM.AR02_SKM|/Game/.../3P_AR02_SM.3P_AR02_SM|/Game/.../3P_AR02_SKM.3P_AR02_SKM|AK-47`
   (name | weapon code | first-person mesh | 3P static mesh | 3P skeletal mesh | title). Keep the copies' names: the
   mod finds the weapon's meshes by those names. Several looks in one add-on: one run each, same `-o mymod`.
-- Left as the game's: weapon skins (your look replaces the skin while it is on), world pickups and a dropped weapon
-  (a weapon lying on the floor shows the normal AR02), the dropped magazine. Those flags (`--skins`,
-  `--mag-static`, the pickup static mesh) are ignored with `--as`.
+- A weapon the player drops keeps the look on the floor (the game shows `3P_<Code>_SM` there, your copy of it is
+  put on); whoever picks it up gets their own choice. Left as the game's: weapon skins (your look replaces the skin
+  while it is on), world pickups nobody dropped, the dropped magazine. Those flags (`--skins`, `--mag-static`, the
+  pickup static mesh `<Code>_Pickup_SM`, unused by the game) are ignored with `--as`.
 - **Other players**: those with the same add-on see your model in your hands (third person); everyone else sees the
   normal weapon, never an empty hand. The host lets it through without having the add-on; `/models off` or
   `addons_policy=none` on the host turn it off.

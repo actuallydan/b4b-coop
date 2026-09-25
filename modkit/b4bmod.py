@@ -660,6 +660,8 @@ def cmd_model(kind, a):
     for t in templates:
         if t.startswith(("/Game/", "/Engine/")):
             ensure(t)
+            if "--as" in a:   # --as copies the folder's packages the meshes import (e.g. the weapon's skeleton LMG01_SK)
+                extract([asset_regex(t.rsplit("/", 1)[0] + "/*")], quiet=True)
             r = extract_refs([t])   # its materials, their parents and textures: b4bmodel reads them all
             if r.returncode:
                 sys.stderr.write(r.stdout + r.stderr)

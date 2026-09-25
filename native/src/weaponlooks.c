@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
@@ -157,7 +158,8 @@ static void set_comp_mesh(UObject *c, UObject *mesh, int clear_overrides) {
 // The first-person skin's materials are set once when the weapon's FP mesh is set up (ApplyCustomization leaves them),
 // so they are kept here and put back with the mesh.
 #define MAX_MATS 16
-typedef struct { UObject *comp, *orig, *item; int32_t ci, oi, ii; char look[33]; UObject *mat[MAX_MATS]; int32_t mi[MAX_MATS]; int nmat; } Swap;
+// floor: item is a weapon pickup lying on the floor (a dropped weapon, §9 "Floor"), kept until it's gone or models go off
+typedef struct { UObject *comp, *orig, *item; int32_t ci, oi, ii; char look[33]; UObject *mat[MAX_MATS]; int32_t mi[MAX_MATS]; int nmat, floor; } Swap;
 #define MAX_SWAPS 96
 static Swap swaps[MAX_SWAPS];
 static Swap *swap_of(UObject *c) {
@@ -178,7 +180,7 @@ static void note_swap(UObject *c, UObject *orig, UObject *item, const char *look
             s->mat[i] = m; s->mi[i] = m ? U_INDEX(m) : 0; s->nmat = i + 1;
         }
     }
-    s->comp = c; s->ci = U_INDEX(c); s->item = item; s->ii = U_INDEX(item);
+    s->comp = c; s->ci = U_INDEX(c); s->item = item; s->ii = U_INDEX(item); s->floor = 0;
     snprintf(s->look, sizeof s->look, "%s", look);
 }
 static int n_applied;
@@ -226,9 +228,12 @@ static void restore_stale(UObject *only) {
         Swap *s = &swaps[i];
         if (!s->comp || (only && s->item != only)) continue;
         if (!alive(s->comp, s->ci) || !alive(s->item, s->ii)) { memset(s, 0, sizeof *s); continue; }
-        RowHandle *r = row_of(mm_of(s->item));
         char nm[40];
-        if (r && wrow_name(r->row, nm, sizeof nm) && !strcmp(nm, s->look) && look_by_name(nm)) continue;
+        if (s->floor) { if (!models_off()) continue; }
+        else {
+            RowHandle *r = row_of(mm_of(s->item));
+            if (r && wrow_name(r->row, nm, sizeof nm) && !strcmp(nm, s->look) && look_by_name(nm)) continue;
+        }
         if (s->orig && alive(s->orig, s->oi)) {
             classes();
             set_comp_mesh(s->comp, s->orig, 0);
@@ -249,13 +254,190 @@ static void restore_stale(UObject *only) {
         memset(s, 0, sizeof *s);
     }
 }
-static void check_item(UObject *item) {
+static void carried_note(UObject *item, UObject *pawn, Look *l);
+static void check_item(UObject *item, UObject *pawn) {
     UObject *mm = mm_of(item);
     RowHandle *r = row_of(mm);
     char nm[40];
     if (!r || !wrow_name(r->row, nm, sizeof nm)) return;
     Look *l = look_by_name(nm);
-    if (l && item_code(item, l->code)) apply_look(item, mm, l);
+    if (!l || !item_code(item, l->code)) return;
+    apply_look(item, mm, l);
+    carried_note(item, pawn, l);
+}
+
+// ---- weapons on the floor ----
+// A dropped weapon is not the weapon actor: the host destroys the Item and spawns an ItemPickup (<Code>_N_Pickup_BP,
+// replicated) whose ItemRowsAndQuantities {row, quantity, attachments, ammo} carry no skin, showing 3P_<Code>_SM on its
+// StaticMeshComponent (so retail skins don't show on the floor either). Every machine with the add-on keeps a list of
+// the heroes' weapons wearing a look; when one leaves its hero's inventory, the new pickup of that weapon which the
+// hero dropped gets the look's 3P static mesh: the one whose Owner / Instigator / PreviousOwner (host: weak pointer
+// +0x320, GetPreviousOwner 0x142199930) is that hero, else the nearest one "dropped from player" within 3 m of where the
+// hero stood. Machines without the add-on show the pickup as the game does. Picking it up makes a new Item for the
+// new owner with no skin: their own choice (their skin, or their /model look) applies, like retail skins.
+typedef struct { UObject *item, *pawn; int32_t ii, pi; Look *l; float loc[3]; } Carried;
+#define MAX_CARRIED 32
+static Carried carried[MAX_CARRIED];
+typedef struct { UObject *pawn; int32_t pi; Look *l; float loc[3], left, next; } Drop;
+#define MAX_DROPS 8
+static Drop drops[MAX_DROPS];
+static int n_floor;
+
+static int actor_loc(UObject *a, float out[3]) {
+    UFunction *f = fn_of(a, "K2_GetActorLocation");
+    int32_t pr = parm_off(f, "ReturnValue");
+    if (!f || pr < 0 || UFN_PARMSSIZE(f) > 32) return 0;
+    uint8_t p[32] = {0};
+    ue_process_event(a, f, p);
+    memcpy(out, p + pr, 12);
+    return 1;
+}
+static float dist2(const float *a, const float *b) {
+    float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+    return x * x + y * y + z * z;
+}
+static void carried_note(UObject *item, UObject *pawn, Look *l) {
+    if (!pawn) pawn = ue_get_ptr(item, "Owner");
+    if (!is_live(pawn)) return;
+    Carried *c = NULL;
+    for (int i = 0; i < MAX_CARRIED && !c; i++) if (carried[i].item == item && alive(item, carried[i].ii)) c = &carried[i];
+    for (int i = 0; i < MAX_CARRIED && !c; i++) if (!carried[i].item) c = &carried[i];
+    if (!c) return;
+    c->item = item; c->ii = U_INDEX(item); c->pawn = pawn; c->pi = U_INDEX(pawn); c->l = l;
+    actor_loc(pawn, c->loc);   // where it stood last (a drop is looked for around the hero)
+}
+static int in_inventory(UObject *pawn, UObject *item) {
+    UObject **it;
+    int n = items_of(pawn, &it);
+    for (int i = 0; i < n; i++) if (it[i] == item) return 1;
+    return 0;
+}
+// Every frame: a weapon with a look that left its hero (dropped, thrown, swapped for a pickup, destroyed) = a drop to
+// look for. The row changing (/model reset, /models off) is not a drop.
+static void tick_carried(void) {
+    for (int i = 0; i < MAX_CARRIED; i++) {
+        Carried *c = &carried[i];
+        if (!c->item) continue;
+        int item_ok = alive(c->item, c->ii), pawn_ok = alive(c->pawn, c->pi);
+        if (item_ok && pawn_ok && in_inventory(c->pawn, c->item)) {
+            char nm[40];
+            RowHandle *r = row_of(mm_of(c->item));
+            if (!r || !wrow_name(r->row, nm, sizeof nm) || strcmp(nm, c->l->name)) memset(c, 0, sizeof *c);
+            continue;
+        }
+        Drop *d = NULL;
+        for (int k = 0; k < MAX_DROPS && !d; k++) if (drops[k].left <= 0) d = &drops[k];
+        if (d && pawn_ok) {
+            d->pawn = c->pawn; d->pi = c->pi; d->l = c->l; d->left = 4; d->next = 0;
+            if (!actor_loc(c->pawn, d->loc)) memcpy(d->loc, c->loc, sizeof d->loc);
+            char b[96];
+            LOG("wlooks: %s (%s) left %s, looking for its pickup", c->l->name, item_ok ? "kept" : "gone",
+                ue_obj_name(c->pawn, b, sizeof b));
+        }
+        memset(c, 0, sizeof *c);
+    }
+}
+
+static UClass *c_pickup;
+static const char *const pk_comps[2] = {"StaticMeshComponent", "InterpolatedStaticMeshComponent"};
+static UObject *pickup_mesh(UObject *pk, char *name, size_t n) {   // the pickup's shown static mesh and its name
+    UObject *c = ue_get_ptr(pk, "StaticMeshComponent"), *m = is_live(c) ? ue_get_ptr(c, "StaticMesh") : NULL;
+    if (name) { name[0] = 0; if (m) ue_obj_name(m, name, n); }
+    return m;
+}
+static Swap *floor_of(UObject *pk) {
+    for (int i = 0; i < MAX_SWAPS; i++)
+        if (swaps[i].floor && swaps[i].item == pk && alive(pk, swaps[i].ii) && alive(swaps[i].comp, swaps[i].ci)) return &swaps[i];
+    return NULL;
+}
+// The look's 3P static mesh on the pickup's mesh components that show the weapon's (by name, as on the weapon)
+static int floor_apply(UObject *pk, Look *l) {
+    const char *base = strrchr(l->path[M_SM], '.');
+    if (!base) return 0;
+    classes();
+    int changed = 0;
+    for (int k = 0; k < 2; k++) {
+        UObject *c = ue_get_ptr(pk, pk_comps[k]), *cur = is_live(c) && ue_is_a(c, c_smc) ? comp_mesh(c) : NULL;
+        char cn[128];
+        if (!cur || _stricmp(ue_obj_name(cur, cn, sizeof cn), base + 1)) continue;
+        UObject *m = look_mesh(l, M_SM);
+        if (!m || m == cur) continue;
+        Swap *s = swap_of(c);
+        note_swap(c, s ? s->orig : cur, pk, l->name);
+        if ((s = swap_of(c))) s->floor = 1;
+        set_comp_mesh(c, m, 1);
+        changed++;
+    }
+    return changed;
+}
+static int ctx_off = -2;
+static int pickup_ctx(UObject *pk) {   // EItemPickupCreationContext (replicated): 0 player, 1 loot, 2 kill, 3 player item
+    if (ctx_off == -2) ctx_off = ue_prop_offset(pk, "CreationContext");
+    return ctx_off >= 0 ? *((uint8_t *)pk + ctx_off) : -1;
+}
+static UObject *pickup_prev_owner(UObject *pk) { return ue_weak_get((char *)pk + 0x320); }
+// Pending drops: find their pickup (scanned 5x a second while one is pending, for 4 s)
+static void tick_drops(float dt) {
+    int any = 0;
+    for (int k = 0; k < MAX_DROPS; k++) {
+        Drop *d = &drops[k];
+        if (d->left <= 0) continue;
+        d->left -= dt; d->next -= dt;
+        if (d->next <= 0 && d->left > 0) { any = 1; d->next = 0.2f; }
+    }
+    if (!any) return;
+    if (!c_pickup) c_pickup = ue_find_class("ItemPickup");
+    if (!c_pickup) return;
+    UObject *best[MAX_DROPS] = {0};
+    float bd[MAX_DROPS];
+    for (int k = 0; k < MAX_DROPS; k++) bd[k] = 300.f * 300.f;
+    for (int32_t i = 0, n = ue_num_objects(); i < n; i++) {
+        UObject *o = ue_object_at(i);
+        if (!is_live(o) || !ue_is_a(o, c_pickup) || floor_of(o)) continue;
+        char mn[128];
+        if (!pickup_mesh(o, mn, sizeof mn)) continue;
+        UObject *own = ue_get_ptr(o, "Owner"), *ins = ue_get_ptr(o, "Instigator"), *prev = NULL;
+        int got_prev = 0, ctx = -1, have_loc = 0;
+        float loc[3];
+        for (int k = 0; k < MAX_DROPS; k++) {
+            Drop *d = &drops[k];
+            if (d->left <= 0) continue;
+            const char *base = strrchr(d->l->path[M_SM], '.');
+            if (!base || _stricmp(mn, base + 1)) continue;
+            if (!got_prev) { prev = pickup_prev_owner(o); ctx = pickup_ctx(o); got_prev = 1; }
+            if (own == d->pawn || ins == d->pawn || prev == d->pawn) { best[k] = o; bd[k] = -1; continue; }
+            if (bd[k] < 0 || (ctx != 0 && ctx != 3)) continue;
+            if (!have_loc) have_loc = actor_loc(o, loc);
+            float q = have_loc ? dist2(loc, d->loc) : 1e30f;
+            if (q < bd[k]) { bd[k] = q; best[k] = o; }
+        }
+    }
+    for (int k = 0; k < MAX_DROPS; k++) {
+        Drop *d = &drops[k];
+        if (d->left <= 0 || !best[k] || floor_of(best[k])) continue;
+        int n = floor_apply(best[k], d->l);
+        char b[96];
+        LOG("wlooks: %s on the floor: %s (%s, %d mesh(es))", d->l->name, ue_obj_name(best[k], b, sizeof b),
+            bd[k] < 0 ? "its dropper" : "nearest", n);
+        if (n) n_floor++;
+        d->left = 0;
+    }
+}
+// Every second: the floor looks stay on (a pickup's mesh set again by the game gets ours again)
+static void tick_floor(void) {
+    if (models_off()) return;   // restore_stale puts them back
+    for (int i = 0; i < MAX_SWAPS; i++) {
+        Swap *s = &swaps[i];
+        if (!s->floor || !alive(s->item, s->ii) || !alive(s->comp, s->ci)) continue;
+        Look *l = look_by_name(s->look);
+        UObject *m = l ? look_mesh(l, M_SM) : NULL;
+        if (m && comp_mesh(s->comp) != m) {
+            char cn[128];
+            UObject *cur = comp_mesh(s->comp);
+            const char *base = strrchr(l->path[M_SM], '.');
+            if (cur && base && !_stricmp(ue_obj_name(cur, cn, sizeof cn), base + 1)) set_comp_mesh(s->comp, m, 1);
+        }
+    }
 }
 
 // ApplyCustomization hook: re-apply right after the game (skin change, first-person mesh init, OnRep)
@@ -268,7 +450,7 @@ static void apply_detour(UObject *mm) {
     RowHandle *r = row_of(mm);
     if (r && is_ours(r->row) && n_looks > 0) {
         UObject *item = U_OUTER(mm);
-        if (is_live(item)) check_item(item);
+        if (is_live(item)) check_item(item, NULL);
     }
 }
 
@@ -337,6 +519,7 @@ static void tick_wishes(float dt) {
 static float acc;
 void wlooks_tick(float dt) {
     if (n_looks < 0) build_looks();
+    if (n_looks > 0) { tick_carried(); tick_drops(dt); }
     int any = 0;
     for (int w = 0; w < MAX_WISH; w++) any |= wish[w].on;
     if (any) tick_wishes(dt);
@@ -344,12 +527,13 @@ void wlooks_tick(float dt) {
     acc = 0;
     restore_stale(NULL);
     if (!n_looks) return;
+    tick_floor();
     UObject *p[32];
     int np = models_hero_pawns(p, 32);
     for (int k = 0; k < np; k++) {
         UObject **it;
         int n = items_of(p[k], &it);
-        for (int i = 0; i < n; i++) if (is_live(it[i])) check_item(it[i]);
+        for (int i = 0; i < n; i++) if (is_live(it[i])) check_item(it[i], p[k]);
     }
 }
 
@@ -615,6 +799,52 @@ int wlooks_cmd(const char *verb, char *rest, Out *o) {
         if (pf >= 0) p[pf] = 1;
         ue_process_event(inv, f, p);
         out_printf(o, "dropped item %d\n", k);
+        return 1;
+    }
+    if (sub && !strcmp(sub, "use")) {   // use [mesh substr]: press Use on the nearest weapon pickup (ForcePressUse)
+        UObject *pawn = my_pawn(), *best = NULL;
+        float me[3], bd = 1e30f;
+        if (!c_pickup) c_pickup = ue_find_class("ItemPickup");
+        if (!pawn || !actor_loc(pawn, me) || !c_pickup) { out_printf(o, "no pawn\n"); return 1; }
+        for (int32_t i = 0, n = ue_num_objects(); i < n; i++) {
+            UObject *x = ue_object_at(i);
+            char m[96];
+            float l[3];
+            if (!is_live(x) || !ue_is_a(x, c_pickup) || !pickup_mesh(x, m, sizeof m) || (arg && !strstr(m, arg))) continue;
+            if (actor_loc(x, l) && dist2(l, me) < bd) { bd = dist2(l, me); best = x; }
+        }
+        UFunction *g = fn_of(pawn, "GetHeroUseComponent");
+        uint8_t q[16] = {0};
+        if (g) ue_process_event(pawn, g, q);
+        UObject *huc = *(UObject **)q, *uc = best ? ue_get_ptr(best, "UsableComponent") : NULL;
+        UFunction *f = fn_of(huc, "ForcePressUse");
+        int32_t pa = parm_off(f, "Actor"), pu = parm_off(f, "UsableComponent");
+        if (!best || !uc || !f || pa < 0 || pu < 0 || UFN_PARMSSIZE(f) > 32) { out_printf(o, "no pickup / use component\n"); return 1; }
+        uint8_t p[32] = {0};
+        *(UObject **)(p + pa) = best; *(UObject **)(p + pu) = uc;
+        ue_process_event(huc, f, p);
+        char a[96];
+        out_printf(o, "ForcePressUse %s (%.0f cm away)\n", ue_obj_name(best, a, sizeof a), sqrtf(bd));
+        return 1;
+    }
+    if (sub && !strcmp(sub, "pickups")) {   // weapon pickups: mesh, who dropped it (Owner/Instigator/PreviousOwner), floor look
+        if (!c_pickup) c_pickup = ue_find_class("ItemPickup");
+        int k = 0;
+        for (int32_t i = 0, n = ue_num_objects(); c_pickup && i < n; i++) {
+            UObject *x = ue_object_at(i);
+            if (!is_live(x) || !ue_is_a(x, c_pickup)) continue;
+            char a[96], m[96], w[3][64];
+            UObject *mesh = pickup_mesh(x, m, sizeof m), *who[3] = {ue_get_ptr(x, "Owner"), ue_get_ptr(x, "Instigator"), pickup_prev_owner(x)};
+            if (!mesh || (arg && !strstr(m, arg))) continue;
+            for (int j = 0; j < 3; j++) { if (who[j]) ue_obj_name(who[j], w[j], sizeof w[j]); else strcpy(w[j], "-"); }
+            float loc[3] = {0};
+            actor_loc(x, loc);
+            Swap *f = floor_of(x);
+            out_printf(o, "%s mesh=%s ctx=%d owner=%s instigator=%s prev=%s at %.0f %.0f %.0f look=%s\n", ue_obj_name(x, a, sizeof a),
+                       m, pickup_ctx(x), w[0], w[1], w[2], loc[0], loc[1], loc[2], f ? f->look : "-");
+            if (++k >= 40) break;
+        }
+        out_printf(o, "%d pickup(s) shown, %d floor look(s) put on\n", k, n_floor);
         return 1;
     }
     UObject *p[32];

@@ -74,8 +74,9 @@ look; everyone is told), their **Reset**, and **Model swaps allowed** (`/models 
 - **Add-on outfits**: only players who have the same add-on see them (third person and your first-person arms).
   Everyone else sees your survivor in their base pieces (head, torso and legs of your profile), not your outfit.
 - **Add-on weapon looks**: only players with the same add-on see the model in your hands; everyone else sees the
-  normal weapon (without your skin). A weapon you drop shows the normal weapon on the floor; picked up again by you,
-  it gets your look back.
+  normal weapon (without your skin). A weapon you drop keeps your look on the floor for players with the add-on
+  (the normal weapon for everyone else). Whoever picks it up gets their own choice on it: their skin, or their own
+  `/model` look for that weapon (you get yours back when you pick it up again), like the game's own skins.
 - Your look stays through map changes, chapters, death and respawn, until `/model reset` or the end of the game
   session. If you change survivor at character select, your `/model` is put on the new survivor.
 - Bots: only the host can change them (`/model <bot #> <name>`). When a player takes over that bot, the player's own
