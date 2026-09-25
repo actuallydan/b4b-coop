@@ -322,6 +322,14 @@ static int ini_apply_live(const char *key, const char *val) {
     return thirdperson_live(key, val) || flashlight_live(key, val) || joinpolicy_live(key, val) ||
            presence_live(key, val) || teamsize_live(key, val) || overlay_live(key, val);
 }
+const char *cmds_ini_value(const char *key) {
+    const IniKV *e = ini_last.n >= 0 ? ini_find(&ini_last, key) : NULL;
+    return e ? e->val : NULL;
+}
+int cmds_ini_apply(const char *key, const char *val, int save) {
+    if (!ini_apply_live(key, val)) LOG("config: %s is not a live setting", key);
+    return save ? cmds_ini_set(key, val) : 0;
+}
 static void ini_snapshot(void) {
     ini_read_all(&ini_last);
     ini_exists = ini_stat(&ini_mtime, &ini_size);
@@ -455,6 +463,7 @@ static const char *vk_key_name(int vk, char *b, size_t n) {
 }
 typedef FName *(*CmdsFNameCtorFn)(FName *self, const wchar_t *name, int find_type);
 int cmds_hotkey_down(int vk) {
+    if (overlay_is_open()) return 0;   // keys typed into the ~ window are not hotkeys
     static struct { int vk; FName name; } names[8];
     static int n_names;
     static UFunction *fn; static int32_t o_key = -1, o_ret = -1, psize;
@@ -731,7 +740,7 @@ void cmds_run(char *line, Out *o) {
     } else if (!steamnet_cmd(verb, rest, o) && !testing_cmd(verb, rest, o) && !teamsize_cmd(verb, rest, o) && !lineup_cmd(verb, rest, o) &&
                !slotguard_cmd(verb, rest, o) && !chat_cmd(verb, rest, o) && !admin_cmd(verb, rest, o) &&
                !presence_cmd(verb, rest, o) && !rewardguard_cmd(verb, rest, o) && !joinpolicy_cmd(verb, rest, o) &&
-               !cheats_cmd(verb, rest, o) && !thirdperson_cmd(verb, rest, o))
+               !cheats_cmd(verb, rest, o) && !thirdperson_cmd(verb, rest, o) && !overlay_cmd(verb, rest, o))
         out_printf(o, "unknown command: %s\n", verb);
 }
 #endif  // !B4B_RELEASE

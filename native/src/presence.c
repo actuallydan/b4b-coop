@@ -28,6 +28,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "overlay.h"
 
 #define B4B_APPID        924970u
 #define CB_JOIN_REQUEST  337        // GameRichPresenceJoinRequested_t (k_iSteamFriendsCallbacks + 37)
@@ -415,10 +416,12 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
     }   // else: the auto-join machinery joins once we are signed in and in offline Fort Hope (alone)
 }
 
+static void session_panel(void);   // the overlay tab, below
 void presence_init(void) {
     InitializeCriticalSection(&pend_cs);
     load_ini();
     parse_command_line();
+    overlay_add_panel("Session", 10, session_panel);
     if (launch_connect[0]) queue_connect(launch_connect, 0, "launch command line");
     if (cfg_addr[0] && !coop_host_ip()) LOG("presence: presence_addr=%s ignored (IP joins need host_ip=1)", cfg_addr);
     LOG("presence: advertise=%d addr=%s", advertise, !coop_host_ip() ? "none (Steam only)" : cfg_addr[0] ? cfg_addr : "(LAN)");
@@ -461,6 +464,133 @@ int presence_live(const char *key, const char *v) {
     return 1;
 }
 
+static int is_b4b(uint64_t id, FriendGameInfo *gi) {
+    memset(gi, 0, sizeof *gi);
+    return S.GetFriendGamePlayed(friends, id, gi) && (uint32_t)(gi->game_id & 0xFFFFFF) == B4B_APPID;
+}
+
+// Steam invite with our connect string (the friend gets "Join Game" in their Steam chat). Only while advertising.
+static int invite(uint64_t id) {
+    if (bound <= 0 || !advertising || !applied[0][0]) return 0;
+    uint8_t ok = S.InviteUserToGame(friends, id, applied[0]);
+    LOG("presence: invite %llu -> %d (%s)", (unsigned long long)id, ok, applied[0]);
+    return ok;
+}
+
+// ---- ~ overlay tab "Session" (overlay.h): status, join/host/leave (the chat commands), Steam friends (join like
+// Steam's Join Game, invite), presence and the host's join policy (b4bcoop.ini settings) ----
+typedef struct { uint64_t id; char name[64], proto[16], ver[40]; int b4b, joinable; } Friend;
+static Friend fl[64];
+static int n_fl, fl_all;
+static double fl_next;
+static void friends_refresh(void) {
+    n_fl = 0;
+    if (bound <= 0) return;
+    int n = S.GetFriendCount(friends, 4 /*k_EFriendFlagImmediate*/);
+    for (int i = 0; i < n && n_fl < 64; i++) {
+        uint64_t id = S.GetFriendByIndex(friends, i, 4);
+        FriendGameInfo gi;
+        int b4b = is_b4b(id, &gi);
+        if (!S.GetFriendPersonaState(friends, id) || (!b4b && !fl_all)) continue;
+        Friend *f = &fl[n_fl++];
+        memset(f, 0, sizeof *f);
+        f->id = id; f->b4b = b4b;
+        snprintf(f->name, sizeof f->name, "%s", S.GetFriendPersonaName(friends, id));
+        if (b4b) {
+            char t[300];
+            S.RequestFriendRichPresence(friends, id);
+            f->joinable = parse_connect(S.GetFriendRichPresence(friends, id, "connect"), t, sizeof t, f->proto, f->ver);
+        }
+    }
+}
+static void session_panel(void) {
+    char b[80];
+    ov_text("b4bcoop %s (protocol %d)", coop_version(), coop_protocol());
+    if (bound > 0) {
+        ov_text("Steam: %s, SteamID %llu", S.GetPersonaName(friends), (unsigned long long)my_id);
+        ov_same_line();
+        snprintf(b, sizeof b, "%llu", (unsigned long long)my_id);
+        if (ov_button("Copy##id")) ov_copy(b);
+        ov_tooltip("Friends can join you with /join steam:<this id> (or the Join box in their Session tab).");
+    } else ov_text_warn("Steam is not available%s.", bound < 0 ? "" : " yet");
+    ov_text_dim("Steam P2P: %s. %s", steamnet_p2p_on() ? "on" : steamnet_last_error(),
+                advertising ? "Friends see Join Game on you in Steam." : "Not advertised (not hosting, or presence is off).");
+
+    ov_heading("Join / host");
+    static char target[80];
+    ov_width(14);
+    int go = ov_input_text("##join", target, sizeof target, "SteamID64 of the host");
+    ov_same_line();
+    if ((ov_button("Join") || go) && target[0]) {
+        const char *t = target;
+        while (*t == ' ') t++;
+        if (valid_id64(t)) ov_run("join steam:%s", t); else ov_run("join %s", t);
+    }
+    ov_tooltip("Like /join steam:<id>: use it from your own Fort Hope.");
+    if (ov_button("Host")) ov_run("host");
+    ov_tooltip("You host your offline Fort Hope automatically; only needed after host=0 (/host).");
+    ov_same_line();
+    if (ov_button_confirm("Leave", "Sure? Leave")) ov_run("leave");
+    ov_tooltip("Leave the host's game, back to your own Fort Hope (/leave).");
+
+    ov_heading("Steam friends");
+    double now = GetTickCount64() / 1000.0;
+    if (now >= fl_next) { friends_refresh(); fl_next = now + 2; }
+    if (ov_checkbox("Show every online friend##all", &fl_all)) fl_next = 0;
+    if (!n_fl) ov_text_dim(fl_all ? "No friend online." : "No friend is playing Back 4 Blood right now.");
+    else if (ov_table_begin("friends", 3)) {
+        char want[8];
+        snprintf(want, sizeof want, "%d", coop_protocol());
+        for (int i = 0; i < n_fl; i++) {
+            Friend *f = &fl[i];
+            int same = f->joinable && !strcmp(f->proto, want);
+            ov_push_id(i);
+            ov_table_next(); ov_text("%s", f->name);
+            ov_table_next();
+            if (!f->b4b) ov_text_dim("not in Back 4 Blood");
+            else if (!f->joinable) ov_text_dim("playing, not hosting");
+            else if (!same) ov_text_warn("hosting b4bcoop %s (protocol %s)", f->ver[0] ? f->ver : "?", f->proto[0] ? f->proto : "?");
+            else ov_text("hosting b4bcoop %s", f->ver);
+            ov_table_next();
+            ov_begin_disabled(!same, f->joinable ? "Another b4bcoop version: everyone needs the same one." : "They are not hosting.");
+            if (ov_button("Join##f")) {
+                char c[CONNECT_MAX + 1];
+                snprintf(c, sizeof c, "%s", S.GetFriendRichPresence(friends, f->id, "connect"));
+                overlay_note("joining your friend (as with Steam's Join Game) ...");
+                queue_connect(c, f->id, "overlay join");
+            }
+            ov_end_disabled();
+            ov_same_line();
+            ov_begin_disabled(!advertising, "You are not hosting: nothing to invite to.");
+            if (ov_button("Invite##f")) overlay_note(invite(f->id) ? "invite sent" : "invite failed");
+            ov_end_disabled();
+            ov_pop_id();
+        }
+        ov_table_end();
+    }
+
+    ov_heading("Settings");
+    int adv = advertise;
+    if (ov_checkbox("Show Join Game to Steam friends while hosting##presence", &adv)) ov_setting("presence", adv ? NULL : "0", 1);
+    int anyone; char ids[400];
+    joinpolicy_get(&anyone, ids, sizeof ids);
+    ov_begin_perm(CMD_HOST);
+    ov_text("Who may join you:");
+    ov_same_line();
+    if (ov_radio("Steam friends##aj", !anyone)) ov_setting("allow_joins", NULL, 1);
+    ov_same_line();
+    if (ov_radio("anyone##aj", anyone)) ov_setting("allow_joins", "anyone", 1);
+    static char allow[400];
+    static int allow_init;
+    if (!allow_init) { snprintf(allow, sizeof allow, "%s", ids); allow_init = 1; }
+    ov_width(16);
+    int sv = ov_input_text("##allow", allow, sizeof allow, "SteamID64s, comma separated");
+    ov_same_line();
+    if (ov_button("Save##allow") || sv) { ov_setting("allow_steamids", allow[0] ? allow : NULL, 1); allow_init = 0; }
+    ov_tooltip("Always allowed, even if they are not your Steam friend (allow_steamids).");
+    ov_end_perm();
+}
+
 #ifndef B4B_RELEASE
 // ---- commands (dev builds) ----
 static void print_rp(Out *o, uint64_t id) {
@@ -484,11 +614,6 @@ static void cmd_presence(char *rest, Out *o) {
     if (bound > 0) { out_printf(o, "own rich presence (read back from Steam):\n"); print_rp(o, my_id); }
     const char *sj = cmds_session_join();
     out_printf(o, "session join target: %s\nlaunch join: %s\n", sj[0] ? sj : "-", launch_connect[0] ? launch_connect : "-");
-}
-
-static int is_b4b(uint64_t id, FriendGameInfo *gi) {
-    memset(gi, 0, sizeof *gi);
-    return S.GetFriendGamePlayed(friends, id, gi) && (uint32_t)(gi->game_id & 0xFFFFFF) == B4B_APPID;
 }
 
 static void cmd_friends(char *rest, Out *o) {
@@ -530,9 +655,7 @@ static void cmd_invite(char *rest, Out *o) {
         if (!hits) { out_printf(o, "no friend matches '%s'\n", rest); return; }
         if (hits > 1) { out_printf(o, "ambiguous: %d friends match '%s'\n", hits, rest); return; }
     }
-    uint8_t ok = S.InviteUserToGame(friends, target, applied[0]);
-    LOG("presence: invite %llu -> %d (%s)", (unsigned long long)target, ok, applied[0]);
-    out_printf(o, "invite %llu: %s\n", (unsigned long long)target, ok ? "sent" : "failed");
+    out_printf(o, "invite %llu: %s\n", (unsigned long long)target, invite(target) ? "sent" : "failed");
 }
 
 int presence_cmd(const char *verb, char *rest, Out *o) {

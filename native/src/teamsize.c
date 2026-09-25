@@ -64,6 +64,7 @@ static void load_ini(void) {
 }
 
 // live reload: teamsize=N (from the next map load, like /teamsize), removed = the game's
+int teamsize_get(void) { return team_size; }
 int teamsize_live(const char *key, const char *v) {
     if (strcmp(key, "teamsize")) return 0;
     set_team_size(v ? atoi(v) : 0);
