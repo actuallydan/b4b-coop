@@ -322,8 +322,8 @@ Messages (in your chat after the game starts):
   folder name with accents or other special characters).
 - `Add-ons are off: unsupported game build`: your Back 4 Blood version isn't the one this b4bcoop supports.
 
-Only install add-ons from people you trust. Making add-ons: `tools/modkit/addon.py` in the source repository
-(`docs/investigations/addons.md`).
+Only install add-ons from people you trust. Making add-ons: the mod maker's kit (`b4bcoop-modkit-<version>.zip` from
+the releases, `modkit/` in the source repository); players don't need it.
 
 ## b4bcoop.ini options
 

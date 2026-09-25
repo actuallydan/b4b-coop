@@ -7,7 +7,7 @@ is committed. Needs (outside the repo, see mesh-mods.md §6):
     the Blender user dir it was installed into;
   - the MakeHuman system asset pack (CC0) unpacked into MPFB's user data dir (clothes/, skins/, hair/, eyes/, ...).
 
-  BLENDER_USER_RESOURCES=... blender -b --python tools/modkit/blender/testassets/mpfb_survivor.py -- <out dir> \
+  BLENDER_USER_RESOURCES=... blender -b --python tools/modkit/testassets/mpfb_survivor.py -- <out dir> \
       [--rig mixamo|game_engine] [--format fbx|glb] [--skin <mhmat>] [--hair <mhclo>] [--clothes a.mhclo,b.mhclo]
 
 Result: <out dir>/survivor.fbx (or .glb) + textures/*.png (diffuse/normal per material, the skin with the eyebrows

@@ -103,7 +103,7 @@ above; player builds have no `type` command), `addons_dir=`, a damaged pak.
 Code: `native/src/addonclass.c` (agent, at load, from the pak) and `classify()` in `modkit/addon.py` (at pack,
 written as `content=`): same rules, kept in sync. The author's label is never trusted.
 - Every `.uasset` is read (header only: summary, name map, import map, export map; B4B = legacy -7, unversioned,
-  104-byte export entries, like `tools/modkit/upkg.py`). Each export's class: import -> (module = the class import's
+  104-byte export entries, like `modkit/upkg.py`). Each export's class: import -> (module = the class import's
   outer package, class name); an export class (index > 0) = a blueprint's default object.
 - **Cosmetic** when every export's class is one of: textures (`Texture2D`, `TextureCube`, arrays, volume, render
   targets, light profiles), materials (`Material`, `MaterialInstanceConstant`, `MaterialFunction*`,

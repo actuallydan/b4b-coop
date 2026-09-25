@@ -1,11 +1,11 @@
 # Mesh mods: B4B skeletal mesh format, writer and glTF import (#18, #21, epic #23)
 
-Status 2026-09-25, build 14216215. Branches `models-meshes`, `models-fullmodel`. Tools: `tools/modkit/upkg.py` (package
-reader/writer, property dump, MI reader), `tools/modkit/skm.py` (SKM render data parse/edit/write),
-`tools/modkit/skmgltf.py` (glTF/FBX export/import), `tools/modkit/sm.py` (static meshes), `tools/modkit/b4bmodel.py`
-(model -> survivor / weapon pipeline), `tools/modkit/blender/b4bfit.py` (headless Blender fitting),
-`tools/modkit/blender/preview.py` (headless renders), `tools/modkit/blender/testassets/mpfb_survivor.py` (test human),
-`modkit/dotnet/pakx` (offline extraction, run via `modkit/b4bmod.py`). Guides: §7.
+Status 2026-09-25, build 14216215. Branches `models-meshes`, `models-fullmodel`. Tools: `modkit/upkg.py` (package
+reader/writer, property dump, MI reader), `modkit/skm.py` (SKM render data parse/edit/write),
+`modkit/skmgltf.py` (glTF/FBX export/import), `modkit/sm.py` (static meshes), `modkit/b4bmodel.py`
+(model -> survivor / weapon pipeline, `b4bmod survivor|weapon`), `modkit/blender/b4bfit.py` (headless Blender fitting),
+`modkit/blender/preview.py` (headless renders), `tools/modkit/testassets/mpfb_survivor.py` (test human),
+`modkit/dotnet/pakx` (offline extraction, run via `modkit/b4bmod.py`). Guides: modkit/docs/meshes.md.
 
 ## TL;DR
 - **Format solved.** `skm.py` parses the whole cooked `USkeletalMesh` native part and writes it back
@@ -31,7 +31,7 @@ reader/writer, property dump, MI reader), `tools/modkit/skm.py` (SKM render data
   add-ons. Seen: survivor idle/aiming in Fort Hope and a mission, FP arms holding weapons, the AK in first person, the
   FP **reload animation moving our magazine**, the 3P AK in a bot's hands; add-on player vs. vanilla player both ways.
   Not seen: firing / muzzle flash (fire can't be simulated), the pickup and dropped-magazine static meshes in the world.
-- `tools/modkit/b4bmodel.py survivor|weapon` does it in one command (~40 s / ~30 s): fit in Blender (bone map, pose
+- `b4bmod survivor|weapon` (`modkit/b4bmodel.py`) does it in one command (~40 s / ~30 s): fit in Blender (bone map, pose
   fit onto the template joints, weights, slots/atlases, LOD decimation), cook, build the textures into the template's own
   texture packages, retarget weapon skins. FBX, glTF, OBJ, DAE, .blend in; unrigged characters get the template's weights.
 - **Static meshes solved**: `sm.py` parses/writes cooked `UStaticMesh` **byte-identically for 2118/2118 retail meshes**
@@ -149,25 +149,25 @@ the magazine during reload), so `from-skinned` always writes all slots. (Skeleta
 ## 2. Tools
 ```
 # offline extraction from the retail paks (no game running; same bytes as the agent's dumpassets): modkit/dotnet/pakx via
-# the modkit (AES key from `b4bmod config aes_key`, B4B_AES_KEY or --aes-key; never in the repo)
+# the modkit (AES key built in; `b4bmod config aes_key`, B4B_AES_KEY or --aes-key override it)
 modkit/b4bmod.sh extract '/Game/Characters/Heroes/Holly/*'          # into ~/.local/share/b4b-coop/extract
 modkit/b4bmod.sh find 'Heroes/Holly/.*_SKM$'
 
-.venv/bin/python tools/modkit/skm.py info <x_SKM.uasset>            # bounds, materials, LODs, sections
-.venv/bin/python tools/modkit/skm.py roundtrip <files...>           # parse + write, byte compare
-.venv/bin/python tools/modkit/skm.py edit <in.uasset> <out.uasset> --inflate 2.5 --scale-section '*:5:1.5' --material '*:1:4'
-.venv/bin/python tools/modkit/skmgltf.py export <x_SKM.uasset> <out.glb>     # reference for Blender
-.venv/bin/python tools/modkit/skmgltf.py import <template_SKM.uasset> <in.glb|.fbx> <out/Gobi/Content/.../x_SKM.uasset> [--lod <LOD1 model>]... [--lods N] [--socket NAME=x,y,z] [--bone NAME=x,y,z]
-.venv/bin/python tools/modkit/sm.py info|roundtrip|sizes <x_SM.uasset>...      # static meshes
-.venv/bin/python tools/modkit/sm.py import <template_SM> <model> <out> [--lod ...] | from-skinned <SM> <SKM> <out> <lod0.glb>... [--only-bone mag]
-.venv/bin/python tools/modkit/upkg.py props <x.uasset> [export]              # tagged properties, readable
-.venv/bin/python tools/modkit/b4bmodel.py survivor|weapon|textures ...      # the whole pipeline (§6, §7)
+.venv/bin/python modkit/skm.py info <x_SKM.uasset>            # bounds, materials, LODs, sections
+.venv/bin/python modkit/skm.py roundtrip <files...>           # parse + write, byte compare
+.venv/bin/python modkit/skm.py edit <in.uasset> <out.uasset> --inflate 2.5 --scale-section '*:5:1.5' --material '*:1:4'
+.venv/bin/python modkit/skmgltf.py export <x_SKM.uasset> <out.glb>     # reference for Blender
+.venv/bin/python modkit/skmgltf.py import <template_SKM.uasset> <in.glb|.fbx> <out/Gobi/Content/.../x_SKM.uasset> [--lod <LOD1 model>]... [--lods N] [--socket NAME=x,y,z] [--bone NAME=x,y,z]
+.venv/bin/python modkit/sm.py info|roundtrip|sizes <x_SM.uasset>...      # static meshes
+.venv/bin/python modkit/sm.py import <template_SM> <model> <out> [--lod ...] | from-skinned <SM> <SKM> <out> <lod0.glb>... [--only-bone mag]
+.venv/bin/python modkit/upkg.py props <x.uasset> [export]              # tagged properties, readable
+modkit/b4bmod.sh survivor|weapon <model> ... -o mymod [--install]   # the whole pipeline (§6; modkit/docs/meshes.md)
 .venv/bin/python tools/b4bpak.py pack <out dir containing Gobi/> <mods dir>/b4bmod_x.pak
 ```
 Blender: File > Import > glTF (the export), keep the armature, edit or replace the mesh (vertex groups named after
 bones), name materials after the template's slots (`skm.py info` lists them; Blender's `.001` suffixes are ignored),
 File > Export > glTF with **Include > "All Bone Influences"** on. Headless test: `blender -b --python
-tools/modkit/blender/blocky.py -- <export.glb> <out.glb> fp|3p`.
+modkit/blender/blocky.py -- <export.glb> <out.glb> fp|3p`.
 
 Import rules (skmgltf.py):
 - Coordinates: glTF = (x, z, y)·0.01 of UE. Swapping Y/Z is a reflection, so UE's clockwise triangles are glTF's
@@ -279,69 +279,16 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
   `b4bmod extract --regex`, gets `Base Surface Texture`/`Base Normal`/`PBR` pointed at the textures we wrote for the same
   part and view (51 of the AR02's 132 skin MIs: the receiver and magazine parts the AK uses; one 3P MI without own
   texture parameters inherits from its FP parent).
-- Test asset (not committed; `testassets/mpfb_survivor.py`): MPFB 2.0.17 (Blender extension, GPL) + the MakeHuman system
+- Test asset (not committed; `tools/modkit/testassets/mpfb_survivor.py`, dev only): MPFB 2.0.17 (Blender extension, GPL) + the MakeHuman system
   asset pack (CC0): male, `male_casualsuit05` + `shoes03` + `short02` hair + low-poly eyes, eyebrows baked into the skin
   texture (hero heads are opaque), Mixamo rig, FBX + PNGs. Weapon: "AK" by loafbrr (opengameart.org/content/ak, CC0):
   FBX with separate Bolt/Magazine/Trigger objects, PBR PNGs (albedo, normal, roughness, metalness, AO).
 
 ## 7. Guides (for mod makers)
-Everything runs from a shell; Blender must be installed (`B4B_BLENDER=<path>` if it isn't on PATH). `b4bmod` = the
-kit's `modkit/b4bmod.py` (setup, AES key, `find`, `extract`, `pack`: see modkit/README.md). Paths below are the repo's
-(`tools/modkit/...`); in the kit the scripts sit next to b4bmod.
-
-### Make a survivor model
-1. **Your model**: one FBX (or glTF/OBJ/.blend) of a human in an **A-pose** (arms ~45° down) or T-pose, with its
-   textures next to it. Best: rigged (Mixamo auto-rigger, a UE4 mannequin rig, 3ds Max Biped); unrigged works if it
-   stands in an A-pose (weights come from the game's mesh). Clothes/hair/eyes may be separate objects and materials.
-   Only opaque materials look right (alpha hair cards render as solid cards; bake eyebrows into the skin texture).
-2. **Pick the outfit to replace** (it keeps its skeleton, animations, physics): an Elite outfit is a whole survivor
-   (head included). `b4bmod find 'Heroes/Mom/Meshes/Elite/.*_SKM$'`, then extract that outfit's folder:
-   `b4bmod extract '/Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/*'`.
-3. **See its slots**: `python tools/modkit/skm.py info <extract>/.../3P_Mom_Elite_04_SKM.uasset` (`mat 4 ... Head`,
-   `mat 5 ... Torso`, ...). Skin goes on the head slot (skin shader), clothes on Torso/Legs (outfit shader).
-4. **Run the pipeline** (3P + FP arms + textures in one go):
-   ```
-   python tools/modkit/b4bmodel.py survivor mymodel.fbx \
-       --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM \
-       --fp     /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM \
-       --slot body=Head --slot jacket=Torso --slot hair=Torso --slot eyes=Torso --slot boots=Legs \
-       -o mymod
-   ```
-   `--slot` names are your model's material names (b4bmodel lists them and stops if one is missing). Textures are found
-   through the materials' image nodes, else by file name next to the model (`<material>_albedo/_normal/_roughness/...`),
-   or given: `--tex jacket=textures/Jacket_` (a file prefix or a folder). Options: `--lods 1,0.5,0.3,0.15,0.06`,
-   `--bonemap map.json`, `--weights transfer`, `--normal-dx`, `--work DIR --keep-work` (intermediate glTF/PNGs).
-5. **Check** before the game: `blender -b --python tools/modkit/blender/preview.py -- <work>/fit3p/lod0.glb out.png
-   --pose test --views side,front3q` (bent limbs: look for stretched or stuck vertices).
-6. **Pack and install**: `b4bmod pack mymod --title "My survivor" --zip`, `b4bmod install mymod.pak`; in game wear the
-   outfit (customization screen, or chat `/model mom_elite_04`). Other players see it only if they have the add-on.
-
-### Make a weapon model
-1. **Your model**: an FBX with **separate objects per moving part**, named like `Magazine`, `Bolt`, `Trigger`
-   (others stay on the gun), barrel along +X and up +Z (else `--forward -y --up +z` ...), real-world size (it is scaled
-   to the template's length anyway). Optional empty named `muzzle` at the barrel end. Textures next to it.
-2. **Pick the weapon to replace** with a similar shape (reload animations move the template's magazine bone: an AK
-   for AR02, an M4 for AR01): `b4bmod extract '/Game/Items/Weapons/Assault/AR02/*'`.
-3. **Run**:
-   ```
-   python tools/modkit/b4bmodel.py weapon ak.fbx \
-       --fp-mesh /Game/Items/Weapons/Assault/AR02/Meshes/AR02_SKM --3p-mesh /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SKM \
-       --static /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SM --static /Game/Items/Weapons/Assault/AR02/Meshes/AR02_Pickup_SM \
-       --mag-static /Game/Items/Weapons/Assault/AR02/Meshes/AR02_MagEmpty_3P_SM \
-       --slot AkMaterial=AR02_Reciever_M --slot Ammunition=AR02_Mag_M \
-       --tex AkMaterial=Textures/AK_1/AK_1_ --tex Ammunition=Textures/Ammunition/Ammunition_ -o mymod
-   ```
-   Slots are the FP mesh's (`skm.py info .../AR02_SKM.uasset`); the 3P mesh and static meshes follow by material
-   instance. It also retargets all skins of the weapon (`--skins keep` to leave them).
-4. **Check**: the log prints scale, where the muzzle went and which object became which part; `preview.py` on
-   `<work>/fitfp/lod0.glb`.
-5. **Pack/install** as above; the weapon is the same item (AR02) with your look for you only.
-
-### Lower level (same tools, step by step)
-`skmgltf.py export` (template -> glb), `blender/b4bfit.py character|weapon ...` (writes `lodN.glb` + `manifest.json`),
-`skmgltf.py import <template> lod0.glb <out.uasset> --lod lod1.glb ... [--socket muzzle=x,y,z] [--bone muzzle=...]`,
-`sm.py from-skinned <SM> <3P SKM> <out> lod0.glb ... [--only-bone mag]`, `sm.py import <SM> model.glb <out>`,
-`b4bmodel.py textures <manifest.json> --mesh <SKM> -o mymod`.
+Moved to the kit: [modkit/docs/meshes.md](../../modkit/docs/meshes.md) ("Make a survivor model", "Make a weapon
+model", doing the fitting by hand, lower-level tools). The mod maker runs `b4bmod survivor|weapon <model> ...`, which
+extracts the templates and what they reference (`tree`), runs `modkit/b4bmodel.py`, packs the add-on (`--install`
+installs it); `b4bmodel.py` stays usable directly (`b4bmod model ...` or `python modkit/b4bmodel.py ...`).
 
 ## 8. Live results: real models (2026-09-25, Proton, `launch/multi.sh 2`, add-ons per instance via `addons_dir=`)
 Add-ons: `survivor_mh.pak` (37 files, cosmetic: textures, meshes) and `ak47_loafbrr.pak` (v1.2: 136 files incl. 51 skin

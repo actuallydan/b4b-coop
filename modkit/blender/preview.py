@@ -1,7 +1,7 @@
 """Headless preview render of a model file (fbx, glb/gltf, obj, blend): front, side and back views side by side,
 Cycles on the CPU (works without a GPU). For checking a model before and after the pipeline steps.
 
-  blender -b --python tools/modkit/blender/preview.py -- <model> <out.png> [--size 512] [--pose test]
+  blender -b --python blender/preview.py -- <model> <out.png> [--size 512] [--pose test]
       [--views front,side,back,top,front3q] [--zoom 1.0] [--focus <object name substring>]
   --pose test bends arms, legs, spine and head of a B4B skeleton (skmgltf export or b4bfit output) to check weights.
 """

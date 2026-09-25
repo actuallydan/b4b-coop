@@ -4,7 +4,8 @@
 # game files: `b4bmod setup` fetches .NET + UAssetAPI, NuGet brings CUE4Parse and the codecs, the pak
 # AES key is built into b4bmod.py (modkit/README.md). Layout (one top folder):
 #   b4bcoop-modkit-<version>/README.md, LICENSE, b4bmod.cmd (Windows), b4bmod.sh, b4bmod.py, addon.py, b4bpak.py,
-#   skm.py, skmgltf.py, upkg.py, blender/*.py, dotnet/b4bmod/ and dotnet/pakx/ (.NET sources), docs/*.md
+#   b4bmodel.py, skm.py, skmgltf.py, sm.py, upkg.py, blender/*.py, dotnet/b4bmod/ and dotnet/pakx/ (.NET sources),
+#   docs/*.md
 set -euo pipefail
 unset ZIP ZIPOPT
 kit="$(cd "$(dirname "$0")" && pwd)"
@@ -13,15 +14,10 @@ version=$(sed -n 's/^version=//p' "$root/VERSION")
 name="b4bcoop-modkit-$version"
 dist="$root/dist/modkit"; out="$dist/$name"
 rm -rf "$dist"; mkdir -p "$out/docs" "$out/blender" "$out/dotnet/b4bmod" "$out/dotnet/pakx"
-# mesh tools: modkit/ once models-fullmodel is merged there, tools/modkit/ until then
-mesh="$kit"; [[ -f "$mesh/skmgltf.py" ]] || mesh="$root/tools/modkit"
 
-cp "$kit/README.md" "$kit/b4bmod.py" "$kit/b4bmod.cmd" "$kit/b4bmod.sh" "$kit/addon.py" "$kit/b4bpak.py" "$out/"
+cp "$kit/README.md" "$kit/b4bmod.cmd" "$kit/b4bmod.sh" "$kit"/*.py "$out/"   # b4bmod, addon, b4bpak, mesh tools
 cp "$root/LICENSE" "$out/LICENSE"
-for f in "$mesh"/*.py; do   # skm, skmgltf, upkg (+ whatever mesh tools join them); not the dev-only probes
-  case "$(basename "$f")" in pakscan.py|customversions.py) ;; *) cp "$f" "$out/" ;; esac
-done
-cp "$mesh"/blender/*.py "$out/blender/"
+cp "$kit"/blender/*.py "$out/blender/"
 cp "$kit"/docs/*.md "$out/docs/"
 cp "$kit"/dotnet/b4bmod/*.cs "$kit"/dotnet/b4bmod/*.csproj "$out/dotnet/b4bmod/"
 cp "$kit"/dotnet/pakx/*.cs "$kit"/dotnet/pakx/*.csproj "$out/dotnet/pakx/"
