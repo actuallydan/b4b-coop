@@ -154,7 +154,10 @@ static void set_comp_mesh(UObject *c, UObject *mesh, int clear_overrides) {
     ue_process_event(c, f, p);
 }
 // Components we changed, with what they had: put back when the weapon's row is no longer a look of ours.
-typedef struct { UObject *comp, *orig, *item; int32_t ci, oi, ii; char look[33]; } Swap;
+// The first-person skin's materials are set once when the weapon's FP mesh is set up (ApplyCustomization leaves them),
+// so they are kept here and put back with the mesh.
+#define MAX_MATS 16
+typedef struct { UObject *comp, *orig, *item; int32_t ci, oi, ii; char look[33]; UObject *mat[MAX_MATS]; int32_t mi[MAX_MATS]; int nmat; } Swap;
 #define MAX_SWAPS 96
 static Swap swaps[MAX_SWAPS];
 static Swap *swap_of(UObject *c) {
@@ -165,7 +168,16 @@ static void note_swap(UObject *c, UObject *orig, UObject *item, const char *look
     Swap *s = swap_of(c);
     if (!s) for (int i = 0; i < MAX_SWAPS && !s; i++) if (!swaps[i].comp || !alive(swaps[i].comp, swaps[i].ci)) s = &swaps[i];
     if (!s) return;
-    if (s->comp != c) { s->orig = orig; s->oi = orig ? U_INDEX(orig) : 0; }   // first swap keeps the retail mesh
+    if (s->comp != c) {   // first swap keeps the retail mesh and its material overrides
+        s->orig = orig; s->oi = orig ? U_INDEX(orig) : 0;
+        int32_t om = ue_prop_offset(c, "OverrideMaterials");
+        TArray *a = om >= 0 ? (TArray *)((char *)c + om) : NULL;
+        s->nmat = 0;
+        for (int i = 0; a && i < a->num && i < MAX_MATS; i++) {
+            UObject *m = ((UObject **)a->data)[i];
+            s->mat[i] = m; s->mi[i] = m ? U_INDEX(m) : 0; s->nmat = i + 1;
+        }
+    }
     s->comp = c; s->ci = U_INDEX(c); s->item = item; s->ii = U_INDEX(item);
     snprintf(s->look, sizeof s->look, "%s", look);
 }
@@ -220,6 +232,17 @@ static void restore_stale(UObject *only) {
         if (s->orig && alive(s->orig, s->oi)) {
             classes();
             set_comp_mesh(s->comp, s->orig, 0);
+            UFunction *sm = s->nmat ? fn_of(s->comp, "SetMaterial") : NULL;
+            int32_t pe = parm_off(sm, "ElementIndex"), pm = parm_off(sm, "Material");
+            int32_t om = ue_prop_offset(s->comp, "OverrideMaterials");
+            TArray *cur = om >= 0 ? (TArray *)((char *)s->comp + om) : NULL;
+            for (int k = 0; sm && pe >= 0 && pm >= 0 && k < s->nmat && UFN_PARMSSIZE(sm) <= 32; k++) {
+                if (cur && k < cur->num && ((UObject **)cur->data)[k]) continue;   // the new skin set this one
+                if (!s->mat[k] || !alive(s->mat[k], s->mi[k])) continue;
+                uint8_t p[32] = {0};
+                *(int32_t *)(p + pe) = k; *(UObject **)(p + pm) = s->mat[k];
+                ue_process_event(s->comp, sm, p);
+            }
             char b[96], c[64];
             LOG("wlooks: %s %s back to its own mesh", ue_obj_name(s->item, b, sizeof b), ue_obj_name(s->comp, c, sizeof c));
         }
