@@ -155,6 +155,7 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
 - **Test prefixes are shared between sessions: change them (`testprefix.py`, `B4B_FRESH`, `B4B_BLANK`, editing their
   `b4bcoop.ini` or saves) only while holding `launch/gamelock.sh`.** `testprefix.py` refuses to touch a prefix a game
   process is running on (`B4B_PREFIX` in /proc/<pid>/environ) unless `--force`.
+- Each prefix keeps a golden profile copy in `profile-golden/` (clone time; e2e.py restores it).
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.
@@ -192,6 +193,11 @@ sampler). `--full` adds a vanilla
 clients). Summary table at the end, exit 1 on failure; logs, agent transcript, profile diffs, ss samples and
 screenshots in `/tmp/b4b-e2e-<time>/` (`--out`). `B4B_LANE=2 tools/e2e.py --quick` runs it on lane 2 (above), in
 parallel with a lane-1 run; lane 2's lock release restores the second account's player build.
+Before each session it restores every used prefix's golden profile (`<prefix>/profile-golden/`, `tools/testprefix.py
+N --golden|--restore`; logged `profile testN: ...`; `--keep-profiles` skips it), so a wiped or grown profile never
+breaks the next run; the profile checks still diff that run's before/after. A client joining during its own sign-in
+used to get its profile reset ("HydraPublicId mismatch"); joins now wait for the sign-in
+(docs/investigations/test-profiles.md).
 
 ## Branches
 - `main`: shippable. Releases are tagged from here.
