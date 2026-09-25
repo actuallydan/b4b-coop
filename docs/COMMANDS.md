@@ -54,7 +54,9 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 - Only your own view changes: the other players see nothing different, and nothing is sent to them. Host and clients
   can each use it; cheats aren't needed.
 - It stays on until you type `/thirdperson` again: into the next chapter, back in Fort Hope, and in someone else's
-  game. It isn't saved: after restarting the game you start in first person.
+  game. It isn't saved: after restarting the game you start in first person, unless `thirdperson=1` is in
+  `b4bcoop.ini`.
+- The **N** key toggles it too (see `thirdperson_key`).
 - Moments where the game itself switches to a view from behind (healing, being grabbed or pounced, ...) are left to
   the game.
 - There is no third-person crosshair: the normal centre-of-screen one is used.
@@ -257,6 +259,8 @@ Rules:
 | `teamsize` | game's 4 | `5` (up to `8`) | Host: survivors per team |
 | `flashlight_key` | `L` | a letter, a digit, a key code, or `off` | The flashlight toggle key |
 | `flashlight_sticky` | `1` | `0`, `1` | Host: a manual flashlight choice stays until the next map |
+| `thirdperson` | `0` | `0`, `1` | `1`: start in third person (`/thirdperson`) |
+| `thirdperson_key` | `N` | a letter, a digit, a key code, or `off` | The third-person toggle key |
 | `allow_joins` | `friends` | `friends`, `anyone` | Host: who may join |
 | `allow_steamids` | none | Steam IDs | Host: these players may always join |
 | `presence` | `1` | `0`, `1` | `0`: friends don't see **Join Game** on you |
@@ -292,6 +296,15 @@ flashlight_key=F
 **`flashlight_sticky`**: host setting, applies to every player in the host's game. `1` (default): once someone
 switches their light by hand, dark or bright areas no longer switch it back, until the next map (or `/flashlight auto`
 on the host). `0`: the game's automatic switching always wins.
+
+**`thirdperson`** / **`thirdperson_key`**: your own camera, like `/thirdperson`. `thirdperson=1` starts every game
+in third person (`/thirdperson` still switches it). `thirdperson_key` (**N** by default) takes the same values as
+`flashlight_key`; `off` turns the key off.
+```ini
+thirdperson=1
+thirdperson_key=0x74
+```
+(`0x74` = F5.)
 
 **`allow_joins`**: host only. `friends` (default): only your Steam friends can join. `anyone`: anyone who can reach
 you, friends or not. Someone refused shows up in your chat: `Refused a join from Alex (steam:7656119...): not on the

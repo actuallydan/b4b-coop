@@ -116,6 +116,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     uelog_init();
     cards_init();
     flashlight_init();
+    thirdperson_init();
     rewards_init();
     rewardguard_init();
     burncards_init();

@@ -170,19 +170,12 @@ void cmd_flashlight(const char *arg, Out *o) {
 }
 
 // ---- hotkey (only while the game window has focus) ----
-static int game_focused(void) {
-    DWORD pid = 0;
-    HWND w = GetForegroundWindow();
-    if (w) GetWindowThreadProcessId(w, &pid);
-    return pid == GetCurrentProcessId();
-}
-
 void flashlight_tick(float dt) {
     static int was_down; static float cooldown;
     if (!hotkey) return;
     if (cooldown > 0) cooldown -= dt;
     int down = (GetAsyncKeyState(hotkey) & 0x8000) != 0;
-    if (down && !was_down && cooldown <= 0 && game_focused()) {
+    if (down && !was_down && cooldown <= 0 && cmds_game_focused()) {
         UObject *c = local_light();
         if (c) { request_toggle(c); LOG("flashlight: hotkey toggle (was %d)", HLC_VISIBLE(c)); }
         cooldown = 0.25f;
@@ -190,7 +183,7 @@ void flashlight_tick(float dt) {
     was_down = down;
 }
 
-// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; 0/off disables), flashlight_sticky=1
+// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; off disables), flashlight_sticky=1
 static void load_config(void) {
     FILE *f = fopen(cmds_config_path(), "r");
     if (!f) return;
@@ -201,12 +194,7 @@ static void load_config(void) {
         *v++ = 0;
         while (*v == ' ') v++;
         if (!strcmp(line, "flashlight_sticky")) sticky = atoi(v);
-        else if (!strcmp(line, "flashlight_key")) {
-            if (!strcmp(v, "0") || !_stricmp(v, "off") || !_stricmp(v, "none")) hotkey = 0;   // documented "0 disables"
-            else if (v[0] && !v[1] && ((v[0] >= 'a' && v[0] <= 'z') || (v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= '0' && v[0] <= '9')))
-                hotkey = (v[0] >= 'a' && v[0] <= 'z') ? v[0] - 32 : v[0];
-            else hotkey = (int)strtol(v, NULL, 0);
-        }
+        else if (!strcmp(line, "flashlight_key")) hotkey = cmds_parse_key(v);
     }
     fclose(f);
 }

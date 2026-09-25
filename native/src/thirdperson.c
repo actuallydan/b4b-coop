@@ -11,7 +11,8 @@
 // either side: no protocol change.
 //
 // Lifetime: on until /thirdperson again (or the game quits); it follows the local player to every new hero (next
-// chapter, camp, another host's session, a bot take-over). Not saved.
+// chapter, camp, another host's session, a bot take-over). Not saved; b4bcoop.ini `thirdperson=1` starts with it on.
+// `thirdperson_key=N` (default; same values as flashlight_key, `off` = no key) toggles it.
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +38,7 @@ static int32_t tp_pawni = -1, tp_pvci = -1;
 static Ref tp_ads[16];             // the hero's ADSComponents (one per weapon), refreshed every second
 static int n_tp_ads;
 static float tp_ads_age;
+static int tp_key = 'N';           // ini thirdperson_key (VK), 0 = none
 
 static int alive(UObject *o, int32_t idx) { return o && idx >= 0 && ue_object_at(idx) == o; }
 static UClass *cls(const char *name) {   // /Script classes never unload
@@ -104,7 +106,37 @@ static void tp_sync(float dt) {
 }
 
 void thirdperson_tick(float dt) {
+    static int was_down;
+    if (tp_key) {
+        int down = (GetAsyncKeyState(tp_key) & 0x8000) != 0;
+        if (down && !was_down && cmds_game_focused()) {
+            static Out tmp;
+            out_reset(&tmp);
+            cmd_thirdperson(NULL, &tmp);
+            LOG("thirdperson: hotkey: %.*s", (int)strcspn(tmp.buf, "\n"), tmp.buf);
+        }
+        was_down = down;
+    }
     if (tp_on) tp_sync(dt);
+}
+
+// b4bcoop.ini: thirdperson=1 (start in third person), thirdperson_key=N (toggle key; off = none)
+int thirdperson_init(void) {
+    FILE *f = fopen(cmds_config_path(), "r");
+    if (f) {
+        char line[300];
+        while (fgets(line, sizeof line, f)) {
+            char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
+            char *v = strchr(line, '='); if (!v || line[0] == '#' || line[0] == ';') continue;
+            *v++ = 0;
+            while (*v == ' ') v++;
+            if (!strcmp(line, "thirdperson")) tp_on = atoi(v) != 0;
+            else if (!strcmp(line, "thirdperson_key")) tp_key = cmds_parse_key(v);
+        }
+        fclose(f);
+    }
+    LOG("thirdperson: start %s, key=0x%02x", tp_on ? "on" : "off", tp_key);
+    return 0;
 }
 
 // /thirdperson [on|off|status] (chat, everyone)
