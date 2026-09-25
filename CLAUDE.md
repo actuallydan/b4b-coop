@@ -244,6 +244,11 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
   no `addr:`, game UDP on 127.0.0.1 (host and client) with loopback joins working (`e2e.py --quick` 12/12),
   remote-IP joins refused with the message, protocol mismatch refused on both sides, `host_ip=1` back to 0.0.0.0 and
   IP joins.
+- 2026-09-25 (local copies on Proton, two lanes): `/thirdperson` (#25: camera settings, N key, shoulder default, aim
+  correction toward the crosshair verified client-only on host damage); the `~` overlay (#26, D3D12 + ImGui) with every
+  chat command, ini save and key binding; live ini reload; joins wait for the offline sign-in (fixes a profile reset
+  race with `join=`); e2e: golden test profiles, Steam's own relay sockets (steamclient.so, 0.0.0.0) reported apart
+  from game sockets.
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.
@@ -255,6 +260,9 @@ Known issues / open:
   simulated join requests verified on one account; the real callback, the Join Game menu and Steam-initiated launch
   need the two-account plan in docs/investigations/steam-invites.md (#10). Local copies on one account overwrite each
   other's rich presence.
+- #27: in third person some interactions fail / their prompt is missing (e.g. picking up cards); deferred.
+- Steam's own relay sockets (in-process steamclient) bind 0.0.0.0; outside the game-socket loopback promise (Dan to
+  confirm the wording).
 - A client that disconnects before the saferoom-exit charge keeps its burn card. Skull totem points and duffel-bag
   rewards reach the client (verified, client-rewards.md §6b), but a remote player's duffel roll can't see what they
   own, so they may get a product they already have (a no-op).
