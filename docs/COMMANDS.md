@@ -18,8 +18,8 @@ of the window, and also in your chat.
 
 - While it is open, the mouse moves the window's own cursor and your hero doesn't move, shoot or react to keys
   (your flashlight and third-person keys too). `~` or `Esc` closes it.
-- Settings you change here (camera, keys, flashlight, who may join, the window's text size) apply at once and are
-  saved to `b4bcoop.ini`: only the settings you touched. Editing `b4bcoop.ini` while the game runs updates the window.
+- Settings you change here (camera, keys, flashlight, who may join, add-ons policy, the window's text size) apply at
+  once and are saved to `b4bcoop.ini`: only the settings you touched. Editing `b4bcoop.ini` while the game runs updates the window.
 - A key binding: click the key's button, then press the new key (`Esc` cancels, `Backspace` = no key). Mouse buttons
   4/5 and the middle button work too.
 
@@ -30,6 +30,7 @@ of the window, and also in your chat.
 | **Camera** | Third person on/off, start the game in third person, its key, sliders for distance, side, height and FOV (Ctrl+click a slider to type a number), Swap shoulder, Reset camera, aim correction | `/thirdperson ...`; ini `thirdperson*` |
 | **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky` |
 | **Cheats** | Host: **Cheats on**, a player picker (`me`, everyone, a player) for the buttons marked `*`, then every cheat: god, heal, revive, infinite ammo, copper, cards, fly, noclip, walk, teleport, free camera, size, horde, kill all ridden, freeze, director phases, spawn, game speed, win, lose, and your own save's supply points / unlock all | every `/cheats` command |
+| **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`), every player's add-ons | `/addons`, `/addons on\|off`, `/addons info`, `/addons players`, `/addons policy`; ini `addons`, `addons_policy` |
 | **Settings** | The window's text size and key, the flashlight and third-person keys | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key` |
 | **Help** | Your version, a box to run any chat command (without the `/`) | `/help` |
 
@@ -315,10 +316,11 @@ holly_magenta.pak=1
 holly_green.pak=0
 ```
 `=1` on, `=0` off. New add-ons are added at the bottom, switched on. The game loads them top to bottom: when two
-add-ons change the same file, **the one further down wins**. Move lines to change that. `/addons on|off` edits this
-file for you. All changes apply the next time the game starts.
+add-ons change the same file, **the one further down wins**. Move lines to change that. The `~` window's **Add-ons**
+tab (checkbox, **Up**/**Down**) and `/addons on|off` edit this file for you; editing it by hand while the game runs is
+picked up too. All changes apply the next time the game starts.
 
-**`/addons`**: the list with numbers, the state of each (`on`, `off`, `on after restart`, `off after restart`,
+**`/addons`**: the list with numbers (in `addonlist.txt` order), the state of each (`on`, `off`, `on after restart`, `off after restart`,
 `on, NOT LOADED`) and conflicts:
 ```
 2 add-on(s), load order (a later one wins):
@@ -362,7 +364,7 @@ you (host): 0 cosmetic, 0 gameplay
 ```
 Titles show for gameplay add-ons and for ones you have too; others show their id (`/addons info` on Bob's side shows
 the same id). **`/addons policy <x>`** changes the policy until the host quits; `addons_policy=` in `b4bcoop.ini`
-keeps it.
+keeps it (the `~` window's Add-ons tab sets both).
 
 Messages (in your chat after the game starts):
 - `Add-on conflict: "B" overrides "A". /addons`: both change the same files; B wins (it is further down the list).
@@ -400,7 +402,7 @@ Rules:
 - **Applied while the game runs:** `thirdperson`, `thirdperson_key`, `thirdperson_distance`, `thirdperson_side`,
   `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `flashlight_key`, `flashlight_sticky`,
   `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
-  `overlay_scale`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
+  `overlay_scale`, `addons_policy`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
   session. Deleting or commenting out a line = back to its default.
 - **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
   `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.

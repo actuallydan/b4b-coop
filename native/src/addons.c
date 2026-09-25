@@ -664,7 +664,9 @@ static Addon *pick(const char *arg, int *num, Out *o) {   // "#", "3" or a file 
     char want[MAX_PATH];
     snprintf(want, sizeof want, "%s", arg);
     for (char *c = want; *c; c++) *c = (char)tolower((unsigned char)*c);
-    int number = arg[strspn(arg, "0123456789")] == 0 ? atoi(arg) : 0;   // "2", not "2_skin.pak"
+    const char *end = arg + strspn(arg, "0123456789");
+    while (*end == ' ') end++;
+    int number = *end ? 0 : atoi(arg);   // "2", not "2_skin.pak"
     for (int q = 0; q < nA; q++) {
         Addon *a = &A[ord[q]];
         if (!a->present) continue;

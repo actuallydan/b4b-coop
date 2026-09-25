@@ -189,3 +189,43 @@ the others see vanilla. Code: `native/src/addons_mp.c`, gate in `admin.c` PreLog
   whose addoninfo claims `content=cosmetic` for a data table (logged, classified gameplay).
 - `tools/e2e.py --quick` checks the summary in the login and `/addons players` on the host.
 - `tools/e2e.py --quick` on this branch's dev build: 13/13 PASS (incl. the new add-ons check).
+
+## 8. `~` window: Add-ons tab (#26)
+Code: `addons_panel()` in `addons.c` (registered from `addons_init`, order 70), host part `addons_mp_panel()` in
+`addons_mp.c`. Same code paths as the chat: the row checkbox runs `/addons on|off <file>` (`ov_run`), "Show in the log"
+`/addons info`, `/addons`, `/addons players`; the policy radios are `ov_setting("addons_policy")` = `addons_live()`
+(new: `addons_policy` also applies live from a hand-edited `b4bcoop.ini`) + the ini writer.
+- Load order: `A[]` stays in mounted order after the scan (conflicts `C[]` hold indices into it, outfits `OF[]`
+  pointers); `ord[]` is the order of `addonlist.txt`. Up/Down (`addons_move`) swap with the next present add-on in
+  `ord[]` and rewrite the file (reverted if the write fails). `/addons` lists and numbers in `ord[]` order, so `<#>`
+  matches what the list shows. A `<#>` that is a file name starting with digits is no longer read as a number.
+- Pending changes: `on != on_at_start` or a present add-on's place != `pos0` -> banner "addonlist.txt differs from what
+  is loaded now (N switched, load order changed): restart the game to apply"; rows say `off after restart`,
+  `moves after restart`. Hand edits of `addonlist.txt` while the game runs are re-read (mtime, checked once a second
+  while the tab is shown: `addons: addonlist.txt changed outside the game, re-read`), so the next write keeps them.
+- Details: title/version/author/category/description, file, state, load order, `not loaded: <why>`, content class and
+  first gameplay file, author's `content=` label if it disagrees, id (Copy), outfits it adds (`outfit=` lines), its
+  conflicts both ways. Folder path with Copy (no "open folder": the game is full screen). "Load add-ons" = ini
+  `addons` (restart).
+- Client: the policy radios are greyed out (`ov_begin_perm(CMD_HOST)`: "Host only: you are in someone else's
+  session."), players' part shows only its own summary and why.
+
+Live (2026-09-25, lane 2, dev build, `multi.sh 2`; host: game folder `b4bcoop-addons` with broken.pak (text file),
+casual_joe, holly_green, holly_magenta, walker_dt_test; client `addons_dir=` with walker_checker; screenshots in
+`~/.local/share/b4b-coop/addons-tab/evidence/`, not committed):
+- Host tab: 5 rows, `broken` "not loaded: not a pak file", walker_dt_test "gameplay", conflict "Holly magenta portrait"
+  overrides "Holly green portrait" (2 files), Up disabled on #1, Down on #5.
+- `overlay set ##on:holly_magenta.pak 0` -> `> /addons off holly_magenta.pak` / `off, applies after restart`;
+  `overlay press Down##holly_green.pak` -> `addonlist.txt` = broken, casual_joe, holly_magenta=0, holly_green,
+  walker_dt_test; banner "(1 switched, load order changed)"; `/addons` in chat lists the same order + "load order
+  changed ... applies after restart".
+- `sed` on `addonlist.txt` (casual_joe=0) while running -> re-read, `/addons` shows `off after restart`; the tab's
+  checkbox back on rewrote it with the hand edit order intact.
+- Policy `none##pol` -> `b4bcoop.ini: addons_policy=none`, `/addons policy` = none. Client: same radio disabled
+  (the press stayed pending: disabled controls can't be driven), its ini unchanged.
+- Restart: `3 to mount, 0 conflict(s)`, casual_joe 1001, holly_green 1003, walker_dt_test 1004, magenta not mounted;
+  HUD portrait green. Details of Casual Joe: `58 file(s)`, cosmetic (textures, materials, meshes), outfit
+  `casual_joe: Casual Joe (mom)`. Host players table: `#1 Hergmgurk: 1 cosmetic, 0 gameplay / cosmetic 33c6d9d8 (not
+  installed here)`.
+- Lane 2's `lane-restore.sh` now backs up the `b4bcoop-addons` folder state and restores it (removed when the player
+  had none).
