@@ -130,7 +130,7 @@ int coop_is_loopback(const char *hostport) {
 // Returns 0 when the join started, -1 for a bad target, -2 for a Steam target without Steam P2P, -3 for an IP join to
 // another machine while host_ip=0.
 static int cmd_join(const char *target, Out *o) {
-    char url[300], cmd[400];
+    char url[800], cmd[900];
     int steam = steamnet_resolve_target(target, url, sizeof url);   // steam: -> a fake address carried over Steam P2P
     if (steam == -1) { LOG("join: bad target '%s'", target); out_printf(o, "bad join target: %s (ip[:port] or steam:<id64>)\n", target); return -1; }
     if (steam == -2) { out_printf(o, "cannot join %s: Steam P2P unavailable here (%s)\n", target, steamnet_last_error()); return -2; }
@@ -140,9 +140,10 @@ static int cmd_join(const char *target, Out *o) {
         return -3;
     }
     if (!steam) netguard_allow_host(url);   // a host given by name must still resolve
-    // our version and protocol go with the login (checked by the host's PreLogin gate, admin.c) and every rejoin
+    // our version and protocol go with the login (checked by the host's PreLogin gate, admin.c) and every rejoin,
+    // and so does the summary of our add-ons (addons_mp.c: the host's addons_policy)
     size_t ul = strlen(url);
-    snprintf(url + ul, sizeof url - ul, "?b4bcoop=%d?b4bcoopver=%s", coop_protocol(), coop_version());
+    snprintf(url + ul, sizeof url - ul, "?b4bcoop=%d?b4bcoopver=%s%s", coop_protocol(), coop_version(), addons_login_option());
     snprintf(cmd, sizeof cmd, "open %s", url);
     travel_set_host(url);        // the follow/rejoin logic reopens exactly this URL (travel.c), same Steam peer
     game_exec(cmd);

@@ -12,7 +12,9 @@ author, version, category, description), which the agent shows in /addons.
       (`key=value` lines, or L4D's `addontitle "..."` KeyValues). <src> may also be one of our uncompressed .pak
       files (e.g. from `b4bpak.py pack`): its files are repacked with the addoninfo.
       --zip also writes OUT.zip = b4bcoop-addons/<name>.pak, which players unzip into the game folder.
-  addon.py info <addon.pak>          addoninfo, content id (index SHA1) and files
+      The add-on's content class (cosmetic or gameplay-affecting, from the files: see classify) is written to the
+      addoninfo as `content=`; the agent derives it again at load and never trusts the file.
+  addon.py info <addon.pak>          addoninfo, content id (index SHA1), content class and files
   addon.py check <addons dir>        what the agent will do with that folder: load order from addonlist.txt, on/off,
                                      conflicts (same file in two enabled add-ons; the later one wins)
 Never commit or ship game assets: build add-ons under ~/.local/share/b4b-coop/.
@@ -23,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import b4bpak  # noqa: E402
 
 INFO = "b4bcoop-addoninfo.txt"
-KEYS = ("title", "author", "version", "category", "description")
+KEYS = ("title", "author", "version", "category", "description", "content")
 CATEGORIES = ("survivors", "ridden", "weapons", "items", "ui", "sounds", "maps", "misc")
 PKG_EXT = (".uasset", ".uexp", ".ubulk", ".uptnl", ".umap")
 ENTRY_HDR = 53
@@ -53,6 +55,156 @@ def parse_info(text):
         if k in KEYS:
             out[k] = v
     return out
+
+
+# ---- content class (#22). Same rules as native/src/addonclass.c: keep both in sync. ----
+# A package is cosmetic when every export's class is in COSMETIC (module, class; "X*" = prefix, None = whole module);
+# anything else is gameplay-affecting. SkeletalMesh also needs an imported Skeleton (a game skeleton).
+COSMETIC = [
+    ("/Script/Engine", c, "textures") for c in ("Texture2D", "TextureCube", "Texture2DArray", "VolumeTexture",
+                                                "TextureRenderTarget2D", "TextureRenderTargetCube", "TextureLightProfile")
+] + [
+    ("/Script/Engine", c, "materials") for c in ("Material", "MaterialInstanceConstant", "MaterialFunction*",
+                                                 "SubsurfaceProfile")
+] + [
+    ("/Script/Engine", c, "meshes") for c in ("SkeletalMesh", "SkeletalMeshSocket", "MorphTarget",
+                                              "SkeletalMeshLODSettings", "StaticMesh", "StaticMeshSocket")
+] + [
+    ("/Script/Engine", c, "sounds") for c in ("SoundWave", "SoundCue", "SoundClass", "SoundMix", "SoundAttenuation",
+                                              "SoundConcurrency", "SoundSubmix", "ReverbEffect", "SoundNode*")
+] + [("/Script/ClothingSystemRuntimeCommon", None, "meshes"), ("/Script/ClothingSystemRuntimeNv", None, "meshes"),
+     ("/Script/AkAudio", None, "sounds"), ("/Script/UMG", None, "ui"), ("/Script/MovieScene", None, "ui"),
+     ("/Script/MovieSceneTracks", None, "ui")] + [
+    ("/Script/Engine", c, "ui") for c in ("Font", "FontFace", "StringTable", "SlateBrushAsset")
+] + [("/Script/SlateCore", "SlateWidgetStyleAsset", "ui")] + [
+    ("/Script/CoreUObject", c, "ui") for c in ("Function", "DelegateFunction", "SparseDelegateFunction")
+] + [
+    ("/Script/Engine", c, "effects") for c in ("ParticleSystem", "ParticleEmitter", "ParticleSpriteEmitter",
+                                               "ParticleLODLevel", "ParticleModule*", "Distribution*",
+                                               "InterpCurveEdSetup")
+] + [("/Script/Niagara", None, "effects")]
+GAMEPLAY = [("PhysicsAsset", "physics asset"), ("SkeletalBodySetup", "physics asset"),
+            ("PhysicsConstraintTemplate", "physics asset"), ("PhysicalMaterial", "physical material"),
+            ("BodySetup", "collision"), ("NavCollision", "navigation collision"), ("DataTable", "data table"),
+            ("GuidDataTable", "data table"), ("CompositeDataTable", "data table"), ("CurveTable", "curve table"),
+            ("CompositeCurveTable", "curve table"), ("Curve*", "curve"), ("BlueprintGeneratedClass", "blueprint"),
+            ("AnimBlueprintGeneratedClass", "animation blueprint"), ("Skeleton", "skeleton"),
+            ("AnimSequence", "animation"), ("AnimMontage", "animation"), ("AnimComposite", "animation"),
+            ("BlendSpace*", "animation"), ("AimOffsetBlendSpace*", "animation"), ("PoseAsset", "animation"),
+            ("World", "map"), ("LevelSequence", "level sequence")]
+KINDS = ("textures", "materials", "meshes", "sounds", "ui", "effects")
+
+
+def _match(name, pat):
+    return name.startswith(pat[:-1]) if pat.endswith("*") else name == pat
+
+
+def _judge(module, cls):
+    """(True, kind) or (False, why)"""
+    for m, c, kind in COSMETIC:
+        if module == m and (c is None or _match(cls, c)):
+            return True, kind
+    for c, why in GAMEPLAY:
+        if _match(cls, c):
+            return False, why
+    return False, cls or "unknown class"
+
+
+def judge_package(b):
+    """One cooked .uasset header -> (True, {kinds}) or (False, why). B4B: legacy -7, unversioned, 104-byte exports."""
+    try:
+        tag, legacy = struct.unpack_from("<Ii", b, 0)
+        if tag != 0x9E2A83C1 or legacy != -7:
+            return False, "unreadable package"
+        p = 20
+        ncv = struct.unpack_from("<i", b, p)[0]; p += 4 + ncv * 20 + 4           # custom versions, TotalHeaderSize
+
+        def fstr(p):
+            n = struct.unpack_from("<i", b, p)[0]
+            return p + 4 + (n if n >= 0 else -n * 2)
+        p = fstr(p)                                                               # FolderName
+        flags, nn, no = struct.unpack_from("<Iii", b, p); p += 12
+        if not flags & 0x80000000:
+            p = fstr(p)                                                           # LocalizationId
+        p += 8                                                                    # GatherableTextData
+        ec, eo, ic, io = struct.unpack_from("<iiii", b, p)
+        names, p = [], no
+        for _ in range(nn):
+            n = struct.unpack_from("<i", b, p)[0]
+            names.append(b[p + 4:p + 3 + n].decode("latin-1") if n > 0 else None)
+            p += 4 + (n if n >= 0 else -n * 2) + 4
+        nm = lambda i: names[i] if 0 <= i < len(names) else None  # noqa: E731
+        imps = []
+        for i in range(ic):
+            _, _, cn, _, outer, on, _ = struct.unpack_from("<iiiiiii", b, io + i * 28)
+            imps.append((nm(cn), outer, nm(on)))
+        classes = [struct.unpack_from("<i", b, eo + e * 104)[0] for e in range(ec)]
+    except (struct.error, IndexError):
+        return False, "unreadable package"
+    kinds, skel_mesh = set(), False
+    skel_import = any(cn == "Skeleton" for cn, _, _ in imps)
+    for ci in classes:
+        if ci < 0 and -ci <= len(imps):
+            cn, outer, on = imps[-ci - 1]
+            if cn == "WidgetBlueprintGeneratedClass":
+                kinds.add("ui"); continue
+            if cn != "Class":
+                return False, f"instance of blueprint {on}"
+            module = imps[-outer - 1][2] if outer < 0 and -outer <= len(imps) else None
+            ok, what = _judge(module, on)
+            if not ok:
+                return False, what
+            skel_mesh |= on == "SkeletalMesh"
+            kinds.add(what)
+        elif 0 < ci <= len(classes):
+            cc = classes[ci - 1]
+            if cc < 0 and -cc <= len(imps) and imps[-cc - 1][2] == "WidgetBlueprintGeneratedClass":
+                kinds.add("ui"); continue
+            return False, "blueprint"
+        else:
+            return False, "unreadable package"
+    if skel_mesh and not skel_import:
+        return False, "skeletal mesh without a game skeleton"
+    return True, kinds
+
+
+def classify(items):
+    """items: [(name, bytes)] (names like Gobi/Content/...). Returns (gameplay: bool, kinds: [..], reasons: [..])."""
+    lower = {n.lower() for n, _ in items}
+    kinds, reasons = set(), []
+    for n, data in sorted(items):
+        k, base = n.lower(), os.path.basename(n)
+        stem, ext = os.path.splitext(k)
+        if ext == ".uasset":
+            ok, what = judge_package(data)
+            if ok:
+                kinds |= what
+            else:
+                reasons.append(f"{what}: {base}")
+        elif ext == ".uexp":
+            if stem + ".uasset" not in lower:
+                reasons.append(f"part of a package without its .uasset: {base}")
+        elif ext in (".ubulk", ".uptnl"):
+            pass
+        elif ext == ".umap":
+            reasons.append(f"map: {base}")
+        elif ext in (".locres", ".ufont"):
+            kinds.add("ui")
+        elif ext in (".bnk", ".wem"):
+            kinds.add("sounds")
+        elif ext in (".ushaderbytecode", ".ushadercode"):
+            kinds.add("materials")
+        elif ext == ".ini":
+            reasons.append(f"config: {base}")
+        else:
+            reasons.append(f"file type: {base}")
+    return bool(reasons), [k for k in KINDS if k in kinds], reasons
+
+
+def class_label(gameplay, kinds, reasons):
+    if gameplay:
+        return f"gameplay ({len(reasons)} file{'s' if len(reasons) != 1 else ''})"
+    return "cosmetic" + (f" ({', '.join(kinds)})" if kinds else "")
 
 
 def info_text(info):
@@ -158,6 +310,15 @@ def cmd_pack(a):
     info.setdefault("title", name)
     if info.get("category") and info["category"].lower() not in CATEGORIES:
         print(f"warning: category {info['category']!r} is not one of {', '.join(CATEGORIES)}", file=sys.stderr)
+    gameplay, kinds, reasons = classify(items)
+    if info.get("content") and info["content"].split()[0].lower() != ("gameplay" if gameplay else "cosmetic"):
+        print(f"note: content={info['content']!r} replaced: the files say {'gameplay' if gameplay else 'cosmetic'}",
+              file=sys.stderr)
+    info["content"] = class_label(gameplay, kinds, reasons)
+    for r in reasons[:10]:
+        print("gameplay-affecting:", r, file=sys.stderr)
+    if gameplay:
+        print("note: hosts refuse gameplay-affecting add-ons by default (addons_policy=cosmetic)", file=sys.stderr)
     items.append((INFO, info_text(info).encode("utf-8")))
     cid = write_pak(out, items)
     print(f"{out}: {len(items) - 1} file(s) + addoninfo, content id {cid}")
@@ -174,7 +335,7 @@ def cmd_pack(a):
         print(f"{zpath}: unzip into the game folder (creates b4bcoop-addons/{os.path.basename(out)})")
 
 
-def load_addon(path):
+def load_addon(path, with_class=False):
     ft, items = read_pak_files(path)
     info, files = {}, []
     for n, d in items:
@@ -182,14 +343,19 @@ def load_addon(path):
             info = parse_info(d.decode("utf-8", "replace"))
         else:
             files.append(n)
+    if with_class:
+        return ft["index_sha1"], info, files, classify([(n, d) for n, d in items if n.lower() != INFO])
     return ft["index_sha1"], info, files
 
 
 def cmd_info(a):
-    cid, info, files = load_addon(a.pak)
-    print(f"{a.pak}: content id {cid}, {len(files)} file(s)")
+    cid, info, files, (gameplay, kinds, reasons) = load_addon(a.pak, True)
+    print(f"{a.pak}: content id {cid} (short {cid[:8]}), {len(files)} file(s)")
     for k in KEYS:
         print(f"  {k}: {info.get(k, '')}")
+    print(f"  class (from the files): {class_label(gameplay, kinds, reasons)}")
+    for r in reasons:
+        print("    gameplay-affecting:", r)
     for n in files:
         print("  ", n)
 
@@ -218,12 +384,12 @@ def cmd_check(a):
     owner, conflicts = {}, {}
     for i, (f, on) in enumerate(order):
         try:
-            cid, info, files = load_addon(os.path.join(d, f))
-            why = ""
+            cid, info, files, cls = load_addon(os.path.join(d, f), True)
+            why, label = "", class_label(*cls)
         except SystemExit as e:
-            cid, info, files, why = "-", {}, [], str(e)
+            cid, info, files, why, label = "-", {}, [], str(e), ""
         print(f"{i + 1}. {f} [{'on' if on else 'off'}] {info.get('title', f[:-4])} {info.get('version', '')}"
-              f"{'  NOT LOADED: ' + why if why else ''}")
+              f"{' ' + label if label else ''} id {cid[:8]}{'  NOT LOADED: ' + why if why else ''}")
         if not on:
             continue
         for n in files:

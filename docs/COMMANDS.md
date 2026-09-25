@@ -38,7 +38,7 @@ Contents: [Chat commands](#how-to-use-chat-commands) · [Commands for everyone](
 | `/model reset` | Back to your own look | `/model reset` |
 | `/addons` | Lists your add-ons, on/off, and conflicts | `/addons` |
 | `/addons on\|off <#>` | Switches an add-on on or off from the next game start | `/addons off 2` |
-| `/addons info <#>` | Title, author, version, description of an add-on | `/addons info 1` |
+| `/addons info <#>` | Title, author, version, description, cosmetic or gameplay, id of an add-on | `/addons info 1` |
 
 **`/help`**: the first line is your version, e.g. `b4bcoop 0.3.0 (protocol 1)`. The host also sees the host-only
 commands; a client sees `(/kick /ban /lock ... are for the host)`.
@@ -99,6 +99,8 @@ sent to the host.
 | `/say <message>` | A message every player sees in their chat | `/say back in 5 min` |
 | `/model <player> <name\|reset>` | Changes a player's or a bot's look; everyone is told | `/model 2 doc_elite_03` |
 | `/models on\|off` | Allows or stops model swaps for everyone (on by default) | `/models off` |
+| `/addons players` | Which add-ons each player runs (cosmetic/gameplay, ids) | `/addons players` |
+| `/addons policy [any\|cosmetic\|none\|match]` | Shows or sets (this session) which add-ons joiners may have | `/addons policy none` |
 
 **`<player>`** is the number from `/players` (`2` or `#2`), or a name: exact (any case) or the start of a name, if
 only one player matches. Bots and yourself can't be kicked or banned (`Holly is a bot`, `that's you`).
@@ -236,8 +238,8 @@ copy the backup over `PlayerProfileSettings.sav`. If the backup can't be made, n
 ## Add-ons
 
 Add-ons change how the game looks (textures, models, UI), Left 4 Dead style: drop a file in a folder, restart. There
-is no in-game browser. Add-ons are **only on your PC**: other players don't need them and don't see them (for now,
-don't use add-ons that change gameplay, like collision or hitboxes, in a session with others).
+is no in-game browser. Add-ons are **only on your PC**: other players don't need them and don't see them. If you have
+a survivor skin add-on, you see it on every survivor wearing that outfit; players without it see the normal outfit.
 
 **Install:** an add-on is one `.pak` file. Put it in the `b4bcoop-addons` folder in the game folder (next to
 `Back4Blood.exe`; create the folder if it isn't there). An add-on zip already contains that folder: extract it into
@@ -261,6 +263,42 @@ file for you. All changes apply the next time the game starts.
 conflict: holly_green.pak overrides holly_magenta.pak (2 file(s))
 ```
 `<#>` in `/addons on|off|info` is that number, the file name or the title (or a unique part of it).
+
+**Cosmetic or gameplay:** b4bcoop looks at the files in every add-on and sorts it into one of two kinds (what the
+add-on says about itself doesn't count):
+- **cosmetic**: textures, materials, character and weapon models (on the game's own skeleton), cloth, sounds, UI,
+  effects. Changes only what you see and hear.
+- **gameplay**: anything else, e.g. physics or collision, data tables, blueprints, skeletons, animations, maps, config
+  files. Could change how the game plays, so hosts refuse these by default.
+
+`/addons` shows the kind of each add-on, `/addons info <#>` the first file that made it "gameplay".
+
+**Joining someone with add-ons:** when you join, your game tells the host how many cosmetic and gameplay add-ons you
+run and their ids (plus the titles of gameplay ones). The host's `addons_policy` decides:
+
+| `addons_policy=` | Who may join |
+|---|---|
+| `cosmetic` (default) | Everyone with cosmetic add-ons only. Gameplay add-ons are refused, by name |
+| `any` | Everyone, whatever they run |
+| `none` | Only players with no add-ons at all |
+| `match` | Cosmetic add-ons are free; gameplay add-ons must be exactly the host's (same ids) |
+
+Refused, you see `Could not join: Host allows cosmetic add-ons only; you have gameplay add-ons: <titles>. Switch them
+off (/addons off <#>) and restart the game.` (or the `none`/`match` version); the host sees `<name> could not join:
+they have gameplay add-ons (<titles>); addons_policy=cosmetic.` Add-ons apply at game start, so switch them off and
+restart before joining again. The host's own add-ons don't matter under `cosmetic`, `any` and `none`.
+
+**`/addons players`** (host): every player's add-ons, e.g.
+```
+add-ons policy: cosmetic
+you (host): 0 cosmetic, 0 gameplay
+#1 Bob:
+  1 cosmetic, 0 gameplay
+  cosmetic 33c6d9d8 Walker checker outfit (you have it too)
+```
+Titles show for gameplay add-ons and for ones you have too; others show their id (`/addons info` on Bob's side shows
+the same id). **`/addons policy <x>`** changes the policy until the host quits; `addons_policy=` in `b4bcoop.ini`
+keeps it.
 
 Messages (in your chat after the game starts):
 - `Add-on conflict: "B" overrides "A". /addons`: both change the same files; B wins (it is further down the list).
@@ -388,6 +426,7 @@ join=steam:7656119XXXXXXXXXX
 | `netguard_allow` | none | With `netguard=block`: host names to let through anyway, comma-separated, `*.example.com` for a whole domain (troubleshooting only) |
 | `addons` | `1` | `0`: load no add-ons at all (troubleshooting) |
 | `addons_dir` | `<game>\b4bcoop-addons` | Another add-ons folder, a full Windows path, e.g. `addons_dir=D:\b4b-addons` |
+| `addons_policy` | `cosmetic` | Host: which add-ons joiners may have: `cosmetic`, `any`, `none`, `match` (see Add-ons) |
 
 ## Launch options & troubleshooting
 
@@ -424,6 +463,7 @@ your chat as `Could not join: ...` once the popup is closed.
 | Message | Meaning | What to do |
 |---|---|---|
 | `Host runs b4bcoop X (protocol N); you have Y (protocol M). Everyone needs the same version.` | You and the host have different b4bcoop versions | Everyone installs the latest release (extract the zip again). Both versions are in the message; the host sees `<name> could not join: they have ...` |
+| `Host allows cosmetic add-ons only; you have gameplay add-ons: ...` (or `no add-ons`, `the same gameplay add-ons`) | The host's `addons_policy` refuses some of your add-ons | `/addons off <#>` for the ones named, restart the game, join again; or the host sets `/addons policy any` |
 | `Server full.` | Every survivor slot is taken by a player (bot slots count as free) | Wait for a free slot, or the host sets `teamsize=5` |
 | `This host only accepts their Steam friends. ...` | You're not on the host's Steam friends list | Become Steam friends, or the host adds you with `allow_steamids=` |
 | `Could not reach the host over Steam. Is it still hosting? ...` | The host quit, or refused you (not friends) | Check the host is in Fort Hope or a mission; see the line above |

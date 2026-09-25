@@ -62,7 +62,8 @@ it on. Every option, with defaults and examples: [docs/COMMANDS.md](docs/COMMAND
   port forwarding (UDP 7777) and triggers the Windows Firewall prompt. Everyone in the game needs it.
 
 Add-ons (textures, models): put the add-on's `.pak` in a `b4bcoop-addons` folder next to `Back4Blood.exe` and
-restart; `/addons` lists them. Details: [docs/COMMANDS.md](docs/COMMANDS.md#add-ons).
+restart; `/addons` lists them. Only you see your add-ons. Hosts let in players with cosmetic add-ons only, by
+default (`addons_policy=`). Details: [docs/COMMANDS.md](docs/COMMANDS.md#add-ons).
 
 All chat commands and options: [docs/COMMANDS.md](docs/COMMANDS.md).
 
