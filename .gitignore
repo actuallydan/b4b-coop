@@ -6,3 +6,5 @@ native/out/
 *.log
 dist/
 .claude/
+tools/modkit/uassetrt/bin/
+tools/modkit/uassetrt/obj/
