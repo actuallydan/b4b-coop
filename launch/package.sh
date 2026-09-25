@@ -36,6 +36,11 @@ cat > "$ini" <<'INI'
 ; Flashlight toggle key (default L; off disables it).
 ;flashlight_key=L
 
+; Start in third person (/thirdperson).
+;thirdperson=1
+; Third-person toggle key (default N; off disables it).
+;thirdperson_key=N
+
 ; Host only: who may join. Default: only your Steam friends. "anyone" also lets in people who aren't.
 ;allow_joins=friends
 ; Host only: always let these Steam IDs in (17-digit Steam IDs, comma-separated), friends or not.
@@ -81,6 +86,7 @@ OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, r
   host=0             don't host; your offline game stays private
   teamsize=5         (host) 5 survivors instead of 4
   flashlight_key=L   the flashlight toggle key (off turns it off)
+  thirdperson=1      start in third person (thirdperson_key=N, the toggle key; off turns it off)
   allow_joins=anyone (host) also let in people who aren't your Steam friends;
                      or allow_steamids=<17-digit Steam ID> for one person
   host_ip=1          ADVANCED: host and join by IP address instead of through Steam. Needs port

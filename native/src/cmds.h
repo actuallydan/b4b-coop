@@ -22,10 +22,13 @@ int rewards_init(void);
 int burncards_init(void);
 int cmds_auto_host(void);
 const char *cmds_config_path(void);    // b4bcoop.ini, or B4B_COOP_CONFIG
+int cmds_parse_key(const char *v);     // ini hotkey value -> VK code (0 = no key)
+int cmds_game_focused(void);           // the game window is in front (hotkeys)
 int flashlight_init(void);
 void flashlight_tick(float dt);
 void cmd_flashlight(const char *arg, Out *o);
 // thirdperson.c: /thirdperson, the local player's own over-the-shoulder camera (#25; everyone, no cheats)
+int thirdperson_init(void);                              // ini thirdperson=1 (start on), thirdperson_key=N
 void thirdperson_tick(float dt);
 void cmd_thirdperson(const char *arg, Out *o);          // on|off|status, NULL = toggle
 int thirdperson_cmd(const char *verb, char *rest, Out *o);   // dev builds: `thirdperson [on|off|view [1|2|3]]`

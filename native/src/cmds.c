@@ -267,6 +267,24 @@ const char *cmds_config_path(void) {
     return path;
 }
 
+// Hotkeys (flashlight_key, thirdperson_key): a letter/digit (0 = the 0 key), or a VK code like
+// 0x4C; off, none or empty = no key.
+int cmds_parse_key(const char *v) {
+    while (*v == ' ') v++;
+    if (!*v || !_stricmp(v, "off") || !_stricmp(v, "none")) return 0;
+    if (!v[1] && ((v[0] >= 'a' && v[0] <= 'z') || (v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= '0' && v[0] <= '9')))
+        return (v[0] >= 'a' && v[0] <= 'z') ? v[0] - 32 : v[0];
+    return (int)strtol(v, NULL, 0);
+}
+
+// Hotkeys only count while the game window has focus.
+int cmds_game_focused(void) {
+    DWORD pid = 0;
+    HWND w = GetForegroundWindow();
+    if (w) GetWindowThreadProcessId(w, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 // join= without host_ip=1: drop IP targets on other machines (they would only be refused), tell the player once.
 static void filter_ini_join(void) {
     if (host_ip || !auto_join[0]) return;
