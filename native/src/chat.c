@@ -110,6 +110,9 @@ static void show_text(const char *sender, char *buf) {
         if (++lines > 16) { show_line(sender, "..."); break; }
         int shown = show_line(sender, line);
         LOG("chat: [local %s%s] %s", sender, shown ? "" : ", no chat box", line);
+        char note[300];
+        snprintf(note, sizeof note, "%s: %s", sender, line);
+        overlay_note(note);   // the ~ window's log shows chat replies and notices too
     }
 }
 

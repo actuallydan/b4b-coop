@@ -16,6 +16,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "overlay.h"
 
 // void UHeroLightComponent::SetLightState(bool bVisible, bool bThirdPersonShadows) (internal, non-reflected)
 #define ADDR_HLC_SET        VA(0x141BF2090ull)
@@ -194,8 +195,35 @@ int flashlight_live(const char *key, const char *v) {
 static void ini_pair(const char *k, const char *v, void *ctx) { (void)ctx; flashlight_live(k, v); }
 static void load_config(void) { cmds_ini_each(ini_pair, NULL); }
 
+int flashlight_hotkey(void) { return hotkey; }
+
+// ~ overlay tab (overlay.h): the light itself through /flashlight, key and sticky mode as b4bcoop.ini settings
+static void fl_panel(void) {
+    UObject *c = local_light();
+    int auth = c && is_authority(c);
+    if (!c) ov_text_dim("No hero right now: your light shows here in Fort Hope and in missions.");
+    else ov_text("Your flashlight: %s (%s)", HLC_VISIBLE(c) ? "on" : "off", manual_find(c) ? "set by hand" : "automatic");
+    if (ov_button("Toggle")) ov_run("flashlight toggle");
+    ov_same_line();
+    if (ov_button("On")) ov_run("flashlight on");
+    ov_same_line();
+    if (ov_button("Off")) ov_run("flashlight off");
+    ov_same_line();
+    ov_begin_disabled(c && !auth, "Host only: on a client your choice lasts until the next map.");
+    if (ov_button("Automatic")) ov_run("flashlight auto");
+    ov_tooltip("Hand the light back to the game's own switching (dark and bright areas).");
+    ov_end_disabled();
+    int k = hotkey;
+    if (ov_key("Toggle key##flashlight_key", &k)) ov_setting_key("flashlight_key", k);
+    int st = sticky;
+    if (ov_checkbox("Keep a manual choice (sticky)##sticky", &st)) ov_setting("flashlight_sticky", st ? "1" : "0", 1);
+    ov_tooltip("Host setting: once a player switches their light by hand, dark or bright areas no longer switch it, "
+               "until the next map.");
+}
+
 int flashlight_init(void) {
     load_config();
+    overlay_add_panel("Flashlight", 40, fl_panel);
     LOG("flashlight: key=0x%02x sticky=%d", hotkey, sticky);
     if (memcmp((void *)ADDR_HLC_SET, SIG_SET, sizeof SIG_SET) || memcmp((void *)ADDR_HLC_TOGGLE, SIG_TOGGLE, sizeof SIG_TOGGLE)) {
         LOG("flashlight: signature mismatch, sticky mode off");

@@ -1,0 +1,72 @@
+// `~` overlay (#26): panel registry and a small C widget API over Dear ImGui (overlay.cpp).
+//
+// A module adds a tab with overlay_add_panel() from its init; the draw function runs on the GAME thread (from
+// overlay_tick, only while the window is open and that tab is shown), so it may read UE state and call the module's
+// own functions directly, like a chat command handler. Use only the ov_* calls below inside it.
+//
+// Rules for panels:
+//  - Actions go through the chat command path: ov_run("kick #2") runs admin_slash() (same permission checks, same
+//    handler as `/kick #2`); its reply lands in the window's log. Settings go through ov_setting(): the module's ini
+//    live handler (same as editing b4bcoop.ini) and, when saved, the ini writer (only that key).
+//  - Controls a player may not use are drawn disabled with the reason: wrap them in ov_begin_perm(CMD_HOST/CMD_CHEAT)
+//    ... ov_end_perm().
+//  - Labels follow ImGui: "Kick##3" shows "Kick" with a unique id; the dev command `overlay press <label>` /
+//    `overlay set <label> <value>` drives a control by its label (tests).
+#pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef void (*OverlayDrawFn)(void);
+// order: tab position (lower first). Built-in: Session 10, Players 20, Camera 30, Flashlight 40, Cheats 50,
+// Settings 90, Help 100. Up to 24 panels; a second call with the same name replaces the draw function.
+void overlay_add_panel(const char *name, int order, OverlayDrawFn draw);
+int overlay_is_open(void);
+void overlay_note(const char *text);   // a line in the window's log (any thread)
+
+// ---- widgets (inside a draw function only) ----
+void ov_text(const char *fmt, ...);
+void ov_text_dim(const char *fmt, ...);       // secondary text, wrapped
+void ov_text_warn(const char *fmt, ...);      // highlighted text, wrapped
+void ov_heading(const char *text);            // a separator with a label
+int ov_button(const char *label);             // 1 when clicked
+int ov_button_confirm(const char *label, const char *confirm);   // needs a second click ("confirm" shown) within 3 s
+int ov_checkbox(const char *label, int *v);   // 1 when changed
+int ov_radio(const char *label, int active);  // 1 when clicked
+int ov_slider(const char *label, float *v, float lo, float hi, const char *fmt);   // 1 while changing
+int ov_slider_int(const char *label, int *v, int lo, int hi);
+int ov_input_text(const char *label, char *buf, int n, const char *hint);          // 1 when Enter was pressed
+int ov_input_int(const char *label, int *v, int lo, int hi);                       // 1 when changed
+int ov_combo(const char *label, int *cur, const char *const *items, int n);        // 1 when changed
+int ov_edit_done(void);                       // the last slider/input: edit finished (released, Enter, left)
+int ov_key(const char *label, int *vk);       // key binding: click, press a key (Esc cancels, Backspace = none)
+const char *ov_key_name(int vk);              // "L", "~", "F5", "none", ...
+void ov_same_line(void);
+void ov_separator(void);
+void ov_width(float em);                      // width of the next control, in font heights (0 = default)
+void ov_tooltip(const char *text);            // for the last control (also when disabled)
+int ov_header(const char *label, int default_open);   // collapsing section; 1 = open
+void ov_push_id(int id);
+void ov_pop_id(void);
+int ov_table_begin(const char *id, int cols);          // 1 = draw rows, then ov_table_end() (only then)
+void ov_table_header(const char *const *names, int n); // column labels, first row
+void ov_table_next(void);                              // next cell (wraps to the next row)
+void ov_table_end(void);
+void ov_copy(const char *text);               // to the clipboard
+
+// ---- permissions (cmds.h CMD_ANYONE / CMD_HOST / CMD_CHEAT): disabled block with a reason ----
+int ov_allowed(int perm, const char **why);   // 1 if this machine may run such a command now
+int ov_begin_perm(int perm);                  // returns ov_allowed(); always pair with ov_end_perm()
+void ov_end_perm(void);
+void ov_begin_disabled(int disabled, const char *why);
+void ov_end_disabled(void);
+
+// ---- actions and settings ----
+void ov_run(const char *fmt, ...);            // a chat command without '/', e.g. ov_run("kick #%d", i)
+void ov_setting(const char *key, const char *val, int save);   // live (module's *_live) + b4bcoop.ini when save
+void ov_setting_f(const char *key, float v, int save);          // "%.0f" (or "%.2f" below 10)
+void ov_setting_key(const char *key, int vk);                   // a key binding (saved): "L", "0xC0", "off"
+
+#ifdef __cplusplus
+}
+#endif

@@ -392,6 +392,9 @@ def duo(args):
         c = Check("duo", "chat: /players typed on the client gets a reply")
         c.done(*chat_players(S, C))
 
+        c = Check("duo", "~ overlay: opens, draws, a Players control runs /players, closes (host and client)")
+        c.done(*overlay_smoke(S, (H, C)))
+
         c = Check("duo", "endmission success: client's SP forwarded")
         hl.mark(); cl.mark()
         agent(H, "endmission", "1")
@@ -481,6 +484,27 @@ def chat_players(S, n):
             return ok, f"{via}, attempt {attempt + 1}: {len(lines)} line(s): " + " | ".join(lines[:5])
         if how == "type": agent(n, "popup", "close")
     return False, "no 'chat: intercepted' after typing or chat-box send"
+
+
+def overlay_smoke(S, insts):
+    """The ~ window (dev `overlay` command): open, frames drawn over the game, the Players tab's list button runs the
+    /players chat command (reply in the window's log), close; the game keeps answering."""
+    details = []
+    for n in insts:
+        agent(n, "overlay", "open")
+        st = wait_for(lambda: (lambda s: s if re.search(r"renderer=ready .*drawn=[1-9]", s) else None)(agent(n, "overlay", "status")), 20, 1)
+        if not st: return False, f"instance {n}: no frames drawn: {agent(n, 'overlay', 'status').strip()}"
+        agent(n, "overlay", "tab", "Players")
+        time.sleep(1)
+        agent(n, "overlay", "press", "List in the log (/players)")
+        lg = wait_for(lambda: (lambda t: t if re.search(r"^#\d+ .*\(you\)", t, re.M) else None)(agent(n, "overlay", "log")), 10, 1)
+        screenshot(n, f"overlay-{n}.png")
+        agent(n, "overlay", "close")
+        st2 = agent(n, "overlay", "status")
+        if not lg or "open=0" not in st2:
+            return False, f"instance {n}: log {'ok' if lg else 'missing /players reply'}, {st2.strip()[:120]}"
+        details.append(f"#{n} " + re.search(r"frames built=\d+ drawn=\d+", st2).group(0))
+    return True, "; ".join(details)
 
 
 def slotguard(args):

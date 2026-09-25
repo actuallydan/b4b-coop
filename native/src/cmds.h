@@ -28,6 +28,10 @@ int cmds_parse_key(const char *v);     // ini hotkey value -> VK code (0 = no ke
 int cmds_ini_each(void (*fn)(const char *key, const char *val, void *ctx), void *ctx);
 int cmds_ini_set(const char *key, const char *val);
 void cmds_ini_poll(float dt);
+// A setting from the overlay: the module's live handler below (as if b4bcoop.ini changed), and with save the writer
+// (only this key; val NULL = the default, the line is commented out). 0 = ok.
+int cmds_ini_apply(const char *key, const char *val, int save);
+const char *cmds_ini_value(const char *key);   // the key's value in b4bcoop.ini as last read or written, NULL = not set
 // Live reload handlers (cmds_ini_poll): a key that changed while the game runs, val NULL = removed (back to the
 // default). 1 = the key is theirs and was applied.
 int thirdperson_live(const char *key, const char *val);
@@ -36,12 +40,17 @@ int joinpolicy_live(const char *key, const char *val);
 int presence_live(const char *key, const char *val);
 int teamsize_live(const char *key, const char *val);
 int overlay_live(const char *key, const char *val);
-// overlay.cpp: the `~` power-user window (#26 spike; Dear ImGui over the game's D3D12 swap chain)
+// overlay.cpp: the `~` power-user window (#26; Dear ImGui over the game's D3D12 swap chain). Panels: overlay.h
 int overlay_init(void);
 void overlay_tick(float dt);
 int overlay_is_open(void);
+int overlay_cmd(const char *verb, char *rest, Out *o);   // dev builds: `overlay open|close|status|tab|press|set|log`
+void overlay_note(const char *text);                     // a line in the window's log (any thread)
+int flashlight_hotkey(void);                             // flashlight_key (VK, 0 = none)
+int thirdperson_hotkey(void);                            // thirdperson_key
 int cmds_game_focused(void);           // the game window is in front (hotkeys)
-int cmds_hotkey_down(int vk);          // game thread: the key is held, through the game's input (not while typing in chat)
+int cmds_hotkey_down(int vk);          // game thread: the key is held, through the game's input (not while typing in chat,
+                                       // not while the overlay is open)
 int flashlight_init(void);
 void flashlight_tick(float dt);
 void cmd_flashlight(const char *arg, Out *o);
@@ -50,12 +59,10 @@ int thirdperson_init(void);                              // ini thirdperson=1 (s
 void thirdperson_tick(float dt);
 void cmd_thirdperson(const char *arg, Out *o);          // on|off|status, NULL = toggle
 int thirdperson_cmd(const char *verb, char *rest, Out *o);   // dev builds: `thirdperson [on|off|view [1|2|3]]`
-typedef struct { int on, aimfix; float dist, side, height, fov; } TpSettings;   // the /thirdperson settings (for a settings UI)
-void thirdperson_get(TpSettings *s);
-void thirdperson_apply(const TpSettings *s);             // game thread: like the chat command (clamped, applied at once)
 int testing_cmd(const char *verb, char *rest, Out *o); // testing.c (dev builds): test commands; 1 if handled
 int teamsize_init(void);
 int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled (also chat /teamsize)
+int teamsize_get(void);                                  // teamsize= (0 = the game's)
 int lineup_init(void);                                   // lineup.c: 5th+ hero in the character lineups (#8)
 int lineup_cmd(const char *verb, char *rest, Out *o);    // dev builds: `lineup [off dx dy | fov deg | apply]`
 void teamsize_tick(float dt);
@@ -137,6 +144,7 @@ const char *joinpolicy_error(void);                          // login error text
 void joinpolicy_notify_refused(uint64_t steamid, const char *why);  // any thread: host chat notice (next tick)
 void joinpolicy_tick(float dt);
 int joinpolicy_cmd(const char *verb, char *rest, Out *o);   // dev builds
+void joinpolicy_get(int *anyone, char *ids, size_t n);       // overlay: allow_joins=anyone, allow_steamids as "id,id"
 
 // rewardguard.c: client-side validation of host-sent profile commands (ClientExecute*Command RPCs)
 int rewardguard_init(void);
@@ -188,6 +196,7 @@ enum {
 };
 
 // cheats.c: opt-in host-only sandbox (#14, docs/COMMANDS.md "Cheats")
+int cheats_init(void);                                  // the overlay's Cheats tab
 int cheats_perm(const char *verb);                      // CMD_HOST / CMD_CHEAT for a cheats.c verb, -1 if not one
 int cheats_enabled(void);                               // /cheats on
 void cheats_slash(const char *verb, char *rest, Out *o); // run a cheats.c verb (permission already checked)
