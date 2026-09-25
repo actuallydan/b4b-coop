@@ -1,8 +1,11 @@
 # Mesh mods: B4B skeletal mesh format, writer and glTF import (#18, #21, epic #23)
 
-Status 2026-09-25, build 14216215. Branch `models-meshes`. Tools: `tools/modkit/upkg.py` (package reader/writer),
-`tools/modkit/skm.py` (SKM render data parse/edit/write), `tools/modkit/skmgltf.py` (glTF export/import),
-`tools/modkit/blender/blocky.py` (headless Blender test mesh), `modkit/dotnet/pakx` (offline extraction, run via `modkit/b4bmod.py`).
+Status 2026-09-25, build 14216215. Branches `models-meshes`, `models-fullmodel`. Tools: `tools/modkit/upkg.py` (package
+reader/writer, property dump, MI reader), `tools/modkit/skm.py` (SKM render data parse/edit/write),
+`tools/modkit/skmgltf.py` (glTF/FBX export/import), `tools/modkit/sm.py` (static meshes), `tools/modkit/b4bmodel.py`
+(model -> survivor / weapon pipeline), `tools/modkit/blender/b4bfit.py` (headless Blender fitting),
+`tools/modkit/blender/preview.py` (headless renders), `tools/modkit/blender/testassets/mpfb_survivor.py` (test human),
+`modkit/dotnet/pakx` (offline extraction, run via `modkit/b4bmod.py`). Guides: §7.
 
 ## TL;DR
 - **Format solved.** `skm.py` parses the whole cooked `USkeletalMesh` native part and writes it back
@@ -22,6 +25,21 @@ Status 2026-09-25, build 14216215. Branch `models-meshes`. Tools: `tools/modkit/
   headless Blender and imported with `skmgltf.py import` onto Mom Elite_04 (3P, 1 LOD, adjacency stripped) and onto her
   FP arms renders, animates with `3P_Hero_ABP`/`FP_Hero_ABP` and takes the template's materials. No mesh warnings in
   the log (§4).
+- **Real models end to end, verified live** (§8, 2-player sessions, Proton): a clothed, textured MakeHuman character
+  (CC0, from an **FBX** with a Mixamo rig) as Mom's Elite 04 outfit (3P + FP arms, 5 decimated LODs, own textures), and
+  a CC0 AK (**FBX** + PNGs) as the AR02 (FP skeletal, 3P skeletal, 3P/pickup static meshes, dropped magazine), both as
+  add-ons. Seen: survivor idle/aiming in Fort Hope and a mission, FP arms holding weapons, the AK in first person, the
+  FP **reload animation moving our magazine**, the 3P AK in a bot's hands; add-on player vs. vanilla player both ways.
+  Not seen: firing / muzzle flash (fire can't be simulated), the pickup and dropped-magazine static meshes in the world.
+- `tools/modkit/b4bmodel.py survivor|weapon` does it in one command (~40 s / ~30 s): fit in Blender (bone map, pose
+  fit onto the template joints, weights, slots/atlases, LOD decimation), cook, build the textures into the template's own
+  texture packages, retarget weapon skins. FBX, glTF, OBJ, DAE, .blend in; unrigged characters get the template's weights.
+- **Static meshes solved**: `sm.py` parses/writes cooked `UStaticMesh` **byte-identically for 2118/2118 retail meshes**
+  (§1b); the section's extra TRS bool is `bVisibleInRayTracing`. **Other players see a weapon as a static mesh**
+  (`3P_<Code>_SM` on the weapon actor's `BaseStaticMesh_3P`), not `3P_<Code>_SKM`.
+- No retail survivor, FP-arms or weapon mesh has morph targets (0 of 320 hero/weapon SKMs): faces are bone-driven, so
+  the importer never has to write morphs. Weapon **skins** are material sets for the retail UVs: the pipeline points
+  every skin MI of the weapon at the model's textures (a player with a skin equipped sees the model as made).
 
 ## 1. Cooked layout (static RE of Back4Blood.exe + 593-file validation)
 Functions (VA, build 14216215):
@@ -94,6 +112,40 @@ present everywhere (retail PC cooks keep it). FP arms: 2 LODs; 3P heroes: 5; zom
 Static meshes: `FStaticMeshSection` has an extra `bVisibleInRayTracing` bool (CUE4Parse `StaticMesh.HasVisibleInRayTracing`);
 no static mesh writer yet (weapons and characters are skeletal).
 
+## 1b. Static meshes (cooked `UStaticMesh`, 2118/2118 byte-identical)
+Validated on every `*_SM` under `Items/` and `Environments/Props/[A-C]*` (`sm.py roundtrip`). Stock 4.25 cooked layout
+plus the TRS section bool. After the tagged properties:
+```
+bool bHasGuid; strip; bool bCooked; i32 BodySetup; i32 NavCollision; FGuid LightingGuid; TArray<i32> Sockets
+TArray<FStaticMeshLODResources>:
+   strip (1, 8 = RT resources stripped); TArray<FStaticMeshSection> {i32 MaterialIndex, u32 FirstIndex, u32 NumTriangles,
+     u32 MinVertexIndex, u32 MaxVertexIndex, bool bEnableCollision, bool bCastShadow, bool bForceOpaque,
+     bool bVisibleInRayTracing (TRS / 4.26)}
+   float MaxDeviation; bool bIsLODCookedOut; bool bInlined (all retail: inlined)
+   SerializeBuffers: strip; FPositionVertexBuffer; FStaticMeshVertexBuffer (as in SKMs); FColorVertexBuffer
+     (stride 0 when empty); FRawStaticIndexBuffer x5 {bool b32Bit, bulk u8, bool bShouldExpandTo32Bit}: indices,
+     reversed (empty in retail), depth-only (= the full index list in retail), reversed depth-only (empty),
+     [wireframe: editor, stripped], adjacency (present, empty); per-section + whole FWeightedRandomSampler
+     {TArray<float>, TArray<i32>, float} (all empty in retail)
+   FStaticMeshBuffersSize {SerializedBuffersSize = payload bytes of all vertex + index buffers, DepthOnlyIBSize,
+     ReversedIBsSize} (checked on all 2118)
+u8 NumInlinedLODs; strip (distance fields); per LOD bool bValid [+ FDistanceFieldVolumeData] (none valid in the set)
+FBoxSphereBounds; bool bLODsShareStaticLighting; 8 x FPerPlatformFloat {bool, float} screen sizes
+bool bHasOccluderData; bool bHasSpeedTreeWind; TArray<FStaticMaterial {i32, FName, FMeshUVChannelInfo}>
+```
+The tagged `ExtendedBounds` (what the engine culls with) is rewritten with the bounds. Collision is a separate
+`BodySetup` export (tagged `AggGeom` + cooked PhysX data); the writer keeps the template's (weapons: one box), so a model
+of about the template's size keeps sensible collision. `sm.py import` writes plain models (node transforms applied);
+`sm.py from-skinned` moves a model fitted onto a skeletal template into a static template's space with the rigid
+transform that maps the retail skeletal mesh onto the retail static one (area-weighted surface moments: centroid,
+principal axes, signs from the third moment; retail 3P_AR02_SKM -> 3P_AR02_SM and pickup: same size to 0.5 cm, rotated
+90° about X; magazine part -> `AR02_MagEmpty_3P_SM`: identity rotation).
+
+**Every material slot must keep a section.** A 3P static weapon with only the slots the model uses (2 of 4) was
+invisible on other players (bVisible stayed off on `BaseStaticMesh_3P`); with one zero-area triangle per unused slot,
+in slot order like retail, it renders (§8). Game code addresses the weapon's sections by index (skins, attachments,
+the magazine during reload), so `from-skinned` always writes all slots. (Skeletal meshes didn't need it.)
+
 ## 2. Tools
 ```
 # offline extraction from the retail paks (no game running; same bytes as the agent's dumpassets): modkit/dotnet/pakx via
@@ -105,7 +157,11 @@ modkit/b4bmod.sh find 'Heroes/Holly/.*_SKM$'
 .venv/bin/python tools/modkit/skm.py roundtrip <files...>           # parse + write, byte compare
 .venv/bin/python tools/modkit/skm.py edit <in.uasset> <out.uasset> --inflate 2.5 --scale-section '*:5:1.5' --material '*:1:4'
 .venv/bin/python tools/modkit/skmgltf.py export <x_SKM.uasset> <out.glb>     # reference for Blender
-.venv/bin/python tools/modkit/skmgltf.py import <template_SKM.uasset> <in.glb> <out/Gobi/Content/.../x_SKM.uasset> [--lods N]
+.venv/bin/python tools/modkit/skmgltf.py import <template_SKM.uasset> <in.glb|.fbx> <out/Gobi/Content/.../x_SKM.uasset> [--lod <LOD1 model>]... [--lods N] [--socket NAME=x,y,z] [--bone NAME=x,y,z]
+.venv/bin/python tools/modkit/sm.py info|roundtrip|sizes <x_SM.uasset>...      # static meshes
+.venv/bin/python tools/modkit/sm.py import <template_SM> <model> <out> [--lod ...] | from-skinned <SM> <SKM> <out> <lod0.glb>... [--only-bone mag]
+.venv/bin/python tools/modkit/upkg.py props <x.uasset> [export]              # tagged properties, readable
+.venv/bin/python tools/modkit/b4bmodel.py survivor|weapon|textures ...      # the whole pipeline (§6, §7)
 .venv/bin/python tools/b4bpak.py pack <out dir containing Gobi/> <mods dir>/b4bmod_x.pak
 ```
 Blender: File > Import > glTF (the export), keep the armature, edit or replace the mesh (vertex groups named after
@@ -124,7 +180,10 @@ Import rules (skmgltf.py):
   per section (≤ 255 bones), duplicated-vertex buffers, active/required bones, bounds, BuffersSize are computed.
 - Adjacency is **stripped** (`CDSF_AdjacencyData`, the engine's own path for platforms without tessellation). Vertex
   colours only if the template has `bHasVertexColors` (white by default). UV precision follows the template.
-- LODs: `--lods N` writes N copies of the imported mesh and truncates the tagged `LODInfo` array to N (default 1).
+- LODs: each `--lod <model>` is a real LOD (b4bfit decimates them); `--lods N` without `--lod` writes N copies (old
+  behaviour). The tagged `LODInfo` array is truncated to the LOD count and every `LODMaterialMap` entry set to -1.
+- Input: glTF/glb as is; FBX/OBJ/DAE/.blend are converted by Blender (`blender/b4bfit.py convert`). The model must
+  already be on the template's skeleton (bone names, bind pose); `b4bmodel.py`/`b4bfit.py` do that fitting.
 - Kept from the template package: skeleton, physics/shadow physics asset, materials, sockets, sampling info, clothing
   assets (left unbound: no section references them). Templates with morph targets are refused.
 
@@ -137,6 +196,13 @@ Import rules (skmgltf.py):
   differ), so FP arms are authored against the FP export (`skmgltf.py export FP_…_SKM`), not cut from the 3P body.
 - **FP weapons**: `Items/Weapons/<Type>/<Id>/Meshes/<Id>_SKM` are also on `FP_Biped_SK` (weapon bones `gun`, `mag`,
   `bolt`, …), float UVs, vertex colours, 2 LODs. **3P weapons** (`3P_<Id>_SKM`) have their own skeleton (`AR01_SK`).
+- **What other players see**: the weapon actor (`AR02_1_BP_C` ...) has `BaseSkeletalMesh_1P` (the FP SKM),
+  `BarrelStaticMesh_1P`/`HipSightStaticMesh_1P`/`ADSSightStaticMesh_1P` (attachments), and for third person
+  **`BaseStaticMesh_3P` = `3P_<Id>_SM`** (+ `BarrelMesh_3P`, `SightMesh_3P`). World pickups use `<Id>_Pickup_SM`, the
+  dropped magazine `<Id>_MagEmpty_3P_SM`. `3P_<Id>_SKM` exists for AR01, AR02, LMG01, Sni01 only; we replace it too.
+- Sockets: the FP weapon SKM has `SkeletalMeshSocket` exports relative to `gun` (`muzzle`, `holo`, `scope`, `laser`,
+  ...); the 3P weapon skeleton has a `muzzle` **bone**. `skmgltf.py import --socket muzzle=x,y,z` / `--bone muzzle=...`
+  move them (b4bmodel does it from the model's muzzle marker or barrel tip).
 - Not supported: new clothing simulation (cloth assets are PhysX/NvCloth data), morph targets (heads), new bones
   (the mesh's ref skeleton must be a subset of the Skeleton asset), new material masters.
 
@@ -157,9 +223,143 @@ modded packages (the only streaming errors are retail `MAP_Evansburgh_B_Debug` o
 settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write every LOD they keep).
 
 ## 5. Next / open
-- Authoring kit (#21): wrap export → Blender → import → pack into one `b4bmod` command; ship a Blender how-to.
-- A real model (not boxes) end to end, incl. a hero with head/torso/legs pieces and a weapon (`AR01_SKM`, float UVs).
-- Proper LODs (decimation) instead of copies; morph targets (heads); new bones (rebuild the ref skeleton from the
-  Skeleton asset); static mesh writer (`bVisibleInRayTracing`, distance fields).
-- Whether hero master materials use tessellation (adjacency is stripped on import; boxes rendered fine).
-- Everyone in a session needs the same paks (hitboxes follow the physics asset, which stays the template's).
+- Firing / muzzle flash position and the pickup / dropped-magazine static meshes are not seen live yet (fire and weapon
+  drops can't be triggered unattended; `giveitem` replaces without dropping).
+- ADS: the sight line follows the template's `ironsights` bones; a model with a different sight height aims slightly
+  off through its own sights (the AK is within ~1.5 cm). Moving those bones per weapon is untested.
+- Hair: hero hair uses `Master_Hair_M` with shared alpha/depth/root textures (Holly's), so a model's alpha-card hair
+  goes on an opaque outfit slot (a "helmet" look). Pointing the Hair MI at our own alpha texture (a repurposed texture
+  package of the outfit) is the next step.
+- Face animation: the model's face is skinned to `head` (and jaw if the rig has one); B4B's face bones (eyelids, lips)
+  don't move it. `--weights transfer` copies the template face's weights instead (untested in game).
+- New bones (rebuild the ref skeleton from the Skeleton asset), cloth, new material masters: not supported.
+- Hitboxes follow the template's physics asset; everyone sees their own add-ons (addons.md §7).
+
+## 6. How the model pipeline works (`b4bmodel.py`, `blender/b4bfit.py`)
+- **Bone map** (character): source bone names are matched as UE4 mannequin names (as is), Mixamo (`mixamorig:Hips`
+  -> pelvis, `Spine/Spine1/Spine2` -> spine_01..03, `LeftArm` -> upperarm_l, `LeftHandIndex1` -> index_01_l, ...) or
+  3ds Max Biped (`Bip01 L UpperArm`, `L Finger0`...); the table with most hits wins, `--bonemap {"src": "b4b"}` adds or
+  overrides. Required: pelvis, spine_01, head, both arms (upperarm/lowerarm/hand) and legs (thigh/calf/foot).
+- **Orientation/scale**: frames from the mapped joints (lateral = right->left upper arm, up = pelvis->head); B4B heroes
+  face +X. Uniform scale = template head-to-feet height / source's.
+- **Pose fit**: every mapped bone, root first, gets a pose that puts its joint on the template joint and aims it at the
+  template's next joint (upperarm -> lowerarm, hand -> middle_01, spine_03 -> neck_01, ...), with a stretch along the
+  bone's own axis (no shear: `inherit_scale NONE`). Result on the MakeHuman test: 0.00 cm joint error. The armature
+  modifier is then applied: the mesh sits in the template's bind pose (A-pose), which is what the game skins against.
+- **Weights**: source groups renamed to template bones; unmapped source bones (twist, extra face bones) go to the
+  nearest mapped ancestor. `--twist template` (default) splits each limb weight among the template's twist bones
+  (`upperarm_twist_01`, `lowerarm_twist_01`, `elbow_twist_01`, `wrist_twist_01`, `thigh_twist_01`, `calf_twist_01`,
+  ...) in the proportions of the nearest template vertices (so forearm roll twists like retail). No armature:
+  the model is stood up by its bounding box (`--facing`, default -Y = Blender's front) and gets the template's weights
+  from the 4 nearest template vertices (`--weights transfer`); arms must already be in an A-pose. Checked with
+  `preview.py --pose test` (bent limbs) on the template, the rigged fit, the unrigged fit and a UE-named rig: all
+  deform alike.
+- **FP arms**: the same fit against the `FP_Biped` export (its own bind pose), then only faces whose vertices are >= 50 %
+  weighted to arm bones stay (hands + sleeves). A probe run tells which materials survive in first person.
+- **Slots, texture sets, atlases**: each source material goes to a template slot (`--slot MAT=SLOT`). A *texture set*
+  is what a slot's material instance samples; b4bmodel finds which slots share one (retail FP `ArmSkin` samples the
+  outfit's `Torso` textures with the skin master) and packs every material that must live in one set into a grid atlas
+  (UVs remapped into tiles; clamped to 0..1). The same layout is used for 3P and FP. Tile images are composed in Blender
+  (numpy): base colour (sRGB as is), normal (green flipped: glTF/Blender maps are OpenGL style; `--normal-dx` if yours
+  are DirectX), PBR = R AO, G roughness, B metallic (retail convention, checked on weapon and hero PBR textures), A and
+  any other owned texture (hair multimask ...) = the retail texture's average; microtile masks = 0 (no retail fabric
+  detail on our UVs). Only textures in the template's own folder are replaced; shared ones never. Encoded by
+  `b4bmod texture` (format and sRGB of the original; size = source size x grid, max 4096).
+- **LODs**: Blender Decimate (collapse) per LOD ratio (`--lods 1,0.5,0.3,0.15,0.06`), weights kept. `skmgltf.py import`
+  writes them as real LODs, keeps the template's `LODInfo` (screen sizes) for as many LODs as written and sets every
+  `LODMaterialMap` entry to -1 (retail LOD3/4 remap sections to `*_LOD` materials by section index, which would
+  scramble ours). UV channel count = the template's (extra channels = UV0). Up to 8 influences (retail LOD0 uses 8).
+- **Weapons**: parts are separate objects; names pick the bone (`mag|magazine|clip|drum` -> mag, `bolt|slide`,
+  `trigger`, `charging handle`, `safety|selector`, `ejector|dust cover`, `hammer`, `stock`, `cylinder`; `--part RX=BONE`),
+  the rest is `gun`. The model is turned (`--forward/--up`, default +X/+Z), scaled to the template's length
+  (`--scale fit`), and moved so its trigger object sits on the template's trigger bone (else bounding-box centres). The
+  muzzle is an empty named `muzzle` or the barrel tip; it moves the FP `muzzle` socket and the 3P `muzzle` bone. Static
+  meshes (3P, pickup) come from the 3P fit via `sm.py from-skinned`, the dropped magazine from its `mag` part.
+- **Skins** (`--skins retarget`, default): every `Skin_Sets/*_MI` of the weapon (also `/Game/TUxx/...`), extracted with
+  `b4bmod extract --regex`, gets `Base Surface Texture`/`Base Normal`/`PBR` pointed at the textures we wrote for the same
+  part and view (51 of the AR02's 132 skin MIs: the receiver and magazine parts the AK uses; one 3P MI without own
+  texture parameters inherits from its FP parent).
+- Test asset (not committed; `testassets/mpfb_survivor.py`): MPFB 2.0.17 (Blender extension, GPL) + the MakeHuman system
+  asset pack (CC0): male, `male_casualsuit05` + `shoes03` + `short02` hair + low-poly eyes, eyebrows baked into the skin
+  texture (hero heads are opaque), Mixamo rig, FBX + PNGs. Weapon: "AK" by loafbrr (opengameart.org/content/ak, CC0):
+  FBX with separate Bolt/Magazine/Trigger objects, PBR PNGs (albedo, normal, roughness, metalness, AO).
+
+## 7. Guides (for mod makers)
+Everything runs from a shell; Blender must be installed (`B4B_BLENDER=<path>` if it isn't on PATH). `b4bmod` = the
+kit's `modkit/b4bmod.py` (setup, AES key, `find`, `extract`, `pack`: see modkit/README.md). Paths below are the repo's
+(`tools/modkit/...`); in the kit the scripts sit next to b4bmod.
+
+### Make a survivor model
+1. **Your model**: one FBX (or glTF/OBJ/.blend) of a human in an **A-pose** (arms ~45° down) or T-pose, with its
+   textures next to it. Best: rigged (Mixamo auto-rigger, a UE4 mannequin rig, 3ds Max Biped); unrigged works if it
+   stands in an A-pose (weights come from the game's mesh). Clothes/hair/eyes may be separate objects and materials.
+   Only opaque materials look right (alpha hair cards render as solid cards; bake eyebrows into the skin texture).
+2. **Pick the outfit to replace** (it keeps its skeleton, animations, physics): an Elite outfit is a whole survivor
+   (head included). `b4bmod find 'Heroes/Mom/Meshes/Elite/.*_SKM$'`, then extract that outfit's folder:
+   `b4bmod extract '/Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/*'`.
+3. **See its slots**: `python tools/modkit/skm.py info <extract>/.../3P_Mom_Elite_04_SKM.uasset` (`mat 4 ... Head`,
+   `mat 5 ... Torso`, ...). Skin goes on the head slot (skin shader), clothes on Torso/Legs (outfit shader).
+4. **Run the pipeline** (3P + FP arms + textures in one go):
+   ```
+   python tools/modkit/b4bmodel.py survivor mymodel.fbx \
+       --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM \
+       --fp     /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM \
+       --slot body=Head --slot jacket=Torso --slot hair=Torso --slot eyes=Torso --slot boots=Legs \
+       -o mymod
+   ```
+   `--slot` names are your model's material names (b4bmodel lists them and stops if one is missing). Textures are found
+   through the materials' image nodes, else by file name next to the model (`<material>_albedo/_normal/_roughness/...`),
+   or given: `--tex jacket=textures/Jacket_` (a file prefix or a folder). Options: `--lods 1,0.5,0.3,0.15,0.06`,
+   `--bonemap map.json`, `--weights transfer`, `--normal-dx`, `--work DIR --keep-work` (intermediate glTF/PNGs).
+5. **Check** before the game: `blender -b --python tools/modkit/blender/preview.py -- <work>/fit3p/lod0.glb out.png
+   --pose test --views side,front3q` (bent limbs: look for stretched or stuck vertices).
+6. **Pack and install**: `b4bmod pack mymod --title "My survivor" --zip`, `b4bmod install mymod.pak`; in game wear the
+   outfit (customization screen, or chat `/model mom_elite_04`). Other players see it only if they have the add-on.
+
+### Make a weapon model
+1. **Your model**: an FBX with **separate objects per moving part**, named like `Magazine`, `Bolt`, `Trigger`
+   (others stay on the gun), barrel along +X and up +Z (else `--forward -y --up +z` ...), real-world size (it is scaled
+   to the template's length anyway). Optional empty named `muzzle` at the barrel end. Textures next to it.
+2. **Pick the weapon to replace** with a similar shape (reload animations move the template's magazine bone: an AK
+   for AR02, an M4 for AR01): `b4bmod extract '/Game/Items/Weapons/Assault/AR02/*'`.
+3. **Run**:
+   ```
+   python tools/modkit/b4bmodel.py weapon ak.fbx \
+       --fp-mesh /Game/Items/Weapons/Assault/AR02/Meshes/AR02_SKM --3p-mesh /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SKM \
+       --static /Game/Items/Weapons/Assault/AR02/Meshes/3P_AR02_SM --static /Game/Items/Weapons/Assault/AR02/Meshes/AR02_Pickup_SM \
+       --mag-static /Game/Items/Weapons/Assault/AR02/Meshes/AR02_MagEmpty_3P_SM \
+       --slot AkMaterial=AR02_Reciever_M --slot Ammunition=AR02_Mag_M \
+       --tex AkMaterial=Textures/AK_1/AK_1_ --tex Ammunition=Textures/Ammunition/Ammunition_ -o mymod
+   ```
+   Slots are the FP mesh's (`skm.py info .../AR02_SKM.uasset`); the 3P mesh and static meshes follow by material
+   instance. It also retargets all skins of the weapon (`--skins keep` to leave them).
+4. **Check**: the log prints scale, where the muzzle went and which object became which part; `preview.py` on
+   `<work>/fitfp/lod0.glb`.
+5. **Pack/install** as above; the weapon is the same item (AR02) with your look for you only.
+
+### Lower level (same tools, step by step)
+`skmgltf.py export` (template -> glb), `blender/b4bfit.py character|weapon ...` (writes `lodN.glb` + `manifest.json`),
+`skmgltf.py import <template> lod0.glb <out.uasset> --lod lod1.glb ... [--socket muzzle=x,y,z] [--bone muzzle=...]`,
+`sm.py from-skinned <SM> <3P SKM> <out> lod0.glb ... [--only-bone mag]`, `sm.py import <SM> model.glb <out>`,
+`b4bmodel.py textures <manifest.json> --mesh <SKM> -o mymod`.
+
+## 8. Live results: real models (2026-09-25, Proton, `launch/multi.sh 2`, add-ons per instance via `addons_dir=`)
+Add-ons: `survivor_mh.pak` (37 files, cosmetic: textures, meshes) and `ak47_loafbrr.pak` (v1.2: 136 files incl. 51 skin
+MIs, cosmetic: textures, materials, meshes). Screenshots in `~/.local/share/b4b-coop/fullmodel/shots/` (not committed).
+Dev helpers added: `giveitem <slot> row <DataTable> <Row>` (AR02 = `Weapons_DT DF038C6A4ED79AB7FDCF9CAB8D742DC7`, found by
+parsing `Weapons_DT` for `AR02_1_BP`), `poke <addr> <bytes>` (clip count: `ClipAmmoComponent` +0x2AC).
+
+| Session | Test | Result |
+|---|---|---|
+| 1: host add-ons, client none | Fort Hope, both `/model mom_elite_04`, host looks at the client (`fh_host_3p*.png`) | our survivor, idle animation, jacket/jeans/boots/hair/face; client sees vanilla Mom Elite 04 on the host (`fh_client_look*.png`) |
+| 1 | mission, host FP (`m_host_fp.png`) | our FP arms (skin hand, jacket sleeve) holding the SMG; client in 3P shows our model holding a pistol (`m_host_3p_client.png`) |
+| 2: client add-ons, host none | Fort Hope: client sees the host as our survivor (`fh2_client_sees_host.png`), host sees vanilla (`fh2_host_sees_client_vanilla.png`); login `2c0g,c91d7af3c,c27afddbc` accepted by `addons_policy=cosmetic` | as expected both ways |
+| 2 | AR02 given to both: client FP = our AK geometry with the profile's graffiti skin (before skin retargeting); 3P static AK **invisible** on host hero and bot | fixed by keeping one section per slot (§1b) |
+| 2b | same, new `3P_AR02_SM` | host hero (our survivor) holds our 3P AK, visible (`m3_client_host_front.png`) |
+| 3: host add-ons v1.2 | host FP holds our AK with our textures despite the equipped skin (`m4_host_fp.png`) | skin retargeting works |
+| 3 | clip poked to 0 -> automatic reload (`m4_auto1..6.png`) | FP reload animation: left hand pulls **our magazine** out and inserts it (mag bone), clip 0 -> 20 |
+| 3 | bot Heng given AR02, teleported in front of the host (`m4_bots_near.png`) | our 3P AK (static mesh, our textures) in the bot's hands |
+
+No `Fatal`/`LogSkeletalMesh`/`LogStaticMesh` errors in any log. Key presses (`cheatprobe key 0x52` = R, bound to
+`AbilityReload`) and mouse clicks don't trigger game actions in an unfocused test window (chat keys do), so reload was
+triggered by emptying the clip and firing wasn't tested.

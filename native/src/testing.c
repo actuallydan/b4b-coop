@@ -420,6 +420,7 @@ static void cmd_takeover(char *rest, Out *o) {
 //                          real RewardSurvivorsForSuccess STP award for every human. Hooked on first use.
 // items [substr]           host: live ItemPickup actors in this world and their item rows (duffel bag = Duffel)
 // giveitem <slot> <pickup> [entry]   host: that pickup's item row into hero slot <slot>'s inventory
+// giveitem <slot> row <DataTable> <RowName>   host: an explicit item row (e.g. a weapon from Weapons_DT)
 //                          (InventoryComponent::ServerAddItemsOfHandle, the server side of a pickup)
 // duffelreward <slot> <ProductsRowGuid> [delta]      host: the per-player duffel-bag reward issuer (0x141BD7610)
 //                          directly: consumable -> AdjustConsumableQuantity(delta), else UnlockProduct
@@ -487,13 +488,23 @@ static UObject *nth_pickup(int want, const char *filter, Out *o) {
 
 static void cmd_giveitem(char *rest, Out *o) {
     char *a = rest ? strtok(rest, " ") : NULL, *b = a ? strtok(NULL, " ") : NULL, *c = b ? strtok(NULL, " ") : NULL;
-    if (!b) { out_printf(o, "usage: giveitem <slot> <pickup#> [entry]\n"); return; }
+    if (!b) { out_printf(o, "usage: giveitem <slot> <pickup#> [entry] | giveitem <slot> row <DataTable> <RowName>\n"); return; }
     UObject *slot = slot_at(atoi(a)), *pawn = slot ? ue_get_ptr(slot, "AssignedPawn") : NULL;
-    UObject *pk = nth_pickup(atoi(b), NULL, NULL);
+    RowHandle byrow = {0};
+    if (!strcmp(b, "row")) {   // an explicit item row, e.g. giveitem 0 row Weapons_DT DF038C6A4ED79AB7FDCF9CAB8D742DC7
+        char *rn = c ? strtok(NULL, " ") : NULL;
+        static wchar_t wrow[128];
+        int k = 0;
+        for (; rn && rn[k] && k < 127; k++) wrow[k] = (wchar_t)rn[k];
+        wrow[k] = 0;
+        if (!c || !rn || !(byrow.table = find_named(c))) { out_printf(o, "no table %s / row\n", c ? c : "-"); return; }
+        byrow.row = make_name(wrow);
+    }
+    UObject *pk = byrow.table ? NULL : nth_pickup(atoi(b), NULL, NULL);
     int32_t off = pk ? ue_prop_offset(pk, "ItemRowsAndQuantities") : -1;
     TArray *rows = off >= 0 ? (TArray *)((char *)pk + off) : NULL;
-    int e = c ? atoi(c) : 0;
-    if (!pawn || !rows || e < 0 || e >= rows->num) { out_printf(o, "no pawn in slot %s / no pickup %s entry %d\n", a, b, e); return; }
+    int e = c && !byrow.table ? atoi(c) : 0;
+    if (!pawn || (!byrow.table && (!rows || e < 0 || e >= rows->num))) { out_printf(o, "no pawn in slot %s / no pickup %s entry %d\n", a, b, e); return; }
     UFunction *gi = ue_find_function(U_CLASS(pawn), "GetInventoryComponent");
     uint8_t p0[16] = {0};
     if (gi) ue_process_event(pawn, gi, p0);
@@ -502,7 +513,7 @@ static void cmd_giveitem(char *rest, Out *o) {
     int32_t oh = f ? param_off(f, "ItemHandle") : -1, on = f ? param_off(f, "NumItems") : -1;
     if (oh < 0 || on < 0 || UFN_PARMSSIZE(f) > 64) { out_printf(o, "no inventory / ServerAddItemsOfHandle\n"); return; }
     uint8_t p[64] = {0};
-    RowHandle *src = (RowHandle *)((char *)rows->data + e * 0x48), *h = (RowHandle *)(p + oh);
+    RowHandle *src = byrow.table ? &byrow : (RowHandle *)((char *)rows->data + e * 0x48), *h = (RowHandle *)(p + oh);
     h->table = src->table; h->row = src->row;   // display string left empty
     *(int32_t *)(p + on) = 1;
     char nm[160];

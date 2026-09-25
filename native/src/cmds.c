@@ -488,6 +488,13 @@ void cmds_run(char *line, Out *o) {
         for (int i = 0; i < n; i++) out_printf(o, "%02x%s", p[i], (i % 16 == 15) ? "\n" : " ");
         out_printf(o, "\n");
     }
+    else if (!strcmp(verb, "poke") && rest) {   // poke <hex addr> <hex byte>...: write bytes (dev: e.g. set a clip count)
+        char *a = strtok(rest, " ");
+        unsigned char *p = (unsigned char *)(uintptr_t)strtoull(a, NULL, 16);
+        int n = 0;
+        for (char *b = strtok(NULL, " "); b; b = strtok(NULL, " ")) p[n++] = (unsigned char)strtoul(b, NULL, 16);
+        out_printf(o, "poked %d byte(s) at %p\n", n, (void *)p);
+    }
     else if (!strcmp(verb, "join") && rest) cmd_join(rest, o);   // same path as coop_join()
     else if (!strcmp(verb, "leave")) { coop_leave(); out_printf(o, "leaving\n"); }
     else if (!strcmp(verb, "exec") && rest) cmd_exec(rest, o);

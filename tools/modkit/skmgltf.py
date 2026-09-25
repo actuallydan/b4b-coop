@@ -4,7 +4,8 @@
       the mesh with its skeleton (bind pose), weights, UVs, normals/tangents, vertex colours, one glTF material per
       UE material slot (named after the slot). Open in Blender (File > Import > glTF), edit or replace the mesh while
       keeping the armature, export glTF again.
-  skmgltf.py import <template SKM.uasset> <in.glb|.gltf> <out.uasset> [--lods N] [--material NAME=SLOT]...
+  skmgltf.py import <template SKM.uasset> <in.glb|.gltf|.fbx|.obj|.dae|.blend> <out.uasset> [--lod <LOD1 model>]...
+        [--lods N] [--material NAME=SLOT]... [--socket NAME=x,y,z]... [--bone NAME=x,y,z]...
       build new render data from the glTF onto the template's skeleton and write <out>.uasset/.uexp. Everything the
       template's package references stays (skeleton, physics asset, material slots, LOD settings, clothing assets);
       the geometry is replaced. Primitives pick their material slot by glTF material name == slot name (or
@@ -367,24 +368,41 @@ def edit_lodinfo_count(s, n):
     assert rr.p == s.props_end
 
 
-def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
-    s = skm.SkeletalMesh(template)
+MODEL_EXTS = (".fbx", ".obj", ".dae", ".blend")
+
+
+def blender_exe():
+    return os.environ.get("B4B_BLENDER") or os.environ.get("BLENDER") or "blender"
+
+
+def to_gltf(src, tmpdir=None):
+    """FBX/OBJ/DAE/.blend -> glb through Blender (tools/modkit/blender/b4bfit.py convert). glTF passes through."""
+    if not src.lower().endswith(MODEL_EXTS):
+        return src
+    import subprocess, tempfile
+    tmpdir = tmpdir or tempfile.mkdtemp(prefix="b4bconv")
+    out = os.path.join(tmpdir, os.path.splitext(os.path.basename(src))[0] + ".glb")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blender", "b4bfit.py")
+    r = subprocess.run([blender_exe(), "-b", "--factory-startup", "--python", script, "--", "convert",
+                        os.path.abspath(src), out], capture_output=True, text=True)
+    if r.returncode or not os.path.exists(out):
+        sys.stderr.write(r.stdout[-3000:] + r.stderr[-3000:])
+        raise SystemExit(f"Blender could not convert {src} (set B4B_BLENDER to the blender executable)")
+    print(f"converted {src} -> {out} (Blender)")
+    return out
+
+
+def read_gltf(gl, s, bind, matmap):
+    """All skinned primitives of a glTF as UE-space vertices and per-slot triangle lists."""
     m = s.m
-    if s.props.get("MorphTargets"):
-        raise SystemExit("template has morph targets: not supported (their vertex indices would not match)")
     rs = m["refskel"]
     names = {s.name((b[0], b[1])).lower(): i for i, b in enumerate(rs["bones"])}
     slots = {s.name(x["slot_name"]).lower(): i for i, x in enumerate(m["materials"])}
-    matmap = {k.lower(): v for k, v in (matmap or {}).items()}
-    gl = Gltf(src)
     G = bone_globals(rs)
-    tmpl_lod = next(l for l in m["lods"] if "sections" in l)
-
-    # which mesh node(s): every node with a mesh + skin
     mesh_nodes = [n for n in gl.j["nodes"] if "mesh" in n and "skin" in n]
     if not mesh_nodes:
         raise SystemExit("no skinned mesh in the glTF")
-    verts = []            # (pos_ue, nrm_ue, tan_ue(4), [uv...], color bgra, [(bone, w)])
+    verts = []            # (pos_ue, nrm_ue, tan_ue, sign, [uv...], color bgra, [(bone, w)])
     sections = []         # (slot, [tri (a,b,c) global vertex idx])
     ntc = 1
     for node in mesh_nodes:
@@ -402,15 +420,22 @@ def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
         # positions are compared; "rebind" (full matrices) is only right for rigs whose bone axes were kept.
         rebind = []
         worst, worst_bone = 0.0, None
+        used = set()
+        for prim in gl.j["meshes"][node["mesh"]]["primitives"]:
+            si = 0
+            while f"JOINTS_{si}" in prim["attributes"]:
+                for J, Wt in zip(gl.acc(prim["attributes"][f"JOINTS_{si}"]), gl.acc(prim["attributes"][f"WEIGHTS_{si}"])):
+                    used.update(int(j) for j, w in zip(J, Wt) if w > 0)
+                si += 1
         for k, b in enumerate(jbone):
             ib = [[ibm[k][c * 4 + r] for c in range(4)] for r in range(4)] if ibm else minv(node_world(gl, joints[k]))
             bind_ue = m_gl2ue(minv(ib))
             d = math.sqrt(sum((bind_ue[r][3] - G[b][r][3]) ** 2 for r in range(3)))
-            if d > worst: worst, worst_bone = d, s.name(rs["bones"][b][:2])
+            if k in used and d > worst: worst, worst_bone = d, s.name(rs["bones"][b][:2])
             rebind.append(mm(G[b], m_gl2ue(ib)))
         use_rebind = bind == "rebind"
-        print(f"node {node.get('name')}: {len(joints)} joints, max joint offset from the template bind pose "
-              f"{worst:.3f} cm ({worst_bone})" + (" -> re-binding vertices" if use_rebind else ""))
+        print(f"node {node.get('name')}: {len(joints)} joints ({len(used)} used), max offset of a used joint from the "
+              f"template bind pose {worst:.3f} cm ({worst_bone})" + (" -> re-binding vertices" if use_rebind else ""))
         if worst > 0.5 and not use_rebind:
             print("  WARNING: the rig's bones moved; the game animates with the template skeleton, so the mesh "
                   "will be skinned as if the bones were where the template has them")
@@ -446,6 +471,7 @@ def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
                 print(f"  material {mname!r}: no slot of that name, using slot 0 "
                       f"({s.name(m['materials'][0]['slot_name'])}); map with --material {mname}=<slot>")
             base = len(verts)
+            unweighted = 0
             for v in range(n):
                 p = p_gl2ue(pos[v]); nn = norm(v_gl2ue(nrm[v])); t4 = tan[v]
                 tt = norm(v_gl2ue(t4[:3])); sign = -t4[3] if len(t4) > 3 else -1.0
@@ -453,18 +479,28 @@ def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
                     tot = sum(w for _, w, _ in infl[v])
                     M = [[sum(w * rebind[j][r][c] for _, w, j in infl[v]) / tot for c in range(4)] for r in range(4)]
                     p = mp(M, p); nn = norm(mv(M, nn)); tt = norm(mv(M, tt))
+                if not infl[v]: unweighted += 1
                 cc = col[v] if col else (1.0, 1.0, 1.0, 1.0)
                 cc = tuple(cc) + (1.0,) * (4 - len(cc))
                 bgra = tuple(max(0, min(255, int(round(x * 255)))) for x in (cc[2], cc[1], cc[0], cc[3]))
                 verts.append((p, nn, tt, sign, [u[v] for u in uvs], bgra, [(b, w) for b, w, _ in infl[v]]))
+            if unweighted:
+                print(f"  WARNING: {unweighted} vertices of {mname!r} have no bone weights (bound to the root)")
             sections.append((slot, [(a_ + base, b_ + base, c_ + base) for a_, b_, c_ in tris]))
-    # group primitives by slot -> one UE section per slot, vertices re-ordered per section
+    return verts, sections, ntc
+
+
+def build_lod(s, verts, sections, ntc, tmpl_lod):
+    """FSkeletalMeshLODRenderData from imported vertices: one section per slot, vertices re-ordered per section."""
+    m = s.m
+    rs = m["refskel"]
     by_slot = {}
     for slot, tris in sections:
         by_slot.setdefault(slot, []).extend(tris)
     maxk = max(len(v[6]) for v in verts)
     K = 8 if maxk > 4 else 4
     if maxk > 8: print(f"  {maxk} influences on some vertices: keeping the 8 largest")
+    root = 0
     new_pos, new_tan, new_uv, new_col, new_w, new_idx, secs = [], [], [], [], bytearray(), [], []
     for slot in sorted(by_slot):
         tris = by_slot[slot]
@@ -475,7 +511,7 @@ def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
                 if v not in remap: remap[v] = len(order); order.append(v)
         vbase = len(new_pos)
         ibase = len(new_idx)
-        qw = [quantize_weights(verts[v][6], K) for v in order]
+        qw = [quantize_weights(verts[v][6] or [(root, 1.0)], K) for v in order]
         bone_map = sorted({b for q in qw for b, _ in q})
         if len(bone_map) > 255: raise SystemExit("a section uses more than 255 bones")
         bl = {b: i for i, b in enumerate(bone_map)}
@@ -485,7 +521,7 @@ def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
             new_pos.append(tuple(float(x) for x in p))
             new_tan.append(skm.pack_normal(tt + (1.0,)) + skm.pack_normal(nn + (sign,)))
             for c in range(ntc):
-                new_uv.append(tuple(uv[c]) if c < len(uv) else (0.0, 0.0))
+                new_uv.append(tuple(uv[c]) if c < len(uv) else tuple(uv[0]))   # extra template channels: UV0
             new_col.append(bgra)
             q = q + [(bone_map[0], 0)] * (K - len(q))
             new_w += bytes(bl[b] if w else 0 for b, w in q) + bytes(w for _, w in q)
@@ -503,7 +539,6 @@ def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
     for sec in secs:
         for (b,) in sec["bone_map"]:
             while b >= 0 and b not in active: active.add(b); b = parents[b]
-    # the retail cloth section clothing_data default: zero guid, lod index -1
     wide = nv > 0xFFFF
     lod = skm.Obj(
         strip=(1, 0), cooked_out=False, inlined=True,
@@ -527,36 +562,160 @@ def import_gltf(template, src, out, nlods=1, matmap=None, bind="keep"):
     skm.ser_strip(ar2, lod["strip"]); ar2.bool32(False); ar2.bool32(True); ar2.packed_array("h", lod["required_bones"])
     ar2.array(lambda x: skm.ser_section(ar2, x), lod["sections"]); ar2.packed_array("h", lod["active_bones"]); ar2.u32(0)
     lod["buffers_size"] = full - len(ar2.b)
-    nl = min(nlods, len(m["lods"]))
-    m["lods"] = [lod] * nl
+    print(f"  LOD: {nv} vertices, {len(new_idx) // 3} triangles, sections on slots {[x['material_index'] for x in secs]}, "
+          f"{K} influences, {ntc} UV channel(s)")
+    return lod
+
+
+def lodinfo_elements(s):
+    """(start, end) offsets in s.data of each SkeletalMeshLODInfo struct of the tagged LODInfo array."""
+    p = s.props["LODInfo"]
+    r = skm.upkg.R(s.data, p["off"])
+    cnt = r.i32()
+    s.pkg.fname(r); s.pkg.fname(r); r.i32(); r.i32(); s.pkg.fname(r); r.p += 16
+    if r.u8(): r.p += 16
+    out = []
+    for _ in range(cnt):
+        a = r.p; s.pkg.skip_tagged(r); out.append((a, r.p))
+    return out
+
+
+def clear_lod_material_maps(s):
+    """LODMaterialMap (section index -> material slot, per LOD) is applied at runtime; our sections carry their own
+    slot, so every entry becomes -1 ("use the section's material"). In place, sizes unchanged."""
+    d = bytearray(s.data)
+    n = 0
+    for a, b in lodinfo_elements(s):
+        r = skm.upkg.R(d, a); props = {}
+        s.pkg.skip_tagged(r, props)
+        p = props.get("LODMaterialMap")
+        if p:
+            cnt = struct.unpack_from("<i", d, p["off"])[0]
+            for k in range(cnt):
+                struct.pack_into("<i", d, p["off"] + 4 + 4 * k, -1); n += 1
+    s.data = bytes(d)
+    return n
+
+
+def edit_sockets(s, sockets):
+    """--socket NAME=x,y,z (cm, mesh component space): rewrite that SkeletalMeshSocket's RelativeLocation relative to
+    its bone's bind pose (same package, in place)."""
+    if not sockets: return
+    rs = s.m["refskel"]
+    G = bone_globals(rs)
+    bone_index = {s.name((b[0], b[1])).lower(): i for i, b in enumerate(rs["bones"])}
+    pkg = s.pkg
+    found = set()
+    for e in pkg.exports:
+        if pkg.class_name(e) != "SkeletalMeshSocket": continue
+        data = bytearray(pkg.export_data(e))
+        r = skm.upkg.R(data); props = {}
+        pkg.skip_tagged(r, props)
+        rr = skm.upkg.R(data, props["SocketName"]["off"]); sname = pkg.fname(rr)
+        if sname.lower() not in sockets: continue
+        rr = skm.upkg.R(data, props["BoneName"]["off"]); bname = pkg.fname(rr)
+        if "RelativeLocation" not in props:
+            print(f"  socket {sname}: no RelativeLocation property to edit (at the bone origin); skipped"); continue
+        want = sockets[sname.lower()]
+        loc = mp(minv(G[bone_index[bname.lower()]]), want)
+        struct.pack_into("<3f", data, props["RelativeLocation"]["off"], *loc)
+        pkg.set_export_data(e, bytes(data))
+        found.add(sname.lower())
+        print(f"  socket {sname} (bone {bname}): component {tuple(round(x, 2) for x in want)} -> "
+              f"relative {tuple(round(x, 2) for x in loc)}")
+    for k in sockets:
+        if k not in found: print(f"  WARNING: no socket {k!r} in the template package")
+
+
+def set_bone_positions(s, bones):
+    """--bone NAME=x,y,z (cm, component space): move a bone of the mesh's reference skeleton (bind pose) there,
+    keeping its rotation (for weapon bones like muzzle on 3P weapon skeletons). Children move with it."""
+    if not bones: return
+    rs = s.m["refskel"]
+    G = bone_globals(rs)
+    idx = {s.name((b[0], b[1])).lower(): i for i, b in enumerate(rs["bones"])}
+    pose = list(rs["pose"])
+    for name, want in bones.items():
+        i = idx.get(name)
+        if i is None: print(f"  WARNING: no bone {name!r}"); continue
+        par = rs["bones"][i][2]
+        local = mp(minv(G[par]), want) if par >= 0 else want
+        q, t, sc = pose[i][0:4], pose[i][4:7], pose[i][7:10]
+        pose[i] = tuple(q) + tuple(local) + tuple(sc)
+        print(f"  bone {name}: bind position {tuple(round(G[i][r][3], 2) for r in range(3))} -> "
+              f"{tuple(round(x, 2) for x in want)}")
+    rs["pose"] = pose
+
+
+def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets=None, bones=None):
+    s = skm.SkeletalMesh(template)
+    m = s.m
+    if s.props.get("MorphTargets"):
+        raise SystemExit("template has morph targets: not supported (their vertex indices would not match); no "
+                         "retail survivor, weapon or FP mesh has any")
+    matmap = {k.lower(): v for k, v in (matmap or {}).items()}
+    tmpl_lod = next(l for l in m["lods"] if "sections" in l)
+    tmpl_ntc = tmpl_lod["static_vb"]["num_texcoords"]
+    lods = []
+    for i, src in enumerate(srcs):
+        print(f"LOD{i}: {src}")
+        verts, sections, ntc = read_gltf(Gltf(to_gltf(src)), s, bind, matmap)
+        lods.append(build_lod(s, verts, sections, max(ntc, tmpl_ntc), tmpl_lod))
+    if len(srcs) == 1 and copies > 1:
+        lods = lods * copies
+    nl = min(len(lods), len(m["lods"]))
+    if len(lods) > len(m["lods"]):
+        print(f"  the template has {len(m['lods'])} LODs: keeping the first {nl} of yours")
+    m["lods"] = lods[:nl]
     m["num_inlined_lods"] = nl
     edit_lodinfo_count(s, nl)
-    # bounds
-    xs = [p[0] for p in new_pos]; ys = [p[1] for p in new_pos]; zs = [p[2] for p in new_pos]
+    n = clear_lod_material_maps(s)
+    if n: print(f"  LODMaterialMap: {n} entries set to -1 (sections keep their own slots)")
+    set_bone_positions(s, bones or {})
+    # bounds (bind pose, all LODs)
+    allp = [p for lod in m["lods"] for p in lod["positions"]["positions"]]
+    xs = [p[0] for p in allp]; ys = [p[1] for p in allp]; zs = [p[2] for p in allp]
     o = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, (min(zs) + max(zs)) / 2)
     e = ((max(xs) - min(xs)) / 2, (max(ys) - min(ys)) / 2, (max(zs) - min(zs)) / 2)
-    r = max(math.sqrt(sum((p[k] - o[k]) ** 2 for k in range(3))) for p in new_pos)
+    r = max(math.sqrt(sum((p[k] - o[k]) ** 2 for k in range(3))) for p in allp)
     m["bounds"] = o + e + (r,)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    s.save(out)
+    s.pkg.set_export_data(s.export, s.serialize())
+    edit_sockets(s, sockets or {})
+    s.pkg.save(out)
     chk = skm.SkeletalMesh(out)
-    print(f"wrote {out}: {nv} vertices, {len(new_idx) // 3} triangles, {len(secs)} sections "
-          f"(slots {[x['material_index'] for x in secs]}), {K} influences, {nl} LOD(s), "
+    print(f"wrote {out}: {nl} LOD(s), bounds {tuple(round(x, 1) for x in m['bounds'])}, "
           f"{len(chk.m['lods'])} LODs re-read OK")
+
+
+def parse_vec(spec):
+    k, v = spec.split("=", 1)
+    return k.lower(), tuple(float(x) for x in v.split(","))
 
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    e = sp.add_parser("export"); e.add_argument("src"); e.add_argument("out"); e.add_argument("--lod", type=int, default=0)
-    i = sp.add_parser("import"); i.add_argument("template"); i.add_argument("src"); i.add_argument("out")
-    i.add_argument("--lods", type=int, default=1, help="LODs to write (copies of the imported mesh)")
+    e = sp.add_parser("export", help="SKM -> glb (reference for Blender)")
+    e.add_argument("src"); e.add_argument("out"); e.add_argument("--lod", type=int, default=0)
+    i = sp.add_parser("import", help="glTF/glb or FBX/OBJ/DAE/.blend (converted with Blender) -> SKM on a template",
+                      description="Build a cooked skeletal mesh from a model on a template SKM's skeleton. Input: "
+                                  "glTF/glb, or FBX/OBJ/DAE/.blend converted with Blender (B4B_BLENDER=<blender>). "
+                                  "For a model that isn't on the B4B skeleton yet, fit it first with "
+                                  "blender/b4bfit.py (or b4bmodel.py).")
+    i.add_argument("template"); i.add_argument("src", help="LOD0 model (.glb/.gltf/.fbx/.obj/.dae/.blend)")
+    i.add_argument("out")
+    i.add_argument("--lod", action="append", default=[], help="LOD1, LOD2, ... models (repeat, in order)")
+    i.add_argument("--lods", type=int, default=1, help="without --lod: write N copies of LOD0 (old behaviour)")
     i.add_argument("--material", action="append", default=[], help="glTF material NAME=SLOT index")
     i.add_argument("--bind", choices=["keep", "rebind"], default="keep")
+    i.add_argument("--socket", action="append", default=[], help="NAME=x,y,z: move a mesh socket (cm, mesh space)")
+    i.add_argument("--bone", action="append", default=[], help="NAME=x,y,z: move a bone of the mesh's bind pose")
     a = ap.parse_args()
     if a.cmd == "export":
         export(a.src, a.out, a.lod)
     else:
         mm_ = {k: int(v) for k, v in (x.split("=", 1) for x in a.material)}
-        import_gltf(a.template, a.src, a.out, a.lods, mm_, a.bind)
+        import_gltf(a.template, [a.src] + a.lod, a.out, mm_, a.bind, copies=a.lods,
+                    sockets=dict(parse_vec(x) for x in a.socket), bones=dict(parse_vec(x) for x in a.bone))
