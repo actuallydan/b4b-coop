@@ -6,6 +6,8 @@ Unofficial private co-op for **Back 4 Blood**: play the game's offline mode toge
 > Unofficial and unaffiliated. For playing a game you own with friends in offline mode. It never touches the
 > official online services. Use at your own risk. See [Safety & disclaimer](#safety--disclaimer).
 
+All chat commands and options: [docs/COMMANDS.md](docs/COMMANDS.md).
+
 ## Install
 Same steps on Windows, Linux and Steam Deck. **Everyone who plays together installs it, and everyone needs the same
 version.**
@@ -19,7 +21,7 @@ version.**
    folder merges into the game's `Gobi` folder (say yes if asked to merge). No game file is replaced. You get:
    ```
    Back 4 Blood\xinput1_3.dll                          (next to Back4Blood.exe)
-   Back 4 Blood\b4bcoop-README.txt, b4bcoop-LICENSE.txt
+   Back 4 Blood\b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt
    Back 4 Blood\Gobi\Binaries\Win64\X3DAudio1_7.dll     (the mod)
    Back 4 Blood\Gobi\Binaries\Win64\b4bcoop.ini         (settings, optional)
    ```
@@ -41,10 +43,10 @@ Only the host's **Steam friends** can join. Type `/help` in the game's chat for 
 
 ## Options
 All optional. Open `Gobi\Binaries\Win64\b4bcoop.ini` in a text editor and remove the `;` in front of a line to turn
-it on:
+it on. Every option, with defaults and examples: [docs/COMMANDS.md](docs/COMMANDS.md#b4bcoopini-options).
 - `host=0`: don't host; your offline game stays private.
 - `teamsize=5`: (host) 5 survivors instead of 4.
-- `flashlight_key=L`: the key for the manual flashlight toggle (`0` turns it off).
+- `flashlight_key=L`: the key for the manual flashlight toggle (`off` turns it off).
 - `allow_joins=anyone`: (host) let in people who aren't your Steam friends; or `allow_steamids=<17-digit Steam ID>`
   for one person.
 - `host_ip=1`: **advanced**, only if you know you need it: host and join by IP address instead of through Steam. Needs
@@ -52,7 +54,7 @@ it on:
 
 ## Remove
 Delete these files from the game folder (Steam → right-click Back 4 Blood → Manage → Browse local files):
-1. Next to `Back4Blood.exe`: `xinput1_3.dll`, `b4bcoop-README.txt`, `b4bcoop-LICENSE.txt`.
+1. Next to `Back4Blood.exe`: `xinput1_3.dll`, `b4bcoop-README.txt`, `b4bcoop-COMMANDS.txt`, `b4bcoop-LICENSE.txt`.
 2. In `Gobi\Binaries\Win64`: `X3DAudio1_7.dll`, `b4bcoop.ini`, all `b4bcoop-*.log` files, and `b4bcoop-bans.txt`
    (only there if you banned someone).
 3. Left over from older versions, if present, in `Gobi\Binaries\Win64`: `dwmapi.dll`, `Play B4B co-op.cmd`,

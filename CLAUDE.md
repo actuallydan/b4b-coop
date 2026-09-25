@@ -5,7 +5,8 @@ game's **offline mode** (full local progression in `PlayerProfileSettings.json`)
 into a **listen server** others join — Seamless Co-op style. An injected agent DLL does the engine work.
 Player defaults (0.3.0): every offline Fort Hope hosts, friends join through Steam "Join Game" over Steam P2P only,
 the game's UDP socket is bound to 127.0.0.1 (nothing reachable from the network); `host_ip=1` is the advanced IP
-opt-in. Player docs: README.md (top) and its copy in `launch/package.sh` (`b4bcoop-README.txt`).
+opt-in. Player docs: README.md (top) and its copy in `launch/package.sh` (`b4bcoop-README.txt`); every chat command
+and ini key: `docs/COMMANDS.md` (shipped as `b4bcoop-COMMANDS.txt`; update it with any player-facing change).
 
 Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOTES.md`. Read it before touching
 `native/` or `tools/`.
