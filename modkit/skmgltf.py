@@ -647,9 +647,13 @@ def set_bone_positions(s, bones):
     rs["pose"] = pose
 
 
-def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets=None, bones=None):
+def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets=None, bones=None, slot_colors=None):
+    """slot_colors: {slot name: (b, g, r, a)} vertex colour for every vertex of that slot's sections (e.g. hero hair:
+    Master_Hair_M tints vertex-coloured strands with 'Vertex Color Multiplier'; retail strands are mostly black)."""
     s = skm.SkeletalMesh(template)
     m = s.m
+    names = [s.name(x["slot_name"]).lower() for x in m["materials"]]
+    recolor = {names.index(k.lower()): tuple(v) for k, v in (slot_colors or {}).items() if k.lower() in names}
     if s.props.get("MorphTargets"):
         raise SystemExit("template has morph targets: not supported (their vertex indices would not match); no "
                          "retail survivor, weapon or FP mesh has any")
@@ -660,6 +664,10 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
     for i, src in enumerate(srcs):
         print(f"LOD{i}: {src}")
         verts, sections, ntc = read_gltf(Gltf(to_gltf(src)), s, bind, matmap)
+        for slot, tris in sections:
+            if slot in recolor:
+                for v in {x for t in tris for x in t}:
+                    verts[v] = verts[v][:5] + (recolor[slot],) + verts[v][6:]
         lods.append(build_lod(s, verts, sections, max(ntc, tmpl_ntc), tmpl_lod))
     if len(srcs) == 1 and copies > 1:
         lods = lods * copies

@@ -46,7 +46,9 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
 1. **Your model**: one FBX (or glTF/OBJ/.blend) of a human in an **A-pose** (arms ~45° down) or T-pose, with its
    textures next to it. Best: rigged (Mixamo auto-rigger, a UE4 mannequin rig, 3ds Max Biped); unrigged works if it
    stands in an A-pose (weights come from the game's mesh). Clothes/hair/eyes may be separate objects and materials.
-   Only opaque materials look right (alpha hair cards render as solid cards; bake eyebrows into the skin texture).
+   Alpha hair cards work on the outfit's **Hair** slot (`--slot <hair material>=Hair`): the alpha becomes the game's
+   hair mask, the colour the average of your hair texture. Elsewhere only opaque materials look right (bake eyebrows
+   into the skin texture).
 2. **Pick the outfit to replace** (it keeps its skeleton, animations, physics). An Elite outfit is a whole survivor,
    head included:
    ```
@@ -60,7 +62,7 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    b4bmod survivor mymodel.fbx ^
        --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM ^
        --fp     /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM ^
-       --slot body=Head --slot jacket=Torso --slot hair=Torso --slot eyes=Torso --slot boots=Legs ^
+       --slot body=Head --slot jacket=Torso --slot hair=Hair --slot eyes=Torso --slot boots=Legs ^
        -o mymod --title "My survivor" --author you --version 1.0 --zip
    ```
    (`^` continues a line in the Windows Command Prompt; on Linux use `\`, or write it all on one line.)
@@ -156,12 +158,13 @@ The scripts next to b4bmod, each with `-h` / a usage header; run them with the s
 - No cloth simulation for your mesh (the template's cloth is left unused), no morph targets (face shapes: templates
   with morph targets are refused, which excludes most heads). The face is skinned to `head` (and the jaw if your rig
   has one): it doesn't blink or talk.
-- Hair: alpha-card hair renders as solid cards (it goes on an opaque outfit slot).
+- Hair: on the Hair slot, one colour from root to tip (the game's hair material has no colour texture); on any other
+  slot alpha cards render as solid cards.
 - The weapon's sights stay where the template's are: a model with a different sight height aims slightly off through
   its own sights.
 - Only on your PC and for players who have the add-on: others see the normal model.
 
 Status: verified in game (2026-09-25): a MakeHuman survivor (3P and FP arms, animated, both players' views) and an
 AK on the AR02 (first person with reload moving the model's magazine, other survivors' hands, skins retargeted). Not
-seen in game yet: the muzzle flash position. Format details and evidence:
+seen in game yet: the muzzle flash position, the dropped magazine. Hair with alpha on the Hair slot: seen in game. Format details and evidence:
 docs/investigations/mesh-mods.md in the b4b-coop repository.

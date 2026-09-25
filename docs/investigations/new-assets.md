@@ -1,7 +1,7 @@
 # New assets under new paths: add-ons that add instead of replace (design, #20/#21, epic #23)
 
-Status 2026-09-25, build 14216215, branch `models-next`. Design; the package side is prototyped (`b4bmod rename`,
-§2) and a live load check is in §5. Today every add-on replaces game files at their paths: a survivor model *is*
+Status 2026-09-25, build 14216215, branch `models-next`. Design; the package side works (`b4bmod rename`, §2,
+loaded in game from an add-on, §5); selecting it (§3-§4) is not built yet. Today every add-on replaces game files at their paths: a survivor model *is*
 Mom's Elite 04 for whoever has the add-on. Goal: an add-on that brings an **extra** outfit (or weapon look) at its own
 paths, selectable next to the game's, with nothing of the game's replaced.
 
@@ -68,9 +68,14 @@ every b4bcoop machine sees the row, looks the name up in its own add-on list and
   name). Unknowns: unlock checks (entitlement/`Products_DT`), the thumbnail and name text, and profile persistence.
   Not needed for `/model`.
 
-## 5. Live check (models-next, 2026-09-25)
-See §5 results once run: add-on `test_newpath.pak` (the three `/Game/b4bcoop/test/` packages above, torso texture
-tinted red), then `mdl load /Game/b4bcoop/test/3P_Test_SKM.3P_Test_SKM` and `mdl mesh 0 CharacterMesh0 <same>`.
+## 5. Live check (models-next, 2026-09-25, Proton, `multi.sh 2`, add-ons via `addons_dir=`)
+Add-on `test_newpath.pak` (7 files: `3P_Test_SKM` -> `Test_Torso_MI` -> `Test_Torso_BC_T` under
+`/Game/b4bcoop/test/`, the texture tinted red), loaded with `addons: 3. test_newpath.pak ... cosmetic`.
+`mdl load /Game/b4bcoop/test/3P_Test_SKM.3P_Test_SKM` -> loaded (skeleton `3P_Biped_SK`), `mdl mesh 1 CharacterMesh0
+<same>` (now clears the component's material overrides) -> the client's hero renders our model with a **red jacket**
+(`newpath_face_crop.png`): the mesh at a new path loaded through the pak, its import of the new MI resolved, the MI's
+import of the new texture resolved. No LogLinker/LogStreaming errors. So packages at new paths need nothing from the
+engine side beyond mounting; what's missing is only something that names them (§3-§4).
 
 ## 6. Weapons
 A new weapon *look* (skin) is a material set, not a new item: `Skin_Sets/*` MIs are chosen by the equipped skin row

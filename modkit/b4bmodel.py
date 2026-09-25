@@ -359,7 +359,8 @@ def survivor(o):
                  "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06")] + fit_args(o.o) + atlas_args +
                 slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")])
     man3 = json.load(open(os.path.join(d3, "manifest.json")))
-    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir))
+    hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)}
+    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair)
     mans = [(man3, tp)]
     if fp:
         df = os.path.join(work, "fitfp")
