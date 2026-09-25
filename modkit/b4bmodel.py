@@ -11,6 +11,9 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
   b4bmodel.py weapon <model> --fp-mesh <FP weapon SKM> [--3p-mesh <3P weapon SKM>] [--static <SM>]... -o <moddir>
         [--slot MAT=SLOT]... [--tex MAT=...]... [--forward +x] [--up +z] [--scale fit|F] [--part REGEX=BONE]...
         [--mag-static <SM>] [--lods 1,0.5] [--skins retarget|keep]
+        [--as <name> [--as-title <text>]]   an ADDED weapon look: FP mesh + 3P meshes as new packages under
+                                            /Game/b4bcoop/weapons/<name>/ and a `weapon=` line in <moddir>/addoninfo.txt
+                                            (in game: /model <name> puts it on your weapon of that type)
   b4bmodel.py textures <manifest.json> --mesh <SKM> -o <moddir>      (the texture step alone)
 
   common: --src <extract folder> (where the game's files were extracted: b4bmod extract ...), --work <dir>,
@@ -411,7 +414,9 @@ def outfit_name(o):
     return n
 
 
-def as_outfit(o, name, stage, meshes):
+def as_copy(o, root, name, stage, meshes):
+    """Copy what the pipeline wrote for `meshes` (+ the template folder's material instances they use) to
+    <root><name>/, references rewritten between the copies. Returns {old package: new package}."""
     moddir, src = o["out"], src_dir(o)
     owned = {owned_prefix(m) for m in meshes}
 
@@ -434,16 +439,16 @@ def as_outfit(o, name, stage, meshes):
         # the template folder's material instances come along even when unchanged: they point at textures we replace
         if not written and not (cls == "MaterialInstanceConstant" and any(pkg.startswith(x) for x in owned)): continue
         copy[pkg] = (f, cls)
-        if cls in ("SkeletalMesh", "MaterialInstanceConstant"):
+        if cls in ("SkeletalMesh", "StaticMesh", "MaterialInstanceConstant"):
             todo += [n for cp, cn, outer, n in p.imports if cn == "Package" and n.startswith("/Game/")]
     new, seen = {}, {}
     for pkg in sorted(copy):
         base = pkg.rsplit("/", 1)[1]
         if base.lower() in seen: die(f"--as: {pkg} and {seen[base.lower()]} have the same name; can't put both in one folder")
         seen[base.lower()] = pkg
-        new[pkg] = OUTFIT_ROOT + name + "/" + base
-    old_dir = os.path.join(moddir, "Gobi", "Content", *OUTFIT_ROOT[len("/Game/"):].split("/"), name)
-    if os.path.isdir(old_dir): shutil.rmtree(old_dir)   # a previous run of this outfit
+        new[pkg] = root + name + "/" + base
+    old_dir = os.path.join(moddir, "Gobi", "Content", *root[len("/Game/"):].split("/"), name)
+    if os.path.isdir(old_dir): shutil.rmtree(old_dir)   # a previous run of this outfit / weapon look
     refs = [x for old, nw in sorted(new.items()) for x in ("--ref", f"{old}={nw}")]
     b4bmod = find_b4bmod() or die("b4bmod.py not found next to b4bmodel.py (rename)")
     for pkg in sorted(copy, key=lambda k: {"Texture2D": 0, "MaterialInstanceConstant": 1}.get(copy[k][1], 2)):
@@ -459,20 +464,53 @@ def as_outfit(o, name, stage, meshes):
         p = upkg.Package(f)
         stale = sorted({n for cp, cn, outer, n in p.imports if cn == "Package" and n in new})
         if stale: die(f"--as: {nw} still references {stale}")
+    return new
+
+
+def add_info_line(moddir, key, name, line):
+    """<moddir>/addoninfo.txt: `line` replaces the `key=<name>|...` line (several names allowed)."""
+    info = os.path.join(moddir, "addoninfo.txt")
+    lines = open(info, encoding="utf-8-sig").read().splitlines() if os.path.exists(info) else []
+    lines = [x for x in lines if not re.match(rf"\s*{key}\s*=\s*{re.escape(name)}\s*\|", x, re.I)] + [line]
+    with open(info, "w", encoding="utf-8", newline="\r\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def as_title(o, name):
+    return (o.get("as_title") or name).replace("|", "/").replace("\r", " ").replace("\n", " ")
+
+
+def as_outfit(o, name, stage, meshes):
+    new = as_copy(o, OUTFIT_ROOT, name, stage, meshes)
     obj = lambda pkg: f"{new[pkg]}.{pkg.rsplit('/', 1)[1]}" if pkg in new else ""
     p3 = upkg.file_to_game_path(meshes[0])
     pf = upkg.file_to_game_path(meshes[1]) if len(meshes) > 1 else None
     m = re.search(r"/Heroes/([^/]+)/", p3)
     hero = m.group(1).lower() if m else "-"
-    title = (o.get("as_title") or name).replace("|", "/").replace("\r", " ").replace("\n", " ")
-    line = f"outfit={name}|{hero}|{obj(p3)}|{obj(pf) if pf else ''}|{title}"
-    info = os.path.join(moddir, "addoninfo.txt")
-    lines = open(info, encoding="utf-8-sig").read().splitlines() if os.path.exists(info) else []
-    lines = [x for x in lines if not re.match(rf"\s*outfit\s*=\s*{re.escape(name)}\s*\|", x, re.I)] + [line]
-    with open(info, "w", encoding="utf-8", newline="\r\n") as fh:
-        fh.write("\n".join(lines) + "\n")
+    line = f"outfit={name}|{hero}|{obj(p3)}|{obj(pf) if pf else ''}|{as_title(o, name)}"
+    add_info_line(o["out"], "outfit", name, line)
     log(f"outfit {name}: {len(new)} package(s) under {OUTFIT_ROOT}{name}/ (template: {hero}); addoninfo: {line}")
     log(f"in game: /model {name}")
+
+
+# ---- added weapon looks (--as <name>): the weapon's meshes as NEW packages (docs/investigations/new-assets.md §9) ---
+# Only the meshes the weapon actor itself shows are copied: the first-person mesh, the 3P static mesh (3P_<Code>_SM,
+# what other players see) and a 3P skeletal mesh if given. World pickups, the dropped magazine and the weapon skins
+# stay the game's (a look is chosen per player: /model <name>; skins don't apply to it). The agent pairs each copy
+# with the weapon's mesh of the same name, so the copies keep the template's base names.
+WEAPON_ROOT = "/Game/b4bcoop/weapons/"
+
+
+def as_weapon(o, name, stage, fp, statics, skm3p):
+    meshes = [fp] + statics + ([skm3p] if skm3p else [])
+    new = as_copy(o, WEAPON_ROOT, name, stage, meshes)
+    obj = lambda f: (lambda pkg: f"{new[pkg]}.{pkg.rsplit('/', 1)[1]}" if pkg in new else "")(upkg.file_to_game_path(f)) if f else ""
+    code = re.sub(r"_SKM$", "", os.path.basename(fp)[:-len(".uasset")], flags=re.I)
+    sm3p = next((f for f in statics if os.path.basename(f).lower().startswith("3p_")), statics[0] if statics else None)
+    line = f"weapon={name}|{code}|{obj(fp)}|{obj(sm3p)}|{obj(skm3p)}|{as_title(o, name)}"
+    add_info_line(o["out"], "weapon", name, line)
+    log(f"weapon look {name}: {len(new)} package(s) under {WEAPON_ROOT}{name}/ (weapon {code}); addoninfo: {line}")
+    log(f"in game: /model {name} (on your {code})")
 
 
 # ---- weapon ---------------------------------------------------------------------------------------------------------
@@ -670,8 +708,21 @@ def main():
         as_outfit(o.o, name, stage, meshes)
     elif cmd == "survivor":
         survivor(o)
+    elif cmd == "weapon" and o.get("as"):
+        name, moddir, src = outfit_name(o), o.o["out"], src_dir(o.o)
+        stage = os.path.join(o.o["work"], "stage")
+        shutil.rmtree(stage, ignore_errors=True)
+        o.o["out"] = stage
+        o.o["skins"] = "keep"      # skins don't apply to an added look (its made-up skin row is the look)
+        o.o.pop("mag_static", None)  # the dropped magazine and world pickups stay the game's
+        o.o["static"] = [x for x in o.o["static"] if os.path.basename(x).lower().startswith("3p_")]
+        weapon(o)
+        o.o["out"] = moddir
+        fp = out_file(asset_file(o["fp_mesh"], src), stage)
+        statics = [out_file(asset_file(x, src), stage) for x in o.o["static"]]
+        skm3p = out_file(asset_file(o["3p_mesh"], src), stage) if o.get("3p_mesh") else None
+        as_weapon(o.o, name, stage, fp, statics, skm3p)
     elif cmd == "weapon":
-        if o.get("as"): die("--as: survivor outfits only (weapons: not yet)")
         weapon(o)
     elif cmd == "textures":
         man = json.load(open(o.pos[0]))

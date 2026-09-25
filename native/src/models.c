@@ -200,6 +200,8 @@ static void handle_str(const RowHandle *h, char *buf, size_t n) {
     else snprintf(buf, n, "%s/%s", ue_obj_name(h->table, t, sizeof t), r);
 }
 
+static UObject *load_asset(const char *path);
+UObject *models_load_asset(const char *path) { return load_asset(path); }
 static UObject *load_asset(const char *path) {
     UClass *ksl = ue_find_class("KismetSystemLibrary");
     UObject *cdo = ksl ? UC_CDO(ksl) : NULL;
@@ -544,6 +546,13 @@ static int hero_slots(UObject ***out) {
     return 0;
 }
 
+int models_hero_pawns(UObject **out, int max) {
+    UObject **s; int n = hero_slots(&s), k = 0;
+    for (int i = 0; i < n && k < max; i++) { UObject *p = slot_pawn(s[i]); if (p) out[k++] = p; }
+    return k;
+}
+int models_locked(void) { return locked; }
+
 // Slot a host wish targets now (NULL: not in this map / not yet).
 static UObject *want_slot(const Want *w) {
     if (!strncmp(w->key, "slot:", 5)) {
@@ -677,6 +686,7 @@ void models_tick(float dt) {
     UObject *w = ue_world();
     if (!w || !ue_local_pc()) return;
     tick_npc();
+    wlooks_tick(dt);
     if (!me.on && !others[0].on) {   // cheap path: nothing wished (others[] is compacted on use)
         int any = 0;
         for (int i = 0; i < MAX_OTHERS; i++) any |= others[i].on;
@@ -691,6 +701,7 @@ void models_tick(float dt) {
 #define REFUSED_NOTICE "The host turned model swaps off"
 void models_host_notice(const char *text) {
     if (me.on && !strncmp(text, REFUSED_NOTICE, sizeof REFUSED_NOTICE - 1)) { me.gave_up = 1; LOG("models: refused by the host"); }
+    wlooks_host_notice(text);
 }
 
 // ---- host: lock ----
@@ -825,6 +836,7 @@ static void list(const char *cat_arg, Out *o) {
         out_printf(o, "%s\n", line);
         return;
     }
+    if (cat_arg && (!_stricmp(cat_arg, "weapons") || !_stricmp(cat_arg, "weapon"))) { wlooks_list(o); return; }
     int hi = cat_arg && *cat_arg ? hero_by_slug(cat_arg) : -1;
     if (hi < 0 && cat_arg && *cat_arg && strcmp(cat_arg, "all")) {
         out_printf(o, "no survivor '%s'. /model list shows them\n", cat_arg);
@@ -849,6 +861,7 @@ static void list(const char *cat_arg, Out *o) {
             }
             out_printf(o, "%s\n", line);
         }
+        wlooks_overview(o);
         return;
     }
     static const int order[4] = {SLOT_OUTFIT, SLOT_HEAD, SLOT_TORSO, SLOT_LEGS};
@@ -890,6 +903,7 @@ static void status(Out *o) {
         out_printf(o, "you: outfit=%s head=%s torso=%s legs=%s\n", b[3], b[0], b[1], b[2]);
     }
     out_printf(o, "your model: %s%s\n", me.on ? me.label : "(game's own)", me.on && me.gave_up ? " (refused by the host)" : "");
+    wlooks_status(o);
     if (!is_client()) {
         for (int i = 0; i < MAX_OTHERS; i++) if (others[i].on) out_printf(o, "forced: %s = %s\n", others[i].key, others[i].label);
         out_printf(o, "models are %s for players (/models on|off)\n", locked ? "OFF" : "on");
@@ -899,6 +913,7 @@ static void status(Out *o) {
 static void reset_me(Out *o) {
     UObject *ps = my_ps(), *slot = ps_slot(ps);
     me.on = 0;
+    wlooks_reset(o);
     if (!slot) { out_printf(o, "model reset (applies when you have a survivor)\n"); return; }
     if (reinit_from_profile(ps, slot)) { out_printf(o, "reset failed\n"); return; }
     out_printf(o, "back to your own look\n");
@@ -970,7 +985,7 @@ void models_slash(const char *verb, char *rest, Out *o) {
         if (!_stricmp(a, "off")) {
             locked = 1;
             for (int i = 0; i < MAX_OTHERS; i++) others[i].on = 0;
-            int n = reset_foreign_all();
+            int n = reset_foreign_all() + wlooks_lock_reset();
             if (me.on) reset_me(o);
             notify_all("[host] model swaps are off");
             out_printf(o, "model swaps off for everyone (%d look(s) reset)\n", n);
@@ -990,7 +1005,10 @@ void models_slash(const char *verb, char *rest, Out *o) {
     if (locked && !is_client()) { out_printf(o, "models are off (/models on)\n"); return; }
     Want nw = {0};
     char label[48];
-    if (resolve(a, &nw, label, sizeof label)) { out_printf(o, "no model '%s' (/model list)\n", a); return; }
+    if (resolve(a, &nw, label, sizeof label)) {
+        if (!wlooks_pick(a, o)) out_printf(o, "no model '%s' (/model list)\n", a);
+        return;
+    }
     // pieces add up (/model holly_head_03 then /model walker_legs_01); an outfit or a whole survivor replaces the wish
     if (me.on && !nw.has[SLOT_OUTFIT] && !me.has[SLOT_OUTFIT]) {
         for (int k = 0; k < 3; k++) if (nw.has[k]) { me.pick[k] = nw.pick[k]; me.has[k] = 1; }
@@ -1097,6 +1115,7 @@ static void cmd_rows(const char *filter, Out *o) {
 //     | skm [filter] | reg [filter] [class]
 int models_cmd(const char *verb, char *rest, Out *o) {
     if (!strcmp(verb, "model") || !strcmp(verb, "models")) { models_slash(verb, rest, o); return 1; }
+    if (!strcmp(verb, "wlook")) return wlooks_cmd(verb, rest, o);
     if (strcmp(verb, "mdl")) return 0;
     char *sub = rest ? strtok(rest, " ") : NULL, *a1 = sub ? strtok(NULL, " ") : NULL, *a2 = a1 ? strtok(NULL, " ") : NULL;
     char *a3 = a2 ? strtok(NULL, "") : NULL;
@@ -1216,6 +1235,7 @@ static void hook(uintptr_t at, const uint8_t *sig, size_t n, void *detour, void 
 }
 
 int models_init(void) {
+    wlooks_init();
     hook(ADDR_RUNREFRESH, SIG_RUNREFRESH, sizeof SIG_RUNREFRESH, (void *)runrefresh_detour, (void **)&orig_runrefresh, "campaign run save");
     if (memcmp((void *)ADDR_SELECTSET, SIG_SELECTSET, sizeof SIG_SELECTSET)) { LOG("models: SelectCustomizationSet signature mismatch, no host lock"); return -1; }
     if (MH_CreateHook((void *)ADDR_SELECTSET, (void *)selectset_detour, (void **)&orig_selectset) != MH_OK ||

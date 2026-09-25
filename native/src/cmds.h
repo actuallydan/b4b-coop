@@ -159,6 +159,9 @@ int addons_active(AddonRef *out, int max);    // add-ons mounted in this game, l
 // Added outfits (addoninfo outfit= lines) of the mounted add-ons: object paths "/Game/X/Y.Y", meshfp "" = none
 typedef struct { const char *name, *hero, *mesh3p, *meshfp, *title, *addon; } AddonOutfit;
 int addons_outfits(AddonOutfit *out, int max);
+// Added weapon looks (addoninfo weapon= lines): code = weapon code (AR02); mesh object paths, "" = none
+typedef struct { const char *name, *code, *fp, *sm3p, *skm3p, *title, *addon; } AddonWeapon;
+int addons_weapons(AddonWeapon *out, int max);
 // addons_mp.c: add-ons in multiplayer (#22): login summary, host addons_policy, /addons players|policy
 int addons_policy_set(const char *v);         // any|cosmetic|none|match; -1 if unknown
 const char *addons_policy_name(void);
@@ -172,6 +175,20 @@ void models_tick(float dt);
 int models_cmd(const char *verb, char *rest, Out *o);  // dev builds: `model`, `models`, `mdl ...`
 void models_slash(const char *verb, char *rest, Out *o); // chat /model, /models
 void models_host_notice(const char *text);               // chat.c: a host notice arrived (client)
+int models_locked(void);                                 // host: /models off
+UObject *models_load_asset(const char *path);            // LoadAsset_Blocking of an object path, NULL if it failed
+int models_hero_pawns(UObject **out, int max);           // pawns of the hero-team slots, slot order
+// weaponlooks.c: added weapon looks (/model <weapon look>, docs/investigations/new-assets.md §9)
+int wlooks_init(void);
+void wlooks_tick(float dt);
+int wlooks_pick(const char *name, Out *o);               // /model <name>: 1 if it is a weapon look (handled)
+void wlooks_reset(Out *o);                               // /model reset: your weapons back to your own skins
+void wlooks_list(Out *o);                                // /model list weapons
+void wlooks_overview(Out *o);                            // the /model list overview line
+void wlooks_status(Out *o);
+int wlooks_lock_reset(void);                             // host, /models off: every weapon look undone; count
+void wlooks_host_notice(const char *text);
+int wlooks_cmd(const char *verb, char *rest, Out *o);    // dev: wlook dump
 
 // admin.c helpers shared with cheats.c
 int admin_player_array(UObject ***arr);                 // GameState.PlayerArray (humans and bots), /players order
