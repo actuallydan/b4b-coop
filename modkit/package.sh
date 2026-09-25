@@ -18,7 +18,9 @@ mesh="$kit"; [[ -f "$mesh/skmgltf.py" ]] || mesh="$root/tools/modkit"
 
 cp "$kit/README.md" "$kit/b4bmod.py" "$kit/b4bmod.cmd" "$kit/b4bmod.sh" "$kit/addon.py" "$kit/b4bpak.py" "$out/"
 cp "$root/LICENSE" "$out/LICENSE"
-cp "$mesh/skm.py" "$mesh/skmgltf.py" "$mesh/upkg.py" "$out/"
+for f in "$mesh"/*.py; do   # skm, skmgltf, upkg (+ whatever mesh tools join them); not the dev-only probes
+  case "$(basename "$f")" in pakscan.py|customversions.py) ;; *) cp "$f" "$out/" ;; esac
+done
 cp "$mesh"/blender/*.py "$out/blender/"
 cp "$kit"/docs/*.md "$out/docs/"
 cp "$kit"/dotnet/b4bmod/*.cs "$kit"/dotnet/b4bmod/*.csproj "$out/dotnet/b4bmod/"
