@@ -1107,8 +1107,8 @@ def dangle_module():
 
 def secondary_motion(o, tpl, meshes):
     """3P: --hair_bones "a,b,c;d,e": skin the back hair to the survivor's simulated hair chains (--hair_swing 0..1);
-    --cloth auto|MAT,...: split the skirt off as a cloth section and build its simulation mesh (manifest extras
-    "cloth", written by modkit/cloth.py). Returns the meshes (cloth pieces added)."""
+    --cloth auto|MAT[:cape|:lower],...: split skirts, coat tails and capes off as cloth sections and build their
+    simulation meshes (manifest extras "cloth", written by modkit/cloth.py). Returns the meshes (cloth pieces added)."""
     if not o.get("hair_bones") and o.get("cloth", "off") in ("off", ""): return meshes
     dm = dangle_module()
     if o.get("hair_bones"):
@@ -1121,10 +1121,10 @@ def secondary_motion(o, tpl, meshes):
         dm.rig_hair(tpl, meshes, chains, is_hair, log, float(o.get("hair_swing", 1.0)))
     if o.get("cloth", "off") not in ("off", ""):
         mats = dm.cloth_materials(meshes, tpl, o["cloth"], log)
-        pieces, sim = dm.cloth_region(tpl, meshes, mats, log)
-        if sim:
+        pieces, sims = dm.cloth_regions(tpl, meshes, mats, log)
+        if sims:
             meshes = [m for m in meshes if len(m.data.polygons)] + pieces
-            o.setdefault("extras", {})["cloth"] = [sim]
+            o.setdefault("extras", {})["cloth"] = sims
         elif o["cloth"] not in ("auto", "on"):
             log("cloth: nothing to simulate")
     return meshes

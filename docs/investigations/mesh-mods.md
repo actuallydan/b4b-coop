@@ -715,7 +715,7 @@ short arms keep their own length, so the 3P hands may sit off the weapon's grips
 the survivors'; `--proportions 0.5` or `fit` if a model shows it); first-person arms always take the survivor's
 proportions (FP skeleton); unrigged models are placed by their bounds as before. Not seen: crouch, reload, climbing.
 
-## 14. Secondary motion: swinging hair, skirts as cloth (models-cloth, 2026-09-26)
+## 14. Secondary motion: swinging hair, skirts, coats and capes as cloth (models-cloth, models-coats, 2026-09-26)
 Custom long hair and skirts used to move rigidly with head/pelvis. Code: `modkit/blender/b4bdangle.py` (called from
 `b4bfit.py` 3P, `--hair_bones`, `--cloth`), `modkit/cloth.py` (template inspection, clothing asset writer, render
 mapping), `modkit/uprops.py` (tagged-property tree parse/write, byte-identical on retail cloth/PA exports),
@@ -780,10 +780,72 @@ Screenshots (presented frames, not committed): `~/.local/share/b4b-coop/cloth/sh
 skeleton moved, waist 114 cm) the same build and live run: skirt and hair still swing (`shots4/running_best.png`,
 `shots4/grid.png`); the chain/sim are built after the template is rebound, so they use the model's joints.
 
-Open: only Holly Elite 00 tested (other cloth templates should work: same writer, their asset's PA/config); a
-template without a clothing asset can't get cloth (adding the exports/imports needs a package writer that adds
-exports); the sim ring closes coats/open-front dresses; long hair can dip into the back when the chain swings
-(`--hair-swing`); both flags default to auto (Dan, 2026-09-26: on when the model/template supports it).
+Open: long hair can dip into the back when the chain swings (`--hair-swing`); both flags default to auto (Dan,
+2026-09-26: on when the model/template supports it). The two limits noted here first (only outfits with a clothing
+asset; the ring closing open coats) are gone: §14b.
+
+### 14b. Cloth on any outfit: new clothing assets, open panels, capes (models-coats, 2026-09-26)
+**Package writer** (`upkg.Package`): `add_name`, `add_import` / `import_object` / `import_class`, `add_export(class,
+template, outer, name, data, sbs/cbs/sbc/cbc)`; `save()` rewrites the whole header when the structure changed
+(`rebuild_header`): name map with the engine's two name hashes (`FCrc::Strihash_DEPRECATED` on the MSB-first
+`CRCTable_DEPRECATED`, upper-cased; `FCrc::StrCrc32` 4 bytes per char), import map, export map (104 B; new exports
+get bNotAlwaysLoadedForEditorGame 1 as retail), depends map (empty per new export), asset registry bytes, preload
+dependency array re-laid (FirstExportDependency = running offset or -1), summary counts/offsets, Generations
+(export count, name count), BulkDataStartOffset; serial offsets move by the header's size change, new export data
+goes after the last export. New entries are appended, so no FName/FPackageIndex inside existing export data changes.
+Checks: `upkg.py rebuild-check` = header rebuild of an unedited package byte-identical: **1695/1695** extracted
+packages (meshes, textures, MIs, physics assets), 0 name-hash mismatches. A Walker Elite 00 mesh with an added
+clothing asset: UAssetAPI parses 3 exports and re-writes it byte-identically (`tools/modkit/uassetrt check`),
+CUE4Parse (`assetcheck`) lists SkeletalMesh + ClothingAssetCommon + ClothConfigNv, the engine loads it (below).
+**What a new clothing asset is** (retail reference: `3P_Walker_Elite_07_SKM` vs `3P_Walker_Elite_07_NoCloth_SKM`,
+same mesh without cloth: tags differ only by `MeshClothingAssets`): exports ClothingAssetCommon (outer = mesh,
+template `Default__ClothingAssetCommon`) and ClothConfigNv (outer = the asset); imports `/Script/
+ClothingSystemRuntimeCommon`, `/Script/ClothingSystemRuntimeNv`, both classes and CDOs, the collision physics asset
+(package + object); preload deps: config sbc [class, CDO] cbc [asset]; asset cbs [PA, config] sbc [class, CDO] cbc
+[mesh]; mesh cbs += asset. `cloth.new_clothing_asset` copies the tagged layout and NvCloth config of Walker Elite
+07's coat asset (the donor, extracted on demand; names re-pointed into the outfit's package by `uprops.remap`), new
+AssetGuid (md5 of mesh name + index, reproducible), appends it to the mesh's `MeshClothingAssets` tag (added after
+`ShadowPhysicsAsset` when missing). Outfits that have clothing assets still reuse theirs first; each garment gets
+its own asset (a skirt + a cape = two).
+**Collision.** Two sources, both written: the physics asset (garments hanging from the waist on a new asset:
+`3P_Walker_Elite_07_Cloth_PA`, thighs/calves/pelvis capsules, imported) and our own capsules in each clothing LOD's
+`CollisionData` (Spheres + SphereConnections, BoneIndex = index in `UsedBoneNames`, LocalPosition in the bone's bind
+space) fitted to the model: per bone (pelvis, spine_01..03, thighs, calves; twist bones counted with their limb) the
+median distance of the skin mostly weighted to it from the joint segment, x0.95. Every collision bone is also put
+in `UsedBoneNames` (retail lists its PA's calf bones without weights on them). Live check that the engine uses our
+capsules: a build with only our capsules, radii x3 (`B4B_CLOTH_COLLISION=own B4B_CLOTH_COLLISION_SCALE=3`), showed
+the coat pushed out into a wide bell around the legs; normal radii keep it hanging. Capes use only our capsules
+(the hero PAs carry bodies a model may not have, e.g. Walker's simulated backpack r17 on the back).
+**Simulation meshes** (`b4bdangle.cloth_regions`): garments by material name or colour image name (skirt/dress/kilt,
+coat/jacket/trench/duster/robe/poncho..., cape/cloak/mantle), bottoms that are skirt-shaped, or `--cloth MAT[:cape|
+:lower],...`. Kind: `cape` when it hangs behind from above the chest and leaves the chest bare (simulated below
+spine_03, top row on spine_03/clavicles/neck), else `lower` (below spine_01+2 cm, top row on pelvis/spine). Faces
+skinned mostly to arm bones (a coat's sleeves) stay skinned. Angular coverage in 72 x 5 deg bins over 10 height
+bands: sectors covered in < 1/3 of the bands form the gap; >= 25 deg = **open panel** over the covered arc (the
+front left open), else the closed tube as before. Faces inside the gap (where a coat's fronts still meet below the
+waist) stay skinned. Columns ~18 deg, rows ~9 cm (5-10), each column's hem from the garment (longer at the back),
+radius = outermost garment vertex per bin + 4 mm. Max distance at the hem: tube 0.45 x length, open panel / cape 0.8.
+A one-sided open garment (< 20 % of its faces facing the body) gets a reversed copy of each face 1.5 mm inside, so
+its inside draws when it swings (tubes keep using the outfit's two-sided material variant when it has one).
+`blender/preview.py ... --sim <work>/fit3p/manifest.json` draws the simulation meshes as red wire over the model.
+**Test characters** (local, not committed; `tools/modkit/testassets/garments.py` makes CC0 garments from a body's
+cross-sections): (1) a game-rip character with a floor-length open coat on Walker Elite 00 (no clothing asset):
+open panel 315 deg, 10x19, 6672 cloth faces; (2) the CC0 MPFB man with a generated long coat open below the waist
+on Hoffman Elite 00: open panel 325 deg, 9x19; (3) the CC0 VRoid girl (skirt) with a generated cape on Mom Elite 04:
+skirt tube 5x20 + cape panel 185 deg 10x11, two new clothing assets. Mapping error 0.000 cm on all.
+**Live** (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host + client 2 with the add-ons via `addons_dir=`, client 3
+`addons=0`; dev `face walk` also moves a player's own hero: SimpleMoveToLocation works on its PlayerController):
+Fort Hope, the host in the long coat walking and turning in 3P: the coat tails swing out to the side with folds and
+settle; client 2 sees the host in the coat, client 3 sees the survivor's own pieces (its hero list: retail meshes);
+client 2 walking in the cape: the cape sways behind the legs; Evansburgh B saferoom: a bot in the long coat walking,
+vaulting onto crates and jumping down (coat bunches during the vault, hangs again after). No crash, no cloth or
+skeletal-mesh errors in the three logs (only the retail LogCustomization "Forcing load" lines).
+`e2e.py --quick --no-lock`: 14/14. Screenshots local (`~/.local/share/b4b-coop/characters/`).
+Found on the way: a flat-shaded model reaches the fit as a triangle soup and its LODs come out shredded (decimation
+can't collapse unshared edges); test prefixes render LOD1 (`r.SkeletalMeshLODBias=1`), so it showed at once. The
+garment generator shades smooth now; the pipeline doesn't weld (open).
+Open: not tuned per garment (one NvCloth config, the donor's; max distance shares fixed); no self-collision; the
+panel is a cylinder around the body axis, so a cape spread wide over the arms or a very full skirt is approximated.
 
 ## 15. Models from game rips (2026-09-26)
 Test: a rigged FBX ripped from another game (two outfits, a Mixamo re-rig), local only. What such files look like and
@@ -826,5 +888,5 @@ base pieces; host FP (gloved hands, SMG) and client FP (coat sleeve, bat); the h
 client; a bot in the outfit (`/model 4 <name>`) holding a rifle and running (`face walk`). Talking: the jaw bone moves
 during a voice line (up to 1.1 deg measured on one line; under the hat brim nothing visible). No Fatal/skeletal-mesh
 errors. `e2e.py --quick --no-lock`: 14/14. Screenshots stay local (`~/.local/share/b4b-coop/characters/`).
-Open: the coat has no cloth (open front: `--cloth` would close it; the Walker template has no clothing asset anyway); auto slots can't know that an unnamed image is
-skin.
+Open: auto slots can't know that an unnamed image is skin. (The coat's cloth: done in §14b, open panel on a new
+clothing asset.)

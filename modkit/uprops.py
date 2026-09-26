@@ -261,3 +261,66 @@ def vec_bytes(v):
 
 def bytes_vec(b):
     return struct.unpack("<3f", b)
+
+
+# ---- copying a tree between packages -----------------------------------------------------------------------------
+
+def remap(tree, src, dst, obj=None):
+    """Deep copy of a property tree parsed from package `src`, every FName re-pointed into `dst`'s name map (added
+    there when missing: dst must be a upkg.Package that can add names, saved with a rebuilt header). obj(i) maps an
+    ObjectProperty value (src FPackageIndex) to dst's; default: None (0). Used to make new exports from a retail
+    one (cloth.py: a clothing asset for an outfit that has none)."""
+    obj = obj or (lambda i: 0)
+
+    def fn(f):
+        s = src.names[f[0]]
+        return (dst.add_name(s), f[1])
+
+    def name_of(f): return src.names[f[0]]
+
+    for t in ("None", "StructProperty"): dst.add_name(t)
+
+    def value(typ, extra, v):
+        if isinstance(v, tuple) and len(v) == 2 and v[0] == "raw":
+            raise ValueError("remap: undecoded property data can't be re-pointed")
+        if typ == "ObjectProperty": return obj(v)
+        if typ == "NameProperty": return fn(v)
+        if typ in ("ByteProperty", "EnumProperty") and isinstance(v, tuple): return fn(v)
+        if typ == "StructProperty":
+            return v if isinstance(v, (bytes, bytearray)) else lst(v)
+        if typ == "ArrayProperty":
+            inner = name_of(extra)
+            if inner == "StructProperty":
+                f0, ityp, size, index, iextra, guid = v["inner_tag"]
+                dst.add_name(ityp)
+                items = [it if isinstance(it, (bytes, bytearray)) else _tagged(lst(it), it) for it in v["items"]]
+                return {"inner_tag": (fn(f0), ityp, size, index, (fn(iextra[0]), iextra[1]), guid), "items": items}
+            if inner == "ObjectProperty": return [obj(x) for x in v]
+            if inner == "NameProperty": return [fn(x) for x in v]
+            return list(v)
+        if typ == "MapProperty":
+            kt, vt = name_of(extra[0]), name_of(extra[1])
+
+            def el(t, e):
+                if t == "NameProperty": return fn(e)
+                if t == "ObjectProperty": return obj(e)
+                if t == "StructProperty": return lst(e)
+                return e
+            return {"items": [(el(kt, k), el(vt, x)) for k, x in v["items"]]}
+        return v
+
+    def _tagged(new, old):
+        t = Tagged(new); t.tail = getattr(old, "tail", b""); return t
+
+    def lst(props):
+        out = []
+        for p in props:
+            dst.add_name(p.name); dst.add_name(p.type)
+            if p.type == "StructProperty": extra = (fn(p.extra[0]), p.extra[1])
+            elif p.type in ("ByteProperty", "EnumProperty", "ArrayProperty", "SetProperty"): extra = fn(p.extra)
+            elif p.type == "MapProperty": extra = (fn(p.extra[0]), fn(p.extra[1]))
+            else: extra = p.extra
+            out.append(Prop(p.name, p.type, p.index, extra, p.guid, value(p.type, p.extra, p.value),
+                            fn(p.fn) if p.fn else None))
+        return out
+    return lst(tree)

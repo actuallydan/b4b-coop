@@ -297,6 +297,14 @@ class SkeletalMesh:
         ser_mesh(ar, self.m)
         self.rest = self.data[ar.p:]                         # anything after (e.g. per-poly BodySetup)
 
+    def set_tags(self, tag_bytes):
+        """Replace the export's tagged properties (uprops.write output, "None" included)."""
+        self.data = bytes(tag_bytes) + self.data[self.props_end:]
+        r = upkg.R(self.data)
+        self.props = {}
+        self.pkg.skip_tagged(r, self.props)
+        self.props_end = r.p
+
     def _bool_prop(self, name):
         p = self.props.get(name)
         return bool(p and p["value"])
