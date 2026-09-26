@@ -538,6 +538,7 @@ for s in ("l", "r"):
     LIMB_FAMILIES[f"calf_{s}"] = [f"calf_{s}", f"calf_twist_01_{s}", f"knee_twist_01_{s}"]
     LIMB_FAMILIES[f"foot_{s}"] = [f"foot_{s}", f"foot_twist_01_{s}"]
 ARM_BONES_RX = re.compile(r"^(upperarm|lowerarm|hand|wrist|elbow|shoulder|thumb|index|middle|ring|pinky)_")
+FP_MIN_SHARE = 0.1        # unrigged FP: a material keeps its arm faces only if at least this share of it is on the arms
 
 
 
@@ -916,8 +917,12 @@ def fit_character(o):
                 q = dir_s.normalized().rotation_difference(dir_t.normalized())
                 st = (dir_t.length / dir_s.length) ** (1.0 - keep)
             else:
-                # no aim joint (end bones, head): keep the nearest mapped parent's rotation change
-                if keep == 0.0:
+                # no aim joint (end bones, head): keep the nearest mapped parent's rotation change; the head keeps the
+                # model's own orientation (both look ahead at rest: turning it with a forward-leaning neck that is
+                # straightened onto the survivor's made the face look up)
+                if t == "head":
+                    q = Quaternion()
+                elif keep == 0.0:
                     par = pb.parent
                     while par is not None and par.name not in q_of: par = par.parent
                     q = q_of[par.name] if par is not None else Quaternion()
@@ -947,7 +952,9 @@ def fit_character(o):
                 D = D_of[pb.name]
             else:
                 ob = owner.get(pb.parent.name) if (t in BIND_ONLY and pb.parent) else owner.get(pb.name)
-                D = D_of.get(ob, Matrix.Identity(4)) if ob else Matrix.Identity(4)
+                # a bone under a bind-only bone (chin, lips, teeth, tongue under the jaw) moves with the jaw, which
+                # moves with its own parent (identity here left the lower face behind: the mouth pulled wide open)
+                D = D_of[ob] if ob in D_of else D_used.get(ob, Matrix.Identity(4)) if ob else Matrix.Identity(4)
             pb.matrix = D @ pb.bone.matrix_local
             D_used[pb.name] = D
             bpy.context.view_layer.update()
@@ -1018,8 +1025,9 @@ def fit_character(o):
     if mode == "3p" and not o.get("probe"):
         smeshes = secondary_motion(o, tpl, smeshes)
     if mode == "fp":
+        segs = body_segments(tpl) if not arms else None
         for m in smeshes:
-            keep_arms(m)
+            keep_arms(m, fp_arm_mask(tpl, m, segs) if segs else None)
         smeshes = [m for m in smeshes if len(m.data.polygons)]
     if o.get("probe") == "regions":
         body_regions(tpl, smeshes, os.path.join(o["out"], "regions.json"))
@@ -1260,6 +1268,7 @@ def transfer_weights(tpl, meshes, all_groups):
     for i, p in enumerate(kd_pts): kd.insert(p, i)
     kd.balance()
     fam_of = {b: fam for fam, bs in LIMB_FAMILIES.items() for b in bs}
+    face = face_bones_of(tpl) if all_groups else set()
     for m in meshes:
         W = mesh_weights(m)
         out = []
@@ -1273,7 +1282,7 @@ def transfer_weights(tpl, meshes, all_groups):
                     f = 1.0 / max(d, 1e-4)
                     tot += f
                     for n, x in kd_w[i].items(): acc[n] = acc.get(n, 0.0) + x * f
-                out.append({n: x / tot for n, x in acc.items()})
+                out.append(fold_face({n: x / tot for n, x in acc.items()}, face))
                 continue
             nw = {}
             tw = None
@@ -1295,6 +1304,31 @@ def transfer_weights(tpl, meshes, all_groups):
             out.append(nw)
         set_weights(m, out)
     log("weights:", "copied from the template" if all_groups else "limb weights split among the template's twist bones")
+
+
+def face_bones_of(tpl):
+    """Template bones of the face (face_master and below, the jaw and below): an unrigged model's weights copied from
+    the template give them to the head, the face rig (b4bface) then skins the model's own face; copied as they are,
+    they moved whatever sat near the template's chin or lids (hair, a mismatched jaw line) and tore at the face rig's
+    edge."""
+    kids = {}
+    for b in tpl.arm.data.bones:
+        if b.parent: kids.setdefault(b.parent.name, []).append(b.name)
+    out, todo = set(), [r for r in ("face_master", "jaw") if r in tpl.arm.data.bones]
+    while todo:
+        n = todo.pop()
+        if n in out: continue
+        out.add(n); todo += kids.get(n, [])
+    return out
+
+
+def fold_face(w, face):
+    if not face or not any(n in face for n in w): return w
+    out = {}
+    for n, x in w.items():
+        k = "head" if n in face else n
+        out[k] = out.get(k, 0.0) + x
+    return out
 
 
 def part_bones(name):
@@ -1386,6 +1420,7 @@ def unpose_arms(tpl, meshes):
     kd = KDTree(len(pts))
     for i, p in enumerate(pts): kd.insert(p, i)
     kd.balance()
+    face = face_bones_of(tpl)
     for m in meshes:
         rule = rules[m.name]
         out = []
@@ -1400,7 +1435,7 @@ def unpose_arms(tpl, meshes):
             if not acc and rule:                     # nothing of that part nearby: the part's first bone
                 first = rule["exact"][0] if "exact" in rule else f"{rule['prefixes'][0]}_{rule['side']}"
                 acc, tot = {first: 1.0}, 1.0
-            out.append({n: x / tot for n, x in acc.items()} if tot else {"pelvis": 1.0})
+            out.append(fold_face({n: x / tot for n, x in acc.items()}, face) if tot else {"pelvis": 1.0})
         set_weights(m, out)
     log("weights: copied from the template" + (" (posed like the model)" if rot else ""))
     if not rot: return
@@ -1424,11 +1459,58 @@ def unpose_arms(tpl, meshes):
     log("unrigged: arms moved into the template's pose")
 
 
-def keep_arms(m):
+def body_segments(tpl):
+    """[(bone, head, end)] of the template skeleton's body bones: each joint to the next mapped joint (AIM), end bones
+    (head, feet, finger tips) along their own bone."""
+    segs = []
+    pos = tpl.pos
+    for b in tpl.arm.data.bones:
+        n = b.name
+        if n not in B4B_MAIN and not ARM_BONES_RX.match(n): continue
+        aim = next((x for x in AIM.get(n, []) if x in pos), None)
+        end = pos[aim] if aim else tpl.arm.matrix_world @ b.tail_local
+        if n == "head": end = pos[n] + Vector((0, 0, 0.22))      # the skull, not the bone's short tail
+        segs.append((n, pos[n], end))
+    return segs
+
+
+def fp_arm_mask(tpl, m, segs):
+    """Unrigged source in first person: which vertices belong to the arms, by the nearest body segment of the
+    template skeleton (the FP template mesh is only arms, so its nearest-vertex weights make everything an arm)."""
+    import numpy as np
+    P = np.array([tuple(m.matrix_world @ v.co) for v in m.data.vertices]).reshape(-1, 3)
+    best = np.full(len(P), np.inf)
+    arm = np.zeros(len(P), bool)
+    for n, a, b in segs:
+        a, ab = np.array(a), np.array(b) - np.array(a)
+        f = np.clip((P - a) @ ab / max(float(ab @ ab), 1e-12), 0.0, 1.0)
+        d = np.linalg.norm(a + f[:, None] * ab - P, axis=1)
+        closer = d < best
+        best[closer] = d[closer]
+        arm[closer] = bool(ARM_BONES_RX.match(n))
+    return arm.tolist()
+
+
+def keep_arms(m, mask=None):
     W = mesh_weights(m)
     armv = [sum(x for n, x in w.items() if ARM_BONES_RX.match(n)) / max(1e-6, sum(w.values())) >= 0.5 for w in W]
+    if mask is not None: armv = [a and k for a, k in zip(armv, mask)]
     bm = bmesh.new(); bm.from_mesh(m.data)
     kill = [f for f in bm.faces if not all(armv[v.index] for v in f.verts)]
+    if mask is not None:
+        # unrigged: a material with only a sliver on the arms (hair over the shoulders, trousers by the hands) is
+        # not part of the arms
+        tot, cut = {}, {}
+        for f in bm.faces: tot[f.material_index] = tot.get(f.material_index, 0) + 1
+        for f in kill: cut[f.material_index] = cut.get(f.material_index, 0) + 1
+        few = {i for i, n in tot.items() if 0 < n - cut.get(i, 0) < FP_MIN_SHARE * n}
+        if few:
+            ks = set(kill)
+            kill += [f for f in bm.faces if f.material_index in few and f not in ks]
+            mats = m.data.materials
+            log(f"fp: {m.name}: left out " + ", ".join(
+                f"{mats[i].name if i < len(mats) and mats[i] else NO_MATERIAL} ({tot[i] - cut.get(i, 0)} of {tot[i]} "
+                f"faces on the arms)" for i in sorted(few)))
     bmesh.ops.delete(bm, geom=kill, context="FACES")
     bm.to_mesh(m.data); bm.free()
     log(f"fp: {m.name}: kept {len(m.data.polygons)} arm faces")

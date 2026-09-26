@@ -1032,3 +1032,33 @@ copied `Mom_Elite_00_A_FP_Skin_MI`), so a host with the default `addons_policy=c
 ("Host allows cosmetic add-ons only"); found because it blocked the first session. Next: the classification (native
 `addons.c` content scan) or the pipeline's copy of that MI should treat the Drench user data on an outfit's own MI as
 cosmetic.
+
+## 18. First pass on two real-world models: pipeline fixes (models-fixA, 2026-09-26)
+Two new local test characters (a paid Auto-Rig Pro FBX, 310 bones, 61 mapped; an unrigged Daz FBX), both on Holly
+Elite 00, now in the local suite manifest. General bugs they showed, all in `modkit/`:
+- **Mouth pulled wide open, tongue out (rigged, also `--face off`)**: not the FBX's stored pose (75 bones away from
+  rest, but the imported mesh is closed-mouthed at rest and in that pose; phase 2 sets every pose bone to `D @ rest`
+  anyway). The cause: bones under a `BIND_ONLY` bone (the jaw: ARP `c_chin_*`, `c_lips_bot*`, `c_teeth_bot*`, `tong_*`
+  under `c_jawbone.x`) own-map to the jaw, which has no `D_of`, so they got the identity and stayed at the source
+  place while the head moved (own proportions: +7.6 cm). Now they take the jaw's `D_used` (its parent's transform).
+- **Face looking up ~15 deg**: the head (no aim joint) took the neck chain's rotation; the model's neck leans 15.2 deg
+  forward, the survivor's bind neck 0, so straightening it tipped the face up. The head now keeps the model's own
+  orientation (both look ahead at rest).
+- **White eyes**: the clear `Cornea` shell (no image, blend HASHED) went opaque on the skin slot over the iris. Eye
+  materials named cornea/tearline/moisture, or see-through without an image, are now dropped (`b4bmodel.auto_slots`).
+- **Chin torn off when talking (unrigged)**: its weights come from the template's nearest vertices, *face bones
+  included*; the face rig then re-skins only vertices near the template's face (fade 8-20 mm) and left the rest with
+  the template's jaw weights taken at unwarped positions (hair by the chin followed the jaw too). Copied template
+  weights now give face bones to `head` (`face_bones_of`/`fold_face`); plus `b4bface.smooth_jaw_edges`: around every
+  edge whose jaw share jumps > 0.3 outside the lip band, the share is averaged over the mesh within 1.5 cm (175 -> 66
+  jump edges on the unrigged head, the rest on the lip line; 432 vertices blended).
+- **No hands in first person (unrigged)**: FP weights come from the FP template, which is only arms, so every vertex
+  got arm weights and `keep_arms` kept the whole body (100k verts; in game nothing drew but the gun). Unrigged FP now
+  also needs the vertex's nearest template body segment to be an arm bone (`fp_arm_mask`, numpy), and a material with
+  < 10 % of its faces on the arms is left out (hair 1002/23822, trousers 176/5388). Result 25.5k verts (template
+  26k). 8 influences are not the problem: the rigged model's FP (8 influences) draws hands fine.
+- **Hair physics "no simulated hair bones" on Holly E00**: false; `3P_Holly_PA` simulates hair_00..02 (all 28 hero PAs
+  scanned: Holly, Holly E06, Walker E03 hair_00..02; Doc E03 hair_00..01; Mom, Mom E07 pigtails; backpack/gasmask
+  elsewhere). The physics asset simply wasn't extracted (not among the mesh's material/texture references), and
+  `hair_chains` returned no chain. `dangle_args` now extracts it; `hair_chains` no longer adds a second chain for a
+  simulated bone below another one (Mom: `['hair_02_l']` twice). Docs (meshes.md) were right; Mom E07 added.

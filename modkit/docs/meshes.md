@@ -182,7 +182,7 @@ b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel 
 ```
 - `--hair-physics auto`: the hair behind and below the head goes on the survivor's ponytail bones, which the game
   swings with physics. Only survivors that have them: **Holly** (e.g. Elite 00; hair_00..02), Holly Elite 06,
-  Walker Elite 03, Doc Elite 03, **Mom** (two pigtails). On others the log says so and the hair stays
+  Walker Elite 03, Doc Elite 03, **Mom** (two pigtails; also Mom Elite 07). On others the log says so and the hair stays
   on the head. `--hair-swing 0.5` swings it half as much (hair that clips into the back).
 - `--cloth auto`: garments that hang become cloth, which the game simulates: they sway when walking, trail and flare
   when running or turning, and settle when standing. Found by the material's name **or its colour image's name**
@@ -305,6 +305,10 @@ What the survivor pipeline prints, and what to do about it.
 | `texture set Head: atlas 2048x2048: body 1024x1024, ...` | how the materials sharing one texture were packed and how big each one's part is ([Texture sizes](#texture-sizes)) |
 | The add-on is big | textures are as big as your images (at most the survivor's own texture sizes); `--max-texture 2048` or `1024` for a smaller add-on, smaller images in your model do the same |
 | The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |
+| No hands in first person, only the gun (unrigged model) | fixed: an unrigged model's first-person arms are cut by where each part sits on the survivor's skeleton (`fp: body: kept ... arm faces`; `left out hair (... faces on the arms)` for materials with only a sliver there); older kits kept the whole body |
+| Mouth wide open, tongue out, face looking up (rigs with chin/lip/tongue bones under the jaw, e.g. Auto-Rig Pro) | fixed: bones under the jaw move with it and the head keeps the model's own orientation |
+| White eyes (a clear cornea shell over the eyeball) | fixed: a clear eye cover (material named cornea, tearline, ... or see-through without an image) is left out (`clear cover over the eye (cornea)`) |
+| The chin tears off the face when talking | fixed: hard edges in the jaw's weights (chin, jaw line) are blended over 1.5 cm (`face: jaw: ... blended`) |
 
 ## Make a weapon model
 1. **Your model**: an FBX with **separate objects per moving part**, named like `Magazine`, `Bolt`, `Trigger` (others

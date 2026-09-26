@@ -941,6 +941,8 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
         Wm[m][i] = nw
         stats["verts"] += 1
     smooth_corners(head, Wm, side_m, scale, face, jaw_chain)
+    sj = smooth_jaw_edges(head, Wm, side_m, scale, face, jaw_chain)
+    if sj: log(f"face: jaw: {sj} vertices around hard jaw-weight edges (chin, jaw line) blended")
     welded = weld_seams(head, Wm, meshes, F)
     if welded: log(f"face: {welded} vertices where the head's meshes meet share their weights (no seams opening)")
     # new bind positions: every face bone mapped onto the model's face (face frame)
@@ -1146,6 +1148,65 @@ def smooth_corners(head, Wm, line, scale, face, jaw_chain, iters=6):
             for b, x in (ot.items() if so > 0 else [("head", 1.0)]): nw[b] = nw.get(b, 0.0) + x / (so or 1.0) * hw * (1 - new)
             W[i] = nw; n += 1
     return n
+
+
+def smooth_jaw_edges(head, Wm, line, scale, face, jaw_chain):
+    """Where the jaw's share jumps between neighbouring vertices away from the lips (under the chin, along the jaw
+    line: the template's weights end where its surface and the model's part, or the model's own rig ends there), the
+    opening mouth tears the chin off with a hard edge. Around every such edge (within JAW_BLEND_CM) the jaw share is
+    evened out over the mesh (neighbours averaged; the lip line and everything outside stay as they are)."""
+    import numpy as np
+    hv = {}
+    for (m, i, p, mt, c) in head: hv.setdefault(m, {})[i] = p
+    total = 0
+    for m, P in hv.items():
+        W = Wm[m]
+        def jf(i):
+            w = W[i]; hw = sum(x for b, x in w.items() if b == "head" or b in face)
+            return sum(x for b, x in w.items() if b in jaw_chain) / hw if hw > 0 else 0.0
+        def lip_band(p):
+            return abs(p.y) < line.cy * 1.25 and abs(p.z - line.z(p.y)) < 0.007 * scale and \
+                p.x > line.mid.x - 0.035 * scale
+        free = {i for i, p in P.items() if not lip_band(p)}
+        J = {}
+        nb = {}
+        jumps = set()
+        lens = []
+        for e in m.data.edges:
+            a, b = e.vertices
+            if a not in P or b not in P: continue
+            nb.setdefault(a, []).append(b); nb.setdefault(b, []).append(a)
+            ja = J[a] if a in J else J.setdefault(a, jf(a))
+            jb = J[b] if b in J else J.setdefault(b, jf(b))
+            if abs(ja - jb) > 0.3 and a in free and b in free:
+                jumps.update((a, b)); lens.append((P[a] - P[b]).length)
+        if not jumps: continue
+        r = JAW_BLEND_CM * 0.01 * scale
+        kd = KDTree(len(jumps))
+        for k, i in enumerate(jumps): kd.insert(P[i], k)
+        kd.balance()
+        region = [i for i in free if i in nb and kd.find(P[i])[2] < r]
+        el = float(np.median(lens)) if lens else r / 3
+        iters = int(min(80, max(4, (r / max(el, 1e-4)) ** 2)))
+        val = dict(J)
+        for _ in range(iters):
+            val.update({i: (val[i] + sum(val[j] for j in nb[i])) / (1 + len(nb[i])) for i in region})
+        for i in region:
+            w = W[i]; hw = sum(x for b, x in w.items() if b == "head" or b in face)
+            if hw <= 0: continue
+            old, new = J[i], val[i]
+            if abs(new - old) < 0.02: continue
+            ja = {b: x for b, x in w.items() if b in jaw_chain}
+            ot = {b: x for b, x in w.items() if (b == "head" or b in face) and b not in jaw_chain}
+            nw = {b: x for b, x in w.items() if b != "head" and b not in face}
+            sj, so = sum(ja.values()), sum(ot.values())
+            for b, x in (ja.items() if sj > 0 else [("jaw", 1.0)]): nw[b] = x / (sj or 1.0) * hw * new
+            for b, x in (ot.items() if so > 0 else [("head", 1.0)]): nw[b] = nw.get(b, 0.0) + x / (so or 1.0) * hw * (1 - new)
+            W[i] = nw; total += 1
+    return total
+
+
+JAW_BLEND_CM = 1.5      # smooth_jaw_edges: how far around a hard jaw-weight edge the share is evened out
 
 
 BLINK_DEG = 28.0        # the game's blink turns the upper lids about this far (live, every hero; mesh-mods.md §12)

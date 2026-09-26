@@ -789,6 +789,11 @@ def auto_slots(mats, minfo, s3, user, regions=None):
         if MAT_EYE_RX.search(n):
             if clear > 0.5 and re.search(r"highlight|extra|spec|reflect|shine|catch", n):
                 drop.append(m); why[m] = "eye highlight overlay (transparent)"; continue
+            if re.search(r"cornea|tear_?line|moisture", m, re.I) or \
+                    (not inf.get("textures") and inf.get("blend", "OPAQUE") != "OPAQUE"):
+                # the clear shell over the eyeball: opaque on the skin slot it covered the iris (white eyes)
+                drop.append(m); why[m] = "clear cover over the eye (cornea): an opaque slot would hide the iris"
+                continue
             if clear > 0.5 and hair:
                 out[m] = hair[0]; why[m] = "eye layer with alpha (e.g. iris): hair slot, masked, in the hair colour"
                 continue
@@ -1283,13 +1288,23 @@ def dangle_args(o, tp, src):
     a = []
     if o.get("hair_physics", "auto") != "off":   # default on where the template supports it
         chains, pa = cloth.hair_chains(tp, src)
+        pa_file = lambda: upkg.game_path_to_file(pa.split(".")[0], src) if pa else None
+        if not chains and pa and not os.path.exists(pa_file() or "") and find_b4bmod():
+            # the physics asset is not among the mesh's extracted references (materials, textures): get it, else
+            # every template would read as "no hair chain"
+            subprocess.run([sys.executable, find_b4bmod(), "extract", pa.split(".")[0], "-o", src], capture_output=True,
+                           text=True)
+            chains, pa = cloth.hair_chains(tp, src)
         if chains:
             a += ["--hair_bones", ";".join(",".join(c) for c in chains)]
             if o.get("hair_swing"): a += ["--hair_swing", o["hair_swing"]]
+        elif pa and not os.path.exists(pa_file() or ""):
+            log(f"hair: {os.path.basename(tp)}'s physics asset {pa.split('.')[0]} could not be extracted: the hair "
+                f"moves with the head")
         else:
             log(f"hair: {os.path.basename(tp)}'s physics asset ({(pa or '?').split('.')[-1]}) has no simulated hair "
-                f"bones: the hair moves with the head (templates with a hair chain: Holly, Holly Elite 06, Walker "
-                f"Elite 03, Doc Elite 03, Mom)")
+                f"bones for its skeleton: the hair moves with the head (templates with a hair chain: Holly (Elite 00 "
+                f"...), Holly Elite 06, Walker Elite 03, Doc Elite 03, Mom, Mom Elite 07)")
     if o.get("cloth", "auto") != "off":
         a += ["--cloth", o.get("cloth", "auto")]
         n = len(cloth.cloth_assets(skm.SkeletalMesh(tp)))

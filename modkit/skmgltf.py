@@ -498,9 +498,29 @@ def read_gltf(gl, s, bind, matmap):
     return verts, sections, ntc
 
 
+def const_uv_channels(tmpl_lod):
+    """{(slot, channel): (u, v)} for the template's extra UV channels (1+) that hold one value on every vertex of a
+    slot's sections. Retail FP arms: UV1 = (0, 0) on the Arms slot, which its material reads (a copy of UV0 there hid
+    an unrigged model's first-person arms entirely); such channels get the template's value instead of UV0."""
+    sv = tmpl_lod["static_vb"]
+    n = sv["num_texcoords"]
+    vals = {}
+    for sec in tmpl_lod.get("sections", []):
+        for c in range(1, n):
+            k = (sec["material_index"], c)
+            for v in range(sec["base_vertex_index"], sec["base_vertex_index"] + sec["num_vertices"]):
+                uv = tuple(sv["uvs"][v * n + c])
+                if vals.setdefault(k, uv) != uv:
+                    vals[k] = None; break
+            else:
+                continue
+    return {k: v for k, v in vals.items() if v is not None}
+
+
 def build_lod(s, verts, sections, ntc, tmpl_lod):
     """FSkeletalMeshLODRenderData from imported vertices: one section per slot, vertices re-ordered per section."""
     m = s.m
+    uv_const = const_uv_channels(tmpl_lod)
     rs = m["refskel"]
     by_slot = {}
     for slot, tris in sections:
@@ -532,7 +552,8 @@ def build_lod(s, verts, sections, ntc, tmpl_lod):
             new_pos.append(tuple(float(x) for x in p))
             new_tan.append(skm.pack_normal(tt + (1.0,)) + skm.pack_normal(nn + (sign,)))
             for c in range(ntc):
-                new_uv.append(tuple(uv[c]) if c < len(uv) else tuple(uv[0]))   # extra template channels: UV0
+                k = uv_const.get((slot, c))
+                new_uv.append(k if k is not None else tuple(uv[c]) if c < len(uv) else tuple(uv[0]))   # extra: UV0
             new_col.append(bgra)
             q = q + [(bone_map[0], 0)] * (K - len(q))
             new_w += bytes(bl[b] if w else 0 for b, w in q) + bytes(w for _, w in q)
@@ -714,12 +735,18 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
     if cloth:
         import cloth as _cloth
         _cloth.apply(s, cloth, log=lambda *a: print(" ", *a), src=cloth_src)
-    # bounds (bind pose, all LODs)
+    # bounds (bind pose, all LODs), never smaller than the template's: the game culls a skeletal mesh by these fixed
+    # bounds (no physics bodies to follow), and first-person arms are animated far from their bind pose. An FP mesh
+    # whose box ended 18 cm in front of the pelvis (arms hanging out to the sides) sat behind the camera and was
+    # never drawn (the template's box reaches 28 cm)
+    tb = m["bounds"]
     allp = [p for lod in m["lods"] for p in lod["positions"]["positions"]]
     xs = [p[0] for p in allp]; ys = [p[1] for p in allp]; zs = [p[2] for p in allp]
+    xs += [tb[0] - tb[3], tb[0] + tb[3]]; ys += [tb[1] - tb[4], tb[1] + tb[4]]; zs += [tb[2] - tb[5], tb[2] + tb[5]]
     o = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, (min(zs) + max(zs)) / 2)
     e = ((max(xs) - min(xs)) / 2, (max(ys) - min(ys)) / 2, (max(zs) - min(zs)) / 2)
-    r = max(math.sqrt(sum((p[k] - o[k]) ** 2 for k in range(3))) for p in allp)
+    r = max([math.sqrt(sum((p[k] - o[k]) ** 2 for k in range(3))) for p in allp] +
+            [math.sqrt(sum((tb[k] - o[k]) ** 2 for k in range(3))) + tb[6]])
     m["bounds"] = o + e + (r,)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     s.pkg.set_export_data(s.export, s.serialize())
