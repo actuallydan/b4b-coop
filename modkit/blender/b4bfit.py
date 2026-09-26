@@ -7,7 +7,7 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
         [--mode 3p|fp] [--proportions own|fit|0..1] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05]
         [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
-        [--drop_mat MATERIAL]... [--face auto|off] [--hair_bones a,b,c;d,e [--hair_swing 1]] [--cloth auto|MAT,...]
+        [--drop_mat MATERIAL]... [--face auto|off] [--mouth auto|on|off] [--face_eyes x,y,z;x,y,z] [--hair_bones a,b,c;d,e [--hair_swing 1]] [--cloth auto|MAT,...]
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
   blender -b --python blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
         [--forward +x] [--up +z] [--scale fit|<factor>] [--anchor trigger|grip|none] [--part REGEX=BONE]...
@@ -743,6 +743,8 @@ def fit_character(o):
         fm = face_module()
         fk = fm.capture_shape_keys([x for x in src_objs if x.type == "MESH"], fm.gltf_morph_names(o["source"]))
         if fk: log("face: shape keys used as landmarks: " + ", ".join(f"{r} {n}" for r, ns in fk.items() for n in ns))
+    if face_on and o.get("face_eyes"):              # eye positions given by the modder: tag them before the fit
+        face_module().capture_eye_points([x for x in src_objs if x.type == "MESH"], o["face_eyes"], log)
     for x in src_objs:
         if x.type == "MESH" and x.data.shape_keys:
             x.shape_key_clear()                     # the base shape stays
@@ -1089,6 +1091,7 @@ def face_module():
 def rig_face_bones(o, tpl, meshes, src_bones):
     """3P: skin the face to the template's face bones and record their new bind positions for the importer
     (manifest extras face_bones_m: {bone: [x, y, z]} Blender world metres)."""
+    face_module().MOUTH_INTERIOR[0] = o.get("mouth", "auto")
     moved = face_module().rig_face(tpl, meshes, src_bones, log)
     if moved:
         o.setdefault("extras", {})["face_bones_m"] = {b: [p.x, p.y, p.z] for b, p in moved.items()}
