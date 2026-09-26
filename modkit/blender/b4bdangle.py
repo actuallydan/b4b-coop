@@ -228,10 +228,10 @@ def cut_region(tpl, meshes, mats, cap, tag, log=print, dry=False, keep=None):
         if dry: bm.free(); continue
         c = m.copy(); c.data = m.data.copy(); c.name = tag + m.name
         for col in m.users_collection: col.objects.link(c)
-        keep = {f.index for f in sel}
+        cut = {f.index for f in sel}
         bm2 = bmesh.new(); bm2.from_mesh(c.data)
         bm2.faces.ensure_lookup_table()
-        bmesh.ops.delete(bm2, geom=[f for f in bm2.faces if f.index not in keep], context="FACES")
+        bmesh.ops.delete(bm2, geom=[f for f in bm2.faces if f.index not in cut], context="FACES")
         bm2.to_mesh(c.data); bm2.free()
         bmesh.ops.delete(bm, geom=sel, context="FACES")
         bm.to_mesh(m.data); bm.free()
