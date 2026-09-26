@@ -77,7 +77,7 @@ while (( SECONDS < deadline )); do
   for i in $(seq "$n"); do
     [[ -n ${labelled[$i]:-} ]] && continue
     if [[ $i == 1 ]]; then t="$lane_win #1 HOST"; else t="$lane_win #$i"; fi
-    label "$i" "$t" && labelled[$i]=1
+    if [[ -n ${B4B_GPU:-} ]]; then labelled[$i]=1; else label "$i" "$t" && labelled[$i]=1; fi   # headless: no window
   done
   players=$(agent 1 players | sed -n 's/^\([0-9]\+\) player state.*/\1/p')
   [[ -n $players && $players -ge $n && ${#labelled[@]} -ge $n ]] && break

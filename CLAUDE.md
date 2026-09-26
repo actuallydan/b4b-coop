@@ -227,12 +227,18 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   Each lane's `gamelock.sh`, `multi-stop.sh` (matches only its own prefix root) and instances are independent.
   Both folders hold one of Dan's player installs (lane 1: his own account's; lane 2: his second account's,
   dreamsofants). `gamelock.sh acquire` backs up the lane's player files (`launch/lane-restore.sh`: top-level files of
-  the game root and Win64, and Win64/b4bcoop-addons/, into `~/.local/share/b4b-coop/lane<n>-player-backup/`; also
+  the game root and Win64, and <game>/b4bcoop-addons/, into `~/.local/share/b4b-coop/lane<n>-player-backup/`; also
   install.sh/run.sh: lane 2 always, lane 1 only while its lock is held); `release` stops the lane's instances,
   restores them sha256-exact and removes what the dev install added (test logs move to a new
   `~/.local/share/b4b-coop/lane<n>-logs/<time>/`), so no reinstall of main's build is needed. Acquire waits while
   the player's own game runs in that folder. Never edit his `b4bcoop.ini`.
   Usage: `export B4B_LANE=2; launch/gamelock.sh acquire <me>; launch/install.sh; launch/multi.sh 2; ...; release`.
+- **GPU**: `B4B_GPU=4090` (any part of an NVIDIA GPU name) runs test instances on that GPU in a headless gamescope
+  (`launch/instance.sh`: `--backend headless --prefer-vk-device`, `VKD3D/DXVK_FILTER_DEVICE_NAME`), so they leave the
+  display GPU (5090) to Dan. A GPU with no display attached can't present to the desktop directly (swap chain
+  `E_INVALIDARG`), hence gamescope. No windows: `launch/shot.sh` takes an engine screenshot (`shot`) through the agent,
+  multi.sh skips window labels, e2e still passes (13/13, both lanes). The ~ overlay isn't in engine screenshots.
+  **Default for agents while Dan uses the 5090: `export B4B_GPU=4090`.**
 - 5 players: `B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5` (opt-in `teamsize` in `native/src/teamsize.c`). Verified: a
   full mission and 2 chapter transitions with 5 humans. Without it, a 5th joiner is refused with "Server full."
   (`slotguard.c`; before that it crashed the host). Results: `docs/investigations/five-players.md` §5,

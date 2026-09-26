@@ -7,6 +7,8 @@
 #           That folder holds the player build of Dan's second account: launch/lane-restore.sh backs it up before
 #           the first dev install/run and restores it on `gamelock.sh release`.
 # B4B_DIR, B4B_TEST_ROOT, B4B_GAME_PORT, B4B_PORT_BASE still override the lane's values.
+# B4B_GPU=<part of the GPU name, e.g. 4090>: test instances render on that GPU inside a headless gamescope (no window;
+# the display GPU stays free for Dan). launch/shot.sh then takes an engine screenshot through the agent. Either lane.
 B4B_LANE="${B4B_LANE:-1}"
 case "$B4B_LANE" in
   1) lane_game="$HOME/.local/share/Steam/steamapps/common/Back 4 Blood"
