@@ -165,16 +165,71 @@ def garment_kind(pts, tpl):
     return "cape" if front / len(chest) < 0.1 and min(p.z for p in pts) < pel.z else "lower"
 
 
-def cloth_materials(meshes, tpl, spec, log=print):
-    """{material: kind} to simulate. spec 'auto': named (material or colour image) like a skirt/dress/coat/cape, or
-    like bottoms and skirt-shaped; else a comma list of material names, each optionally ':cape' / ':lower' to force
-    how it hangs. kind 'lower' = simulated below the waist (skirts, dresses, coat tails), 'cape' = below the shoulder
-    blades, hanging behind."""
+# worn things that are never skirts even when their material says "dress" (<Name>_Dress_Necklace, a belt or thigh
+# strap cut from the dress's texture sheet, boots whose material is called "dress")
+ACCESSORY_RX = re.compile(r"necklace|pendant|jewel|chain|choker|collar|brooch|buckle|belt|strap|bracelet|armband|"
+                          r"bangle|earring|panties|underwear|\bbra\b|thong|bikini|lingerie|sock|stocking|shoe|boot|heel|"
+                          r"sandal|glove|garter|harness|holster|pouch|bag\b", re.I)
+HANG_ABOVE = 0.03        # m: a skirt starts at least this far above the crotch (it hangs from the waist)
+HANG_BELOW = 0.12        # m: ... and reaches at least this far below it (over the legs; as cloth_regions' minimum)
+HANG_WIDTH = 0.10        # m: ... and is this wide there (a strand of beads or a chain is not a skirt)
+
+
+def garment_groups(meshes, name):
+    """{object name: [world points]} of material `name`'s faces per object, faces skinned to the arms left out (a
+    coat's sleeves, bracelets)."""
+    out = {}
+    for m in meshes:
+        mi = {i for i, x in enumerate(m.data.materials) if x and re.sub(r"\.\d{3}$", "", x.name) == name}
+        if not mi: continue
+        W = weights_of(m)
+        arm = [sum(x for b, x in w.items() if ARM_RX.match(b)) / (sum(w.values()) or 1.0) for w in W]
+        mw = m.matrix_world
+        pts = []
+        for p in m.data.polygons:
+            if p.material_index in mi and sum(arm[v] for v in p.vertices) / len(p.vertices) < 0.5:
+                pts += [mw @ m.data.vertices[v].co for v in p.vertices]
+        if pts: out[m.name] = pts
+    return out
+
+
+def hang_check(pts, tpl, kind):
+    """None when the points hang like a garment of that kind, else why not (for the log)."""
+    top, bot = max(p.z for p in pts), min(p.z for p in pts)
+    if kind == "cape":
+        return None if top - bot >= HANG_BELOW else f"only {100 * (top - bot):.0f} cm tall"
+    if "thigh_l" not in tpl.pos or "thigh_r" not in tpl.pos: return None
+    crotch = (tpl.pos["thigh_l"].z + tpl.pos["thigh_r"].z) / 2
+    knee = (tpl.pos["calf_l"].z + tpl.pos["calf_r"].z) / 2 if "calf_l" in tpl.pos and "calf_r" in tpl.pos else None
+    if top < crotch + HANG_ABOVE:
+        where = "on the feet" if knee is not None and top < knee else "on the legs"
+        return f"sits {where} (top {100 * top:.0f} cm, crotch {100 * crotch:.0f} cm): nothing hangs from the waist"
+    if bot > crotch - HANG_BELOW:
+        return (f"ends {100 * (bot - crotch):+.0f} cm from the crotch (bottom {100 * bot:.0f} cm): it doesn't hang over "
+                f"the legs")
+    below = [p for p in pts if p.z < crotch - 0.03]
+    w = max(max(p.x for p in below) - min(p.x for p in below), max(p.y for p in below) - min(p.y for p in below))
+    if w < HANG_WIDTH:
+        return f"only {100 * w:.0f} cm wide below the crotch (a strand, chain or tassel)"
+    return None
+
+
+def cloth_materials(meshes, tpl, spec, log=print, cloth_ok=None):
+    """({material: kind}, {material: object names}) to simulate. spec 'auto': named (material or colour image) like a
+    skirt/dress/coat/cape, or like bottoms and skirt-shaped; else a comma list of material names, each optionally
+    ':cape' / ':lower' to force how it hangs. kind 'lower' = simulated below the waist (skirts, dresses, coat tails),
+    'cape' = below the shoulder blades, hanging behind.
+    Names alone aren't trusted: each object's part of a garment material must hang like one (from above the crotch to
+    well below it, wide enough; hang_check), and accessories are left out by name (necklace, belt, strap, boots ...;
+    ACCESSORY_RX), so a necklace or a thigh strap cut from the dress's texture sheet stays skinned. In auto mode a
+    material with no such part is not simulated (the log says why and how to force it); a listed material keeps the
+    parts that pass, or all of them if none does. cloth_ok(material) False: its slot can't draw cloth (skipped)."""
     labels = material_labels(meshes)
     names = set()
     for m in meshes:
         names.update(x for x in vertex_materials(m) if x)
     out = {}
+    forced = {}
     if spec and spec not in ("auto", "on"):
         want = {}
         for x in spec.split(","):
@@ -185,30 +240,66 @@ def cloth_materials(meshes, tpl, spec, log=print):
             want[x.lower()] = k.lower() if k else None
         for n in names:
             if n.lower() in want:
-                out[n] = want[n.lower()] or garment_kind(material_points(meshes, n), tpl)
+                out[n] = want[n.lower()]; forced[n] = True
         missing = set(want) - {n.lower() for n in out}
         if missing: log(f"cloth: no material {sorted(missing)} (materials: {sorted(names)})")
-        return out
-    for n in sorted(names):
-        lab = labels.get(n, n)
-        if CAPE_RX.search(lab): out[n] = "cape"; continue
-        if SKIRT_RX.search(lab) or COAT_RX.search(lab):
-            out[n] = garment_kind(material_points(meshes, n), tpl); continue
-        if BOTTOMS_RX.search(lab):
-            pts = material_points(meshes, n)
-            if is_skirt_shaped(pts, tpl): out[n] = "lower"
-            else: log(f"cloth: {n!r} looks like trousers/shorts (open between the legs): not simulated")
-    return out
+    else:
+        for n in sorted(names):
+            lab = labels.get(n, n)
+            if CAPE_RX.search(lab): out[n] = "cape"; continue
+            if SKIRT_RX.search(lab) or COAT_RX.search(lab):
+                if ACCESSORY_RX.search(n):
+                    log(f"cloth: {n!r} is named like an accessory ({ACCESSORY_RX.search(n).group(0)}): not simulated "
+                        f"(if it is a skirt or coat: --cloth {n})")
+                    continue
+                out[n] = None; continue
+            if BOTTOMS_RX.search(lab):
+                pts = material_points(meshes, n)
+                if is_skirt_shaped(pts, tpl): out[n] = "lower"
+                else: log(f"cloth: {n!r} looks like trousers/shorts (open between the legs): not simulated")
+    objs = {}
+    for n in list(out):
+        if cloth_ok is not None and not cloth_ok(n):
+            log(f"cloth: {n!r} is on a slot whose material can't draw cloth (bUsedWithClothing off, e.g. a skin slot): "
+                f"skinned, not simulated; put it on a clothing slot (--slot {n}=<Body/Torso/...>) to make it cloth")
+            del out[n]; continue
+        groups = garment_groups(meshes, n)
+        if not groups:
+            del out[n]; continue
+        kind = out[n] or garment_kind([p for ps in groups.values() for p in ps], tpl)
+        ok, why = {}, {}
+        for ob, pts in groups.items():
+            acc = ACCESSORY_RX.search(ob)
+            if acc and not SKIRT_RX.search(ob) and not COAT_RX.search(ob) and not CAPE_RX.search(ob):
+                why[ob] = f"named like an accessory ({acc.group(0)})"; continue
+            w = hang_check(pts, tpl, kind)
+            if w: why[ob] = w
+            else: ok[ob] = pts
+        if not ok and forced.get(n):
+            log(f"cloth: {n!r} (--cloth): no part hangs like a garment ({'; '.join(f'{k}: {v}' for k, v in why.items())}); "
+                f"simulated as asked")
+            ok, why = groups, {}
+        if not ok:
+            log(f"cloth: {n!r} named like a garment but doesn't hang like one: "
+                + "; ".join(f"{k}: {v}" for k, v in sorted(why.items())) + f": skinned, not simulated (if it is a skirt, "
+                f"dress or coat: --cloth {n})")
+            del out[n]; continue
+        for ob, w in sorted(why.items()):
+            log(f"cloth: {n!r} on {ob} stays skinned: {w}")
+        out[n] = out[n] or garment_kind([p for ps in ok.values() for p in ps], tpl)
+        objs[n] = set(ok)
+    return out, objs
 
 
-def cut_region(tpl, meshes, mats, cap, tag, log=print, dry=False, keep=None):
+def cut_region(tpl, meshes, mats, cap, tag, log=print, dry=False, keep=None, objs=None):
     """Split the faces of `mats` below height `cap` off into new objects named <tag>... Returns (pieces, points,
     inward fraction) where the inward fraction is the share of faces facing the body axis (a lining). dry: only the
-    points, nothing split."""
+    points, nothing split. objs: {material: object names} the material is cut from (others keep it skinned)."""
     pieces, pts, inward, nf = [], [], 0, 0
     axis = tpl.pos["pelvis"]
     for m in list(meshes):
-        mi = {i for i, x in enumerate(m.data.materials) if x and re.sub(r"\.\d{3}$", "", x.name) in mats}
+        mi = {i for i, x in enumerate(m.data.materials) if x and re.sub(r"\.\d{3}$", "", x.name) in mats
+              and (objs is None or m.name in objs.get(re.sub(r"\.\d{3}$", "", x.name), ()))}
         if not mi: continue
         bm = bmesh.new(); bm.from_mesh(m.data)
         mw = m.matrix_world
@@ -459,7 +550,7 @@ def hem_on_leg(tpl, hem_z):
     return (h - hem_z) / max(1e-6, h - a)
 
 
-def cloth_regions(tpl, meshes, mats, log=print):
+def cloth_regions(tpl, meshes, mats, log=print, objs=None):
     """mats: {material: kind} from cloth_materials. Splits each garment kind's faces off into objects named
     B4BCLOTH_... (the first garment) / B4BCLOTH_R<k>_... and builds its simulation mesh. Returns (new objects, [sim dict]). sim (Blender
     metres): verts, tris, depth (0 at the fixed top row .. 1 at the hem), weights ({bone: w} per sim vertex), kind,
@@ -477,7 +568,7 @@ def cloth_regions(tpl, meshes, mats, log=print):
         else:
             cap = tpl.pos["spine_03"].z if "spine_03" in tpl.pos else 1e9
         tag = f"{CLOTH_PREFIX}R{len(sims)}_" if sims else CLOTH_PREFIX
-        _, pts, _ = cut_region(tpl, meshes, ms, cap, tag, log, dry=True)
+        _, pts, _ = cut_region(tpl, meshes, ms, cap, tag, log, dry=True, objs=objs)
         if not pts: continue
         top = max(p.z for p in pts)
         if top - min(p.z for p in pts) < 0.12:
@@ -491,7 +582,7 @@ def cloth_regions(tpl, meshes, mats, log=print):
             # panel doesn't reach them
             cx, cy = sim["centre"]; a0, span = sim["arc"]
             keep = lambda c: (math.atan2(c.y - cy, c.x - cx) - a0) % (2 * math.pi) <= span
-        pieces, _, inward = cut_region(tpl, meshes, ms, cap, tag, log, keep=keep)
+        pieces, _, inward = cut_region(tpl, meshes, ms, cap, tag, log, keep=keep, objs=objs)
         if not sim["closed"] and inward < 0.2:
             add_back_faces(pieces, log)
         sim["weights"] = sim_weights(tpl, sim["verts"], kind, sim["segments"])

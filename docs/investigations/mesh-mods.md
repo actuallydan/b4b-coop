@@ -1032,3 +1032,47 @@ copied `Mom_Elite_00_A_FP_Skin_MI`), so a host with the default `addons_policy=c
 ("Host allows cosmetic add-ons only"); found because it blocked the first session. Next: the classification (native
 `addons.c` content scan) or the pipeline's copy of that MI should treat the Drench user data on an outfit's own MI as
 cosmetic.
+
+## 18. First real-world models: slots, garment detection, FP arms, mesh budget (models-fixB, 2026-09-26)
+Two bought/downloaded characters (a rigged FBX with a slit dress + jewellery, 116k vertices; an unrigged FBX with
+jeans, boots and a shirt, 100k vertices; both on Holly Elite 00, local only) exposed four general pipeline bugs.
+- **Clothes on a skin slot.** A beige dress material has mostly skin-coloured texels, and "dress" was in none of the
+  clothing name lists, so `auto_slots` put it (and its lining) on `Arm` ("skin away from the head"). `Arm`'s master
+  is `Master_Hero_Head_M`, which has no `bUsedWithClothing` (read from the Material export: Outfit_M and Hair_M have
+  it, Head_M only `bUsedWithSkeletalMesh/StaticLighting/MorphTargets`), so the engine drew the cloth sections with
+  the default material: `Master_Hero_Head_M missing bUsedWithClothing ... Default Material` in the log, dark grey dress.
+  Fix: garment words in the material name (dress, skirt, gown, coat, jacket, robe, cape, lining ...; `GARMENT_RX`)
+  always mean clothes; `master_uses_clothing()` reads the flag from each template slot's master (extracting it when
+  needed; name guess as a fallback) and b4bfit gets `--cloth_slots`: a material on any other slot is never made cloth
+  (logged, with the `--slot` to fix it).
+- **Names trusted blindly for cloth.** a material named `<Name>_Dress_Necklace` matched "dress"; the dress material was also used
+  by a belt, panties and a thigh strap, which went into the skirt's cloth sections (mapping error 26 cm, spike
+  triangles at the hips); the other model's boots use a material named `dress` (skirt with its hem at -1 cm, a boot
+  flapping off the foot). Fix (`b4bdangle.cloth_materials`): per object x material, a garment must hang like one
+  (`hang_check`: top >= crotch + 3 cm, bottom <= crotch - 12 cm, >= 10 cm wide below the crotch; capes: >= 12 cm tall)
+  and objects/materials named like accessories (`ACCESSORY_RX`: necklace, belt, strap, bracelet, panties, boot, heel
+  ...) stay skinned; `cut_region` only cuts the objects that passed. Auto mode skips a material with no passing part
+  and says `--cloth <mat>`; a `--cloth` list keeps the passing parts, or all if none passes.
+  Result: dress cloth mapping error 3.5 cm (was 26), boots skinned.
+- **No FP arms without `--fp`.** `b4bmod survivor` now adds the outfit's own `FP_` mesh (same folder, 3P_ -> FP_,
+  looked up in the pak index, as charsuite does) and prints it; warns when there is none; `--fp none` = game arms.
+  `b4bmodel.py` does the same from the extract folder.
+- **No LOD0 reduction.** LOD0 was the model as is (174k / 168k triangles vs Holly Elite 00's 94k). `make_lods` now
+  budgets LOD0 at the template's LOD0 (render vertices and triangles; `--max-verts N`, `--keep-density`): the welded
+  model (as for the distance LODs) is collapse-decimated with UV seams marked (the decimator keeps seams as edges)
+  and the head's vertices in an inverted vertex group (weight 0.5, factor 0.002: at ratio 0.5 the face keeps ~0.65,
+  the body ~0.4; an inverted weight of 0 never collapses, so hair skinned to the head stayed whole); cloth sections
+  stay whole (their two-sided layers must match); distance LOD ratios stay relative to LOD0. FP arms get the FP
+  template's budget.
+  | model | LOD0 before | LOD0 after | 3P mesh | FP mesh | add-on |
+  |---|---|---|---|---|---|
+  | dress model | 116k v / 174k t | 68k v / 94k t | 24.2 -> 13.8 MB | 0.8 MB | 90.9 -> 105.6 MB (dress now in the 4096x2048 Body set, was 1024 in Arm) |
+  | jeans model | 100k v / 168k t | 59k v / 94k t | 20.7 -> 9.3 MB | 11.2 -> 2.5 MB | 139.6 -> 119.5 MB (67 MB = three 4096 Body textures) |
+  The rest of the size is textures at the model's own resolution (capped at the retail size): `--max-texture 2048`.
+- `preview.py --sim` framed the model tiny: the Wireframe modifier's even offset threw thin sim triangles metres out
+  and the framing took them in. Now no even offset, and the framing ignores the sim wire.
+- Live (lane 2, Proton, `tools/charsuite.py --only ... --mission 3`, `/tmp/b4b-charsuite-l2-fixB-1`): 7/7 PASS, 0 new
+  log errors (no `bUsedWithClothing` line): both new models worn by host and client in Fort Hope and Evansburgh (dress
+  textured with its pattern, boots on the feet, FP arms from the default `--fp`), shino/avatar_e/bulky/coattest/
+  capetest unchanged (same sizes, skirt/coat/cape still cloth). Open: the unrigged model's FP mesh is its whole body
+  (FP arm extraction keeps everything for unrigged models), so no arms show in first person.
