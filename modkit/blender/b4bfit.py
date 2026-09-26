@@ -1841,11 +1841,95 @@ def assign_slots(o, tpl, meshes, tex_dirs):
 
 
 LOD_MIN_TRIS = 1500      # never decimate below this (a low-poly model's LODs stay whole: boxes collapse otherwise)
+WELD_TOL = 1e-5          # m: corners closer than this are one point for the LOD weld (0.01 mm)
+WELD_FLAT_DEG = 1.0      # a face whose corner normals are all within this of its face normal was flat shaded
+WELD_SHARP_DEG = 5.0     # two faces whose normals differed by more than this at a shared point: sharp edge there
+
+
+def weld_for_decimation(c):
+    """Weld a LOD copy by position before Decimate. Models reach the fit split wherever a vertex attribute changes:
+    every corner on its own in a flat-shaded model (a triangle soup), along UV seams and hard edges in glTF/VRM
+    imports (Blender's glTF importer does not merge). Decimate can't collapse an edge whose sides aren't connected,
+    so each piece shrank alone and the LODs came out shredded. Welded, the surface is one piece where the source is
+    closed; the corners keep their own UVs (loop data: the export splits the vertices again at UV and material
+    seams), weights must match (a magazine touching the receiver in one object stays loose), and faces that exist
+    twice with opposite winding (double-sided rips) weld as two layers (a plain weld would delete one side). The
+    source's normal splits come back as shading flags: faces that were flat stay flat, hard edges become sharp edges;
+    custom normals are cleared (Blender recomputes smooth normals on the decimated surface). Returns the number of
+    vertices merged."""
+    me = c.data
+    if not me.polygons:
+        return 0
+    cn = [x.vector.copy() for x in me.corner_normals]
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.faces.ensure_lookup_table()
+    oi = bm.loops.layers.int.new("b4b_oi")
+    for f in bm.faces:
+        ls = me.polygons[f.index].loop_start
+        for k, lp in enumerate(f.loops):
+            lp[oi] = ls + k
+    dl = bm.verts.layers.deform.active
+    q = 1.0 / WELD_TOL
+
+    def pk(v):
+        return (round(v.co.x * q), round(v.co.y * q), round(v.co.z * q))
+
+    def wk(v):
+        if dl is None: return ()
+        return tuple(sorted((g, round(w * 20)) for g, w in v[dl].items() if w > 0.03))
+
+    # double-sided faces: the second face over the same three points goes to the back layer
+    seen, back = set(), set()
+    for f in bm.faces:
+        k = frozenset(pk(v) for v in f.verts)
+        if k in seen: back.add(f.index)
+        else: seen.add(k)
+    layer = {}                                                 # vertex -> 0 front / 1 back / 2 both (keep apart)
+    for f in bm.faces:
+        s = 1 if f.index in back else 0
+        for v in f.verts:
+            layer[v] = s if layer.get(v, s) == s else 2
+    target, first = {}, {}
+    for v in bm.verts:
+        ly = layer.get(v, 0)
+        if ly == 2: continue
+        k = (pk(v), wk(v), ly)
+        t = first.setdefault(k, v)
+        if t is not v: target[v] = t
+    flat = {f.index for f in bm.faces
+            if all(cn[lp[oi]].angle(f.normal, 0.0) < math.radians(WELD_FLAT_DEG) for lp in f.loops)}
+    if target:
+        bmesh.ops.weld_verts(bm, targetmap=target)
+    cos_sharp = math.cos(math.radians(WELD_SHARP_DEG))
+    for f in bm.faces:
+        f.smooth = f.index not in flat if len(flat) < len(bm.faces) else False
+    for e in bm.edges:
+        if len(e.link_faces) != 2: continue
+        f1, f2 = e.link_faces
+        sharp = False
+        for v in e.verts:
+            l1 = next((lp for lp in f1.loops if lp.vert is v), None)
+            l2 = next((lp for lp in f2.loops if lp.vert is v), None)
+            if l1 and l2 and cn[l1[oi]].dot(cn[l2[oi]]) < cos_sharp:
+                sharp = True
+        e.smooth = not sharp
+    bm.loops.layers.int.remove(oi)
+    bm.to_mesh(me)
+    bm.free()
+    if getattr(me, "has_custom_normals", False):
+        cnl = me.attributes.get("custom_normal")
+        if cnl is not None: me.attributes.remove(cnl)
+        else:
+            select_only([c], c)
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+    me.update()
+    return len(target)
 
 
 def make_lods(o, meshes):
     ratios = [float(x) for x in o.get("lods", "1").split(",")]
-    lods = []
+    lods, welded = [], {}
     total = sum(len(m.data.polygons) for m in meshes)
     for li, r in enumerate(ratios):
         if li == 0:
@@ -1857,6 +1941,14 @@ def make_lods(o, meshes):
             bpy.context.scene.collection.objects.link(c)
             if r >= 0.999:
                 copies.append(c); continue
+            if m.name not in welded:                         # the same welded base for every LOD
+                w = m.copy(); w.data = m.data.copy(); w.name = f"{m.name}_welded"
+                bpy.context.scene.collection.objects.link(w)
+                n0 = len(w.data.vertices)
+                merged = weld_for_decimation(w)
+                welded[m.name] = w
+                if merged: log(f"  weld {m.name}: {n0} -> {len(w.data.vertices)} vertices")
+            c.data = welded[m.name].data.copy()
             d = c.modifiers.new("Decimate", "DECIMATE"); d.ratio = r; d.use_collapse_triangulate = True
             # keep the decimate before the armature modifier
             while c.modifiers[0].name != "Decimate":
@@ -1867,6 +1959,8 @@ def make_lods(o, meshes):
             copies.append(c)
         lods.append(copies)
         log(f"LOD{li}: ratio {r}: {sum(len(c.data.polygons) for c in copies)} faces")
+    for w in welded.values():
+        bpy.data.objects.remove(w)
     return lods
 
 
