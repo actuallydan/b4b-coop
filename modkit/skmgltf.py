@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import skm
 
 CLOTH_PREFIX = "B4BCLOTH_"          # blender/b4bdangle.py: objects whose faces form a cloth section
+CLOTH_RX = re.compile(r"^B4BCLOTH_(?:R(\d+)_)?")
 
 SCALE = 0.01
 
@@ -489,7 +490,10 @@ def read_gltf(gl, s, bind, matmap):
             if unweighted:
                 print(f"  WARNING: {unweighted} vertices of {mname!r} have no bone weights (bound to the root)")
             # a cloth region (blender/b4bdangle.py names its objects B4BCLOTH_...) gets its own section on the slot
-            key = (slot, "cloth") if node.get("name", "").startswith(CLOTH_PREFIX) else slot
+            # (B4BCLOTH_R<k>_...: the k-th garment, its own section and clothing asset)
+            key = slot
+            mt = CLOTH_RX.match(node.get("name", ""))
+            if mt: key = (slot, "cloth", int(mt.group(1) or 0))
             sections.append((key, [(a_ + base, b_ + base, c_ + base) for a_, b_, c_ in tris]))
     return verts, sections, ntc
 
@@ -506,9 +510,10 @@ def build_lod(s, verts, sections, ntc, tmpl_lod):
     if maxk > 8: print(f"  {maxk} influences on some vertices: keeping the 8 largest")
     root = 0
     new_pos, new_tan, new_uv, new_col, new_w, new_idx, secs = [], [], [], [], bytearray(), [], []
-    for slot in sorted(by_slot, key=lambda k: (k, 0) if isinstance(k, int) else (k[0], 1)):
+    for slot in sorted(by_slot, key=lambda k: (k, 0, 0) if isinstance(k, int) else (k[0], 1, k[2])):
         tris = by_slot[slot]
         cloth_tag = not isinstance(slot, int)
+        region = slot[2] if cloth_tag else -1
         slot = slot if isinstance(slot, int) else slot[0]
         remap = {}
         order = []
@@ -539,7 +544,7 @@ def build_lod(s, verts, sections, ntc, tmpl_lod):
             cast_shadow=True, base_vertex_index=vbase, cloth_mapping=[], bone_map=[(b,) for b in bone_map],
             num_vertices=len(order), max_bone_influences=sec_max_infl, cloth_asset_index=-1,
             clothing_data=(b"\0" * 16, -1), dup_vert_data=dup_data, dup_vert_index=dup_index, disabled=False,
-            cloth_tag=cloth_tag))
+            cloth_tag=cloth_tag, cloth_region=region))
     nv = len(new_pos)
     parents = [b[2] for b in rs["bones"]]
     active = set()
@@ -666,13 +671,14 @@ def set_bone_positions(s, bones):
 
 
 def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets=None, bones=None, slot_colors=None,
-                bind_bones=None, cloth=None):
+                bind_bones=None, cloth=None, cloth_src=None):
     """slot_colors: {slot name: (b, g, r, a)} vertex colour for every vertex of that slot's sections (e.g. hero hair:
     Master_Hair_M tints vertex-coloured strands with 'Vertex Color Multiplier'; retail strands are mostly black).
     bind_bones: {bone: UE cm} the glTF's own bind skeleton (a model fitted with its own proportions), written before the
     glTF is read; bones: extra bind positions written after (weapon markers, face bones).
     cloth: simulation meshes from blender/b4bdangle.py (manifest extras "cloth"): written into the template's clothing
-    asset, cloth sections bound to it (cloth.py)."""
+    assets, or new ones added to the package (cloth_src: the extract folder with cloth.NEEDS), cloth sections bound to
+    them (cloth.py)."""
     s = skm.SkeletalMesh(template)
     m = s.m
     names = [s.name(x["slot_name"]).lower() for x in m["materials"]]
@@ -707,7 +713,7 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
     set_bone_positions(s, bones or {})
     if cloth:
         import cloth as _cloth
-        _cloth.apply(s, cloth, log=lambda *a: print(" ", *a))
+        _cloth.apply(s, cloth, log=lambda *a: print(" ", *a), src=cloth_src)
     # bounds (bind pose, all LODs)
     allp = [p for lod in m["lods"] for p in lod["positions"]["positions"]]
     xs = [p[0] for p in allp]; ys = [p[1] for p in allp]; zs = [p[2] for p in allp]
