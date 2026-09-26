@@ -394,7 +394,7 @@ static void ping(Out *o) {
 
 // Send one chat line to one player's client (ClientTeamMessage, sender = our player state). On the host's own
 // controller the RPC runs locally.
-static int send_line_t(UObject *pc, const char *text, int kick) {
+static int send_line_t(UObject *pc, const char *text, int kind) {   // kind: chat_notice_type
     static UFunction *f;
     UObject *me = ue_local_pc(), *my_ps = me ? ue_get_ptr(me, "PlayerState") : NULL;
     if (!f && pc) f = ue_find_function(U_CLASS(pc), "ClientTeamMessage");
@@ -405,12 +405,13 @@ static int send_line_t(UObject *pc, const char *text, int kick) {
     uint8_t p[64] = {0};
     *(UObject **)(p + FP_OFFSET(ps)) = my_ps;
     fstring_set((FString *)(p + FP_OFFSET(s)), text, w, 320);
-    *(FName *)(p + FP_OFFSET(t)) = chat_notice_type(kick);
+    *(FName *)(p + FP_OFFSET(t)) = chat_notice_type(kind);
     ue_process_event(pc, f, p);
     return 0;
 }
 static int send_line(UObject *pc, const char *text) { return send_line_t(pc, text, 0); }
 int admin_notice_to(UObject *pc, const char *text) { return send_line(pc, text); }   // models.c etc.
+int admin_data_to(UObject *pc, const char *text) { return send_line_t(pc, text, 2); }   // weaponlooks.c
 
 // Shared with cheats.c: the /players list, player lookup, a display name (bots: their hero), and a notice every
 // player sees (the /say path, prefixed "[b4bcoop] ").

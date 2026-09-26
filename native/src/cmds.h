@@ -93,7 +93,9 @@ int chat_cmd(const char *verb, char *rest, Out *o);
 void chat_local(const char *fmt, ...);  // local-only chat line(s)
 #define CHAT_NOTICE_TYPE L"b4bcoop"      // ClientTeamMessage Type of host notices (shown by chat.c on the receiver)
 #define CHAT_KICK_TYPE L"b4bcoopkick"    // ... a notice after which the receiving client leaves (kick/ban)
-FName chat_notice_type(int kick);
+#define CHAT_DATA_TYPE L"b4bcoopdata"    // ... not shown: data for the client's agent (e.g. weapon looks on the floor);
+                                         //     agents without a handler and clients without b4bcoop ignore it
+FName chat_notice_type(int kind);        // 0 notice, 1 kick, 2 data
 void chat_local_later(const char *text); // show after the next map load (e.g. why a join was refused)
 void chat_on_join_failed(const char *error);  // uelog.c: PendingConnectionFailure on this client
 void cmds_auto_join_stop(void);        // client: no more ini auto-join attempts this session
@@ -104,6 +106,7 @@ void admin_slash(char *line, Out *o);  // a chat command typed by the local play
 void admin_on_initslots(UObject *psm); // teamsize.c: right before APlayerSlotManager::InitSlots
 void admin_ready(const char *rest, Out *o); // host: ready every player (chat /ready, dev `ready [vote]`)
 int admin_notice_to(UObject *pc, const char *text);  // host: one chat notice line to that player's client (0 = sent)
+int admin_data_to(UObject *pc, const char *text);    // host: one data line (CHAT_DATA_TYPE, not shown) to that client
 void admin_ps_key(UObject *ps, char *buf, size_t n);   // steam:<id64> or name:<name>
 void admin_ps_name(UObject *ps, char *buf, size_t n);  // player name, a bot's hero name
 void cmds_set_session_join(const char *targets); // Steam join target(s), comma-separated; overrides host=/join=
@@ -201,6 +204,7 @@ void wlooks_overview(Out *o);                            // the /model list over
 void wlooks_status(Out *o);
 int wlooks_lock_reset(void);                             // host, /models off: every weapon look undone; count
 void wlooks_host_notice(const char *text);
+void wlooks_host_data(const char *text);                 // chat.c: a data line from the host ("wlook ...", client)
 int wlooks_cmd(const char *verb, char *rest, Out *o);    // dev: wlook dump
 
 // admin.c helpers shared with cheats.c
