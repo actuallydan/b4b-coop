@@ -77,10 +77,12 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    ```
    b4bmod survivor mymodel.fbx ^
        --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM ^
-       --fp     /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM ^
        -o mymod --title "My survivor" --author you --version 1.0 --zip
    ```
    (`^` continues a line in the Windows Command Prompt; on Linux use `\`, or write it all on one line.)
+   - The first-person arms come along: the outfit's own `FP_..._SKM` from the same folder is used (printed as
+     `survivor: first-person arms --fp ...`; a warning when the outfit has none). `--fp <FP SKM>` picks other arms,
+     `--fp none` keeps the game's arms in first person.
    - It extracts the templates and every material and texture they use, fits your model in Blender (~1 minute),
      writes `mymod/Gobi/Content/...` and packs it into `mymod.pak` (+ `mymod.zip` for sharing with `--zip`).
      `--pak name.pak` names it, `--install` also installs it, `--no-pack` stops before packing.
@@ -96,6 +98,10 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole; the
      distance LODs are made from the model welded by position, so flat-shaded models and UV seams stay closed; flat
      faces stay flat),
+     `--max-verts N` / `--keep-density` (a model denser than the survivor's own LOD0, e.g. 100k vertices and 170k
+     triangles, is decimated to the template's LOD0 budget: the face less than the rest, UV seams kept, cloth
+     sections whole; the log prints `LOD0: 114462 -> 67967 vertices, 173852 -> 94094 triangles`. `--max-verts N`
+     sets the budget, `--keep-density` keeps every triangle),
      `--bonemap map.json` (your bone names -> the game's), `--weights transfer` (take the game mesh's weights),
      `--max-texture 2048|4096` (largest texture made, see [Texture sizes](#texture-sizes)), `--proportions fit|0.5` (third person:
      stretch onto the survivor's skeleton instead of keeping the model's proportions), `--hair tint` (the game's hair shader, one
@@ -192,6 +198,14 @@ b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel 
     A coat that is open at the front gets an open cloth panel round the back, so its front halves swing apart
     instead of being closed into a tube; the sleeves stay on the arms.
   - **capes** (cape, cloak, mantle): hang from the shoulder blades behind the body.
+  - Names alone aren't trusted: a garment must also **hang like one** (from above the crotch to well below it, wider
+    than a strand of beads), and parts named like accessories (necklace, belt, strap, bracelet, boots, heels ...)
+    stay skinned even when they share the dress's material. So boots whose material is called `dress` stay boots,
+    and a necklace or a thigh strap cut from the dress's texture sheet doesn't swing with the skirt. The log says
+    what was left out and why (`cloth: 'dress' named like a garment but doesn't hang like one: boot: ...`).
+  - Only materials on a **clothing slot** swing: the game draws cloth only with materials made for it
+    (`bUsedWithClothing`; the survivors' outfit and hair materials, not the skin ones). Garments (dress, skirt,
+    coat, ... in the material name) always go to a clothing slot; one you put on a skin slot yourself stays skinned.
   - `--cloth <material>,<material>` picks them yourself; `<material>:cape` or `<material>:lower` says how it hangs
     when the guess is wrong.
 - Works on **any outfit**: one that has cloth in the game (Holly Elite 00/04, Karlee Elite 06, Doc Elite 03, Walker
@@ -303,8 +317,11 @@ What the survivor pipeline prints, and what to do about it.
 | Holes, slits or loose triangles at a distance (flat-shaded models, VRM/glTF models along their UV seams) | fixed: the LODs are made from the model welded by position (older kits: shade smooth / merge by distance in Blender before exporting) |
 | A coat flutters like a skirt, or a cape clings to the back | each garment is tuned from its shape and length (`cloth: tuned as ...` in the log); if the guess is wrong, `--cloth MAT:cape` / `MAT:lower`, or try values with `B4B_CLOTH_TUNE` ([Swinging hair and skirts](#swinging-hair-and-skirts)) |
 | `texture set Head: atlas 2048x2048: body 1024x1024, ...` | how the materials sharing one texture were packed and how big each one's part is ([Texture sizes](#texture-sizes)) |
+| `LOD0: ... is over the budget (the template's LOD0: ...)` | your model is denser than the survivor's own mesh: it was decimated to that (face kept finer, UV seams kept); `--keep-density` keeps every triangle, `--max-verts N` sets the budget |
+| `cloth: '...' named like a garment but doesn't hang like one` / `stays skinned: named like an accessory` | a material named dress/skirt/coat sits on the feet or neck, or an accessory shares the dress's material: left skinned. If it really is a skirt: `--cloth <material>` |
+| A dress renders dark grey, the game log says `missing bUsedWithClothing ... Default Material` | fixed: garments go to a clothing slot, and cloth only on slots whose material supports it. With `--slot dress=Arm` (a skin slot) the dress stays skinned |
 | The add-on is big | textures are as big as your images (at most the survivor's own texture sizes); `--max-texture 2048` or `1024` for a smaller add-on, smaller images in your model do the same |
-| The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |
+| The first-person arms are the old ones | the outfit has no `FP_..._SKM` in its folder (the log warns), or `--fp none` was given: give `--fp <FP arms SKM>` (the arms are cut from your own model: faces skinned to the arms) |
 
 ## Make a weapon model
 1. **Your model**: an FBX with **separate objects per moving part**, named like `Magazine`, `Bolt`, `Trigger` (others

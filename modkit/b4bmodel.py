@@ -3,8 +3,13 @@
 ready for `addon.py pack`. Mod makers run it as `b4bmod survivor|weapon ...` (which also extracts the templates, packs
 and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
 
-  b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir>
+  b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>|none] -o <moddir>
+        --fp: default the outfit's own first-person arms (same folder, 3P_ -> FP_) when extracted; none = keep the
+        game's arms in first person
         [--slot MAT=SLOT|drop]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
+        [--max-verts N | --keep-density]  LOD0 budget: a model denser than the template's LOD0 (its vertices and
+                             triangles) is decimated to it (face decimated less, UV seams kept, cloth whole; the log
+                             prints before/after); --max-verts N sets the third-person budget, --keep-density keeps all
         [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none] [--facing -y]
         [--face auto|off]    auto: the face is skinned to the survivor's face bones (talks, blinks; mesh-mods.md §12)
         [--mouth auto|on|off]  auto: a model without a mouth interior gets a dark mouth cavity (on: always)
@@ -20,7 +25,10 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
         [--hair-physics auto|off]  auto (default): long hair swings on the survivor's physics hair bones (templates with a
                                    hair chain: Holly, Mom, ...; mesh-mods.md §14) [--hair-swing 0..1]
         [--cloth auto|off|MAT[:cape|:lower],...]  auto (default): skirts, dresses, long coats (open front too) and capes
-                                   become cloth on any outfit (one without cloth gets a clothing asset added)
+                                   become cloth on any outfit (one without cloth gets a clothing asset added); named
+                                   garments must also hang like one (from above the crotch to well below it), parts
+                                   named like accessories (necklace, belt, strap, boots) stay skinned, and only
+                                   materials on slots that draw cloth (bUsedWithClothing: clothing, not skin) swing
         [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
                                 tint = the game's hair shader, one colour root to tip (your texture's average)
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
@@ -78,7 +86,7 @@ class Opts:
             a = argv[i]
             if a in ("-o", "--out"):
                 self.o["out"] = argv[i + 1]; i += 2
-            elif a.startswith("--") and a[2:].replace("-", "_") in ("normal_dx", "keep_work"):
+            elif a.startswith("--") and a[2:].replace("-", "_") in ("normal_dx", "keep_work", "keep_density"):
                 self.o[a[2:].replace("-", "_")] = True; i += 1
             elif a.startswith("--"):
                 k = a[2:].replace("-", "_")
@@ -676,6 +684,10 @@ MAT_CLOTH_ZONES = [(re.compile(r"pant|trouser|jean|short|skirt|leg|bottom|shoe|b
                    (re.compile(r".", re.I), re.compile(r"torso|body|top|upper|jacket|shirt|arms?$", re.I))]
 
 
+GARMENT_RX = re.compile(r"dress|skirt|gown|kilt|coat|jacket|robe|cape|cloak|tunic|apron|hoodie|sweater|vest\b|"
+                        r"uniform|sleeve|lining|garment|fabric", re.I)
+
+
 def slot_kind(name, master):
     m = (master or "").split(".")[-1]
     if SLOT_SKIP_RX.search(name) or not master: return None
@@ -793,7 +805,10 @@ def auto_slots(mats, minfo, s3, user, regions=None):
                 out[m] = hair[0]; why[m] = "eye layer with alpha (e.g. iris): hair slot, masked, in the hair colour"
                 continue
             if skin: out[m] = skin[0]; why[m] = "eyes (opaque, on the skin slot)"; continue
-        cloth_named = re.search(r"cloth|suit|shirt|pant", n)
+        # garments are clothes whatever their texels look like (a beige dress is not skin; on a skin slot its cloth
+        # section would render grey: skin masters don't draw clothing)
+        cloth_named = re.search(r"cloth|suit|shirt|pant", n) or GARMENT_RX.search(m) or \
+            (GARMENT_RX.search(n) and not MAT_SKIN_RX.search(m))
         named = any(rx.search(n) for rx in (MAT_SKIN_RX, MAT_CLOTH_ZONES[0][0], MAT_CLOTH_ZONES[1][0])) or cloth_named
         r = mreg.get(m, {})
         if skin and not cloth_named and (MAT_SKIN_RX.search(n) or single or
@@ -835,6 +850,13 @@ def auto_slots(mats, minfo, s3, user, regions=None):
     for m in mats:
         log(f"  {m:32s} -> {out.get(m, 'dropped'):12s} ({why.get(m, '')})")
     return out, drop
+
+
+def density_args(o, fp=False):
+    """LOD0 budget (b4bfit make_lods): the template's LOD0 by default; --max-verts N (third person), --keep-density."""
+    if o.get("keep_density"): return ["--keep_density", "1"]
+    if o.get("max_verts") and not fp: return ["--max_verts", str(int(o["max_verts"]))]
+    return []
 
 
 def survivor(o):
@@ -956,7 +978,7 @@ def survivor(o):
     d3 = os.path.join(work, "fit3p")
     run_blender(["character", "--template", template_glb(tp, work), "--source", os.path.abspath(model), "--out", d3,
                  "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06"),
-                 "--proportions", o.get("proportions") or "own"] + fit_args(o.o) + atlas_args +
+                 "--proportions", o.get("proportions") or "own"] + fit_args(o.o) + atlas_args + density_args(o.o) +
                 slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")] + dangle_args(o.o, tp, src))
     man3 = json.load(open(os.path.join(d3, "manifest.json")))
     # the game's hair shader tints vertex-coloured strands (retail: mostly black); the colour-texture material doesn't
@@ -978,6 +1000,7 @@ def survivor(o):
         df = os.path.join(work, "fitfp")
         run_blender(["character", "--template", template_glb(fp, work), "--source", os.path.abspath(model), "--out",
                      df, "--mode", "fp", "--lods", o.get("fp_lods", "1,0.5")] + fit_args(o.o) + atlas_args +
+                    density_args(o.o, fp=True) +
                     [x for s, st in fp_slotset.items() if st != s for x in ("--slotset", f"{s}={st}")] +
                     [x for m, s in fp_slot.items() for x in ("--slot", f"{m}={s}")])
         manf = json.load(open(os.path.join(df, "manifest.json")))
@@ -1275,6 +1298,28 @@ def bind_bone_moves(man):
     return {b.lower(): blender_to_ue(p) for b, p in man.get("extras", {}).get("bind_bones_m", {}).items()}
 
 
+def master_uses_clothing(master, src):
+    """True when a master material can draw cloth sections (bUsedWithClothing; Master_Hero_Outfit_M, Master_Hair_M:
+    yes, Master_Hero_Head_M: no), read from its package (extracted when needed); else guessed from its name."""
+    if not master: return False
+    f = upkg.game_path_to_file(master, src)
+    if (not f or not os.path.exists(f)) and find_b4bmod():
+        subprocess.run([sys.executable, find_b4bmod(), "extract", master.split(".")[0], "-o", src],
+                       capture_output=True, text=True)
+        f = upkg.game_path_to_file(master, src)
+    if f and os.path.exists(f):
+        try:
+            import uprops
+            p = upkg.Package(f)
+            e = next(x for x in p.exports if x["outer"] == 0)
+            t, _ = uprops.parse(p, bytes(p.export_data(e)))
+            return any(x.name == "bUsedWithClothing" and x.value is not False for x in t)
+        except Exception:
+            pass
+    n = master.split(".")[-1]
+    return bool(re.search(r"outfit|cloth|hair|gear", n, re.I)) and not re.search(r"head|skin|eye", n, re.I)
+
+
 def dangle_args(o, tp, src):
     """b4bfit flags for secondary motion (blender/b4bdangle.py, cloth.py): --hair-physics auto puts the back hair on
     the template's simulated hair chain (if its physics asset has one), --cloth auto|MAT,... makes the skirt cloth
@@ -1303,6 +1348,9 @@ def dangle_args(o, tp, src):
             log(f"cloth: {', '.join(missing)} not extracted: skirts/coats/capes only on outfits with cloth "
                 f"({os.path.basename(tp)} has {n} clothing asset(s))")
             if not n: a = a[:-2]
+        if "--cloth" in a:
+            ok = [s for s, mi, tex, master in mesh_slots(tp, src) if master_uses_clothing(master, src)]
+            a += ["--cloth_slots", ",".join(ok)]
     return a
 
 
@@ -1380,6 +1428,29 @@ def weapon_bones(man, mesh_file):
     return out
 
 
+def default_fp(o):
+    """--fp: none = only the third-person outfit; not given = the outfit's own first-person arms (same folder, 3P_ ->
+    FP_) when they are extracted (b4bmod survivor finds them in the paks and passes --fp)."""
+    fp = o.get("fp")
+    if fp and fp.lower() == "none":
+        o.o.pop("fp"); return
+    if fp or not o.get("outfit"): return
+    tp = o["outfit"]
+    folder, name = tp.rsplit("/", 1) if "/" in tp else ("", tp)
+    if not re.match(r"^3P_", name, re.I):
+        log(f"warning: --outfit {tp} isn't a 3P_ mesh: no first-person arms derived (--fp <FP arms SKM>; --fp none)")
+        return
+    cand = f"{folder}/{re.sub(r'^3P_', 'FP_', name, flags=re.I)}" if folder else re.sub(r'^3P_', 'FP_', name, flags=re.I)
+    f = cand if cand.endswith(".uasset") else upkg.game_path_to_file(
+        cand if cand.startswith("/Game/") else "/Game/" + cand.lstrip("/"), src_dir(o.o))
+    if f and os.path.exists(f):
+        o.o["fp"] = cand
+        log(f"first-person arms: --fp {cand} (the outfit's own; --fp none keeps the game's arms)")
+    else:
+        log(f"warning: no first-person arms for {tp} ({cand} not found/extracted): in first person you keep the game's "
+            f"arms (--fp <FP arms SKM>; --fp none to silence this)")
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         print(__doc__); return
@@ -1389,6 +1460,8 @@ def main():
     o.o["out"] = os.path.abspath(o.o["out"])
     o.o["work"] = os.path.abspath(o.get("work") or tempfile.mkdtemp(prefix="b4bmodel_"))
     os.makedirs(o.o["work"], exist_ok=True)
+    if cmd == "survivor":
+        default_fp(o)
     if cmd == "survivor" and o.get("as"):
         name, moddir = outfit_name(o), o.o["out"]
         stage = os.path.join(o.o["work"], "stage")

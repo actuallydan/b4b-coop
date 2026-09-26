@@ -24,7 +24,8 @@
   mesh import <template asset> <model.fbx|.glb|.gltf> -o <moddir> [--lods N] [--material NAME=SLOT]...
                                           your model (rigged to the template's skeleton) -> the game's mesh
   mesh edit <asset> -o <moddir> [--inflate CM] [--scale-section L:S:F] [--material L:S:M]
-  survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
+  survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>|none] -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
+         (--fp default: the outfit's own FP_ arms from the same folder; none = the game's arms in first person)
          [--as <name>]                    --as: ADD an outfit instead of replacing the template (new packages under
                                           /Game/b4bcoop/outfits/<name>/; players wear it with /model <name>)
   weapon <model> --fp-mesh <FP SKM | code like AR02> -o <moddir> [--slot MAT=SLOT]... [--tex MAT=PREFIX]...
@@ -636,6 +637,39 @@ def infer_weapon_meshes(a):
         print(f"weapon: not replaced (the game's own look stays): {', '.join(other)}", file=sys.stderr)
 
 
+def infer_fp_arms(a):
+    """survivor without --fp: the first-person arms of the same outfit (its folder, 3P_ -> FP_), so the model shows in
+    first person too; `--fp none` keeps the game's arms."""
+    if "--fp" in a:
+        i = a.index("--fp")
+        if i + 1 < len(a) and a[i + 1].lower() == "none":
+            del a[i:i + 2]
+            a += ["--fp", "none"]
+            print("note: --fp none: only the third-person outfit is replaced; in first person you keep the original arms",
+                  file=sys.stderr)
+        return
+    tp = a[a.index("--outfit") + 1]
+    folder, name = tp.rsplit("/", 1) if "/" in tp else ("", tp)
+    cand = f"{folder}/{re.sub(r'^3P_', 'FP_', name, flags=re.I)}" if re.match(r"^3P_", name, re.I) else None
+    if cand and cand.lower().endswith(".uasset"):
+        found = os.path.exists(cand)
+    elif cand and cand.startswith("/Game/"):
+        want = cand.lower()
+        found = any((g or "").lower() == want for g in (game_name(p) for p, _ in listing()))
+        if found:
+            cand = next(g for g in (game_name(p) for p, _ in listing()) if (g or "").lower() == want)
+    else:
+        found = False
+    if found:
+        a += ["--fp", cand]
+        print(f"survivor: first-person arms --fp {cand} (the outfit's own; --fp none keeps the game's arms)",
+              file=sys.stderr)
+    else:
+        print(f"warning: no first-person arms found for {tp} ({cand or 'not a 3P_ mesh'} doesn't exist): only the "
+              f"third-person outfit is replaced, in first person you keep the original arms (--fp <FP arms SKM>)",
+              file=sys.stderr)
+
+
 def cmd_model(kind, a):
     """survivor / weapon: extract the templates and what they reference, run b4bmodel.py, pack, install."""
     pak, install = take(a, "--pak"), "--install" in a
@@ -654,6 +688,8 @@ def cmd_model(kind, a):
         die(f"b4bmod {kind} needs {need} <game mesh> (see docs/meshes.md)", 2)
     if kind == "weapon":
         infer_weapon_meshes(a)
+    if kind == "survivor":
+        infer_fp_arms(a)
     if "--as" in a and meta["title"] and "--as-title" not in a:
         a += ["--as-title", meta["title"]]   # the outfit's name in /model list
     templates = [a[i + 1] for i, x in enumerate(a[:-1]) if x in TEMPLATE_FLAGS[kind]]
@@ -666,9 +702,6 @@ def cmd_model(kind, a):
             if r.returncode:
                 sys.stderr.write(r.stdout + r.stderr)
                 die(f"{t}: could not list what it references")
-    if kind == "survivor" and "--fp" not in a:
-        print("note: no --fp: only the third-person outfit is replaced; in first person you keep the original arms",
-              file=sys.stderr)
     rc = python_tool(os.path.join(KIT, "b4bmodel.py"), [kind] + a + ["-o", moddir, "--src", src_dir()])
     if rc or nopack:
         return rc
