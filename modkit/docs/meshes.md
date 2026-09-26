@@ -7,6 +7,7 @@ Commands are written as `b4bmod ...` (Windows: `b4bmod.cmd`, Linux: `./b4bmod.sh
 
 - [Blender](#blender) · [What goes where](#what-goes-where)
 - [Make a survivor model](#make-a-survivor-model) · [Hair](#hair) · [Talking and blinking](#talking-and-blinking) ·
+  [Swinging hair and skirts](#swinging-hair-and-skirts) ·
   [Survivor troubleshooting](#survivor-troubleshooting) ·
   [Make a weapon model](#make-a-weapon-model)
 - [Doing the fitting yourself](#doing-the-fitting-yourself-mesh-import) · [Lower level](#lower-level) · [Limits](#limits)
@@ -128,6 +129,28 @@ can't find is guessed from the survivor's face scaled to yours (`scaled from the
   close about halfway. Lashes/eyeliner meshes that the blink shape key moves follow the lids.
 - `--face off` leaves the face on the head bone (no talking or blinking), as before.
 
+## Swinging hair and skirts
+Two options make long hair and skirts move with the character instead of sticking to the head and hips:
+```
+b4bmod survivor model.vrm --outfit .../3P_Holly_Elite_00_SKM ... --hair-physics auto --cloth auto
+b4bfit: hair: 3859 of 13057 hair vertices on the survivor's physics hair bones (hair_00,hair_01,hair_02)
+b4bfit: cloth: ['F00_001_01_Bottoms_01_CLOTH'] -> 568 cloth faces, simulation mesh 7x20 (140 vertices), waist 105 cm, hem 72 cm
+  cloth: section on slot flannel1 (two-sided variant of Body)
+```
+- `--hair-physics auto`: the hair behind and below the head goes on the survivor's ponytail bones, which the game
+  swings with physics. Only survivors that have them: **Holly** (e.g. Elite 00; hair_00..02), Holly Elite 06,
+  Walker Elite 03, Doc Elite 03, **Mom** (two pigtails). On others the log says so and the hair stays
+  on the head. `--hair-swing 0.5` swings it half as much (hair that clips into the back).
+- `--cloth auto`: a skirt or dress (a material named skirt/dress/kilt, or "bottoms" that covers the gap between the
+  legs; trousers are left alone) becomes cloth: the game simulates it, it sways when walking, trails behind when
+  running and settles when standing. `--cloth <material>,<material>` picks the materials yourself. Needs an outfit
+  that has cloth in the game: **Holly Elite 00** (its tied flannel), Holly Elite 04, Karlee Elite 06, Doc Elite 03,
+  Walker Elite 07 (tested: Holly Elite 00); other outfits: the log says so and the skirt is skinned to the legs as
+  before. The skirt uses the outfit's two-sided variant of its material when there is one (else folds can show
+  see-through gaps).
+- Both are shown to everyone who has the add-on (each machine simulates its own copy). Far away (the last two
+  LODs) the skirt is skinned, not simulated.
+
 ## Add an outfit
 The survivor pipeline above **replaces** the template: everyone with your add-on sees your model instead of Mom's
 Elite 04. Add `--as <name>` and it **adds** an outfit instead (Left 4 Dead style): nothing of the game is replaced, and
@@ -191,7 +214,7 @@ What the survivor pipeline prints, and what to do about it.
 | Hair is one colour / a bit dark | only with `--hair tint` (the game's hair shader: one colour root to tip, your texture's average, root 40 % darker). The default `--hair texture` keeps your texture's colours |
 | Hair much darker / another colour than the texture file | the material multiplies the texture by a colour (glTF base colour factor, VRoid/MToon hair colour): that is applied, as in Blender / VRoid. VRM 0.x colours are read as sRGB, like VRoid does |
 | Eyes look flat | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in its own colours (`--hair tint`: in the hair colour); highlights are left out |
-| Skirts, long hair, capes don't swing | no cloth or dangle bones in the game's skeleton: they move stiffly with the hips / head |
+| Skirts, long hair, capes don't swing | `--hair-physics auto --cloth auto` on a survivor/outfit that supports it ([Swinging hair and skirts](#swinging-hair-and-skirts)); capes and coats: not supported |
 | A low-poly model turns into triangles at a distance | fixed: models under ~1500 triangles keep every LOD whole (older kits: `--lods 1,1,1,1,1`) |
 | The add-on is 150-200 MB | 4096 textures (several materials packed into one texture set): `--max-texture 2048` |
 | The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |
@@ -290,12 +313,13 @@ The scripts next to b4bmod, each with `-h` / a usage header; run them with the s
 
 ## Limits
 - The skeleton, animations, hitboxes (physics asset) and material slots stay the template's. No new bones.
-- No cloth simulation for your mesh (the template's cloth is left unused), no morph targets (face shapes: templates
-  with morph targets are refused). The face is rigged to the survivor's face bones (talks, blinks, expressions:
+- Cloth only for a skirt/dress, and only on outfits that have cloth in the game; no morph targets (face shapes:
+  templates with morph targets are refused). The face is rigged to the survivor's face bones (talks, blinks, expressions:
   [Talking and blinking](#talking-and-blinking)); your own face shapes are not kept.
 - Hair: on the Hair slot, masked by the texture's alpha, lit like cloth (no anisotropic hair shine); on any other slot
   alpha cards render as solid cards.
-- Skirts, long hair and other dangling parts move stiffly with the bone they hang from (no physics bones).
+- Long hair swings only on survivors with ponytail bones; capes, coats and other dangling parts move stiffly with the
+  bone they hang from.
 - The weapon's sights stay where the template's are: a model with a different sight height aims slightly off through
   its own sights.
 - Only on your PC and for players who have the add-on: others see the normal model.
