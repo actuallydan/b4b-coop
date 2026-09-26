@@ -76,6 +76,7 @@ static void rot_dir(const float r[3], float d[3]) {   // FRotator (pitch, yaw, r
 // KismetSystemLibrary::LineTraceSingle along d (unit) for len units on trace channel chan (ETraceTypeQuery: 0 =
 // Visibility), ignoring the pawn: the first blocking point, 0 = none. The function and parameter offsets are looked up
 // once (the aim correction runs it every frame).
+static int32_t trace_hit_actor = -1;   // object index of the last trace_ch hit's actor
 static int trace_ch(UObject *pawn, const float s[3], const float d[3], float len, int chan, float hit[3]) {
     static UObject *cdo; static UFunction *fn; static int32_t o_ctx, o_st, o_en, o_ch, o_self, o_hit, psize;
     if (!fn) {
@@ -100,6 +101,7 @@ static int trace_ch(UObject *pawn, const float s[3], const float d[3], float len
     uint8_t *h = p + o_hit;
     if (!(h[0] & 1)) return 0;
     memcpy(hit, h + 0x1c, 12);   // HitResult.ImpactPoint
+    trace_hit_actor = *(int32_t *)(h + 0x68);   // HitResult.Actor (weak pointer: object index first)
     return 1;
 }
 static int trace(UObject *pawn, const float s[3], const float d[3], float hit[3]) { return trace_ch(pawn, s, d, 50000.f, 0, hit); }
@@ -329,10 +331,113 @@ static void aim_update(UObject *pawn, UObject *pvc) {
     aim_ok = lat > 0.5f && lat < 400.f && aim_local[0] < 0;   // offset camera behind the eyes (not centred, not 1P)
 }
 
+// ---- Item pickups in third person (#27) ----
+// Weapons, items and other ItemPickups become usable (prompt, tooltip, F) only while the hero's ItemObserverComponent
+// "observes" them: ItemPickupUsableComponent's CanUse (vtable +0x410, strict call) needs the observer's entry in the
+// pickup's ItemObservableComponent.ObservableStates. The observer switches itself off in third person: its refresh
+// (0x1418F3600, run on OnViewChanged and OnUIScreenOpened) sets ObserverComponent.bEnabled (+0x108) = no blocking UI
+// screen && ... && !PlayerViewComponent.IsThirdPerson (its weak pointer +0x138, byte +0x215), because the game's own
+// third-person moments (healing, grabbed) are not meant for looting. In our third person we run that refresh with the
+// view byte reading first person, so every other condition (open screens etc.) still decides. Local only: the host
+// never sees it (clients observe and pick up through their own game; the pickup request is the retail RPC).
+#define ADDR_OBS_REFRESH VA(0x1418F3600ull)
+static const uint8_t SIG_OBS_REFRESH[] = {0x48,0x89,0x74,0x24,0x20,0x57,0x48,0x83,0xec,0x20,0x48,0x8d,0xb9,0x40,0x01,0x00,
+                                          0x00,0x48,0x8b,0xf1,0x48,0x8b,0xcf,0xe8};
+typedef void (*ObsRefreshFn)(UObject *obs);
+static ObsRefreshFn orig_obs_refresh;
+static int obs_hooked;   // 1 hooked, -1 failed / signature mismatch
+static int item_fix = 1; // dev `thirdperson itemfix 0|1` (both parts of the #27 fix)
+static unsigned obs_n;   // refreshes run as first person (dev status)
+static void obs_refresh_detour(UObject *obs) {
+    int32_t wi = *(int32_t *)((char *)obs + 0x138);   // ItemObserverComponent -> PlayerViewComponent (weak: index first)
+    UObject *pvc = wi > 0 && wi < ue_num_objects() ? ue_object_at(wi) : NULL;
+    uint8_t *is3p = pvc ? (uint8_t *)pvc + 0x215 : NULL;
+    if (!item_fix || !tp_on || !pvc || pvc != tp_pvc || !alive(tp_pvc, tp_pvci) || PVC_WANT(pvc) != 2 || !*is3p ||
+        GetCurrentThreadId() != tp_tid) {
+        orig_obs_refresh(obs);
+        return;
+    }
+    *is3p = 0;
+    orig_obs_refresh(obs);
+    *is3p = 1;
+    obs_n++;
+}
+static void obs_hook(void) {
+    if (obs_hooked) return;
+    int ok = !memcmp((void *)ADDR_OBS_REFRESH, SIG_OBS_REFRESH, sizeof SIG_OBS_REFRESH) &&
+             MH_CreateHook((void *)ADDR_OBS_REFRESH, (void *)obs_refresh_detour, (void **)&orig_obs_refresh) == MH_OK &&
+             MH_EnableHook((void *)ADDR_OBS_REFRESH) == MH_OK;
+    obs_hooked = ok ? 1 : -1;
+    LOG("thirdperson: item observer hook %s", ok ? "installed" : "FAILED (signature mismatch?)");
+}
+static UObject *hero_observer(UObject *pawn) {   // HeroCharacter.ItemObserverComponent
+    static int32_t off = -2;
+    if (!pawn) return NULL;
+    if (off == -2) off = ue_prop_offset(pawn, "ItemObserverComponent");
+    return off >= 0 ? *(UObject **)((char *)pawn + off) : NULL;
+}
+#ifndef B4B_RELEASE
+// run the local hero's observer refresh now (dev `thirdperson itemfix`)
+static void obs_kick(void) {
+    UObject *obs = hero_observer(local_hero());
+    if (obs && obs_hooked == 1 && GetCurrentThreadId() == tp_tid) obs_refresh_detour(obs);
+}
+#endif
+// Where the observer looks from: the observation system gathers every observer's view once per frame (0x140ECC480,
+// game thread) into records of 0x68 bytes in its sparse array at +0x40: +0x18 the ObserverComponent, +0x20 location,
+// +0x2c rotation, +0x38 direction. For our hero it takes ObserverComponent.ViewComponent (the FirstPersonCamera):
+// the eyes, looking along the control rotation, i.e. parallel to our offset camera's crosshair ray. An item's rule is
+// a ray-sphere test (radius 30, 0-300 units), so an item under the crosshair at arm's length is missed by the side
+// offset (40 by default). After the gather, in our offset 3P, our record gets the eyes' view point as the aim
+// correction turns it: from the eyes toward the point under the crosshair. (Clearing ViewComponent would make the
+// gather use the eyes too, but the observer's own tick needs it to pick the tooltip to show.)
+#define ADDR_OBS_GATHER VA(0x140ECC480ull)
+static const uint8_t SIG_OBS_GATHER[] = {0x40,0x55,0x53,0x41,0x55,0x48,0x8d,0x6c,0x24,0xb9,0x48,0x81,0xec,0xf0,0x00,0x00,
+                                         0x00,0x45,0x33,0xed,0xc7,0x44,0x24,0x24};
+typedef void (*ObsGatherFn)(void *sys);
+static ObsGatherFn orig_obs_gather;
+static int gather_hooked;
+static UObject *obs_aim;    // this frame: the local observer whose view gets the corrected eyes (NULL = none)
+static unsigned gather_n;   // records patched (dev status)
+static void obs_gather_detour(void *sys) {
+    orig_obs_gather(sys);
+    UObject *obs = obs_aim, *pawn = aim_pawn;
+    if (!obs || !pawn || !orig_eyes || GetCurrentThreadId() != tp_tid) return;
+    TArray *d = (TArray *)((char *)sys + 0x40);
+    for (int32_t i = 0; d->data && i < d->num; i++) {
+        uint8_t *r = (uint8_t *)d->data + (size_t)i * 0x68;
+        if (*(UObject **)(r + 0x18) != obs) continue;
+        float loc[3], rot[3], dir[3];
+        orig_eyes(pawn, loc, rot);
+        aim_correct(loc, rot);
+        rot_dir(rot, dir);
+        memcpy(r + 0x20, loc, 12); memcpy(r + 0x2c, rot, 12); memcpy(r + 0x38, dir, 12);
+        gather_n++;
+    }
+}
+static void obs_view_hook(void) {
+    if (gather_hooked) return;
+    int ok = !memcmp((void *)ADDR_OBS_GATHER, SIG_OBS_GATHER, sizeof SIG_OBS_GATHER) &&
+             MH_CreateHook((void *)ADDR_OBS_GATHER, (void *)obs_gather_detour, (void **)&orig_obs_gather) == MH_OK &&
+             MH_EnableHook((void *)ADDR_OBS_GATHER) == MH_OK;
+    gather_hooked = ok ? 1 : -1;
+    LOG("thirdperson: observation view hook %s", ok ? "installed" : "FAILED (signature mismatch?)");
+}
+// every tick: which observer (if any) looks along the corrected eyes this frame
+static void obs_view_sync(void) {
+    UObject *pawn = aim_pawn;
+    obs_aim = NULL;
+    if (!item_fix || !aim_ok || !pawn || pawn != tp_pawn || !alive(tp_pvc, tp_pvci) || PVC_WANT(tp_pvc) != 2) return;
+    obs_view_hook();
+    if (gather_hooked == 1) obs_aim = hero_observer(pawn);
+}
+
 // every tick while on: third person, first person while aiming. A view the game itself asked for (a tag-driven 2 we
 // didn't write: healing, pounced, grabbed, ...; orbit 3) is left alone; when the game drops back to 1 we write 2 again.
 static void tp_sync(float dt) {
     UObject *pawn = local_hero(), *pvc = view_comp(pawn);
+    tp_tid = GetCurrentThreadId();
+    obs_hook();   // before our first view switch, so its OnViewChanged refresh already sees it
     aim_update(pvc ? pawn : NULL, pvc);
     if (!pvc) return;
     if ((tp_ads_age += dt) > 1.f) { tp_ads_age = 0; ads_refresh(pawn); }
@@ -361,7 +466,8 @@ void thirdperson_tick(float dt) {
         was_down = down;
     }
     if (tp_on) tp_sync(dt);
-    else {
+    obs_view_sync();
+    if (!tp_on) {
         aim_ok = 0;
 #ifndef B4B_RELEASE
         if (probe_left > 0 || aim_test[0] || aim_test[1]) { aim_update(local_hero(), NULL); }
@@ -642,6 +748,177 @@ static void tp_targets(char *a1, Out *o) {
     out_printf(o, "%d target(s) within %.0f of (%.0f %.0f %.0f)\n", shown, range, me[0], me[1], me[2]);
 }
 
+// ---- #27 probes: what the local hero would use (HeroUseComponent) and the usables around it ----
+static UObject *use_comp_of(UObject *pawn) {
+    static UObject *pw, *uc; static int32_t pwi = -1, uci = -1;
+    if (pawn == pw && alive(pw, pwi) && alive(uc, uci)) return uc;
+    UClass *c = ue_find_class("HeroUseComponent");
+    pw = pawn; pwi = pawn ? U_INDEX(pawn) : -1; uc = NULL; uci = -1;
+    for (int32_t i = 0, n = ue_num_objects(); c && pawn && i < n; i++) {
+        UObject *x = ue_object_at(i);
+        if (x && !(U_FLAGS(x) & LIVE_FLAGS) && ue_is_a(x, c) && COMP_OWNER(x) == pawn) { uc = x; uci = i; break; }
+    }
+    return uc;
+}
+static void text_str(const void *ftext, char *buf, size_t n) {   // FText -> ASCII (dev: the result string leaks)
+    buf[0] = 0;
+    UClass *k = ue_find_class("KismetTextLibrary");
+    TpCall c;
+    if (!k || !tc_prep(&c, UC_CDO(k), "Conv_TextToString")) return;
+    void *in = tc_arg(&c, "InText"); FString *out = tc_arg(&c, "ReturnValue");
+    if (!in || !out) return;
+    memcpy(in, ftext, 0x18);
+    ue_process_event(c.obj, c.fn, c.p);
+    size_t j = 0;
+    for (int i = 0; out->data && i < out->num && out->data[i] && j + 1 < n; i++) buf[j++] = out->data[i] < 128 ? (char)out->data[i] : '?';
+    buf[j] = 0;
+}
+static int actor_loc(UObject *a, float l[3]) {
+    TpCall c;
+    if (!a || !tc_prep(&c, a, "K2_GetActorLocation")) return 0;
+    ue_process_event(c.obj, c.fn, c.p);
+    memcpy(l, tc_arg(&c, "ReturnValue"), 12);
+    return 1;
+}
+static void pickup_detail(UObject *uc, Out *o);
+static void use_dump(Out *o) {
+    UObject *pawn = local_hero(), *uc = use_comp_of(pawn);
+    if (!uc) { out_printf(o, "no hero / HeroUseComponent\n"); return; }
+    char a[128], b[128], t[160] = "";
+    uint8_t *u = (uint8_t *)uc;
+    UObject *pa = *(UObject **)(u + 0x140), *pu = *(UObject **)(u + 0x150), *sp = *(UObject **)(u + 0x158),
+            *au = *(UObject **)(u + 0x148), *ab = *(UObject **)(u + 0x138);
+    TpCall c;
+    if (tc_prep(&c, uc, "GetUsePrompt")) { ue_process_event(c.obj, c.fn, c.p); text_str(tc_arg(&c, "ReturnValue"), t, sizeof t); }
+    float *f = (float *)(u + 0x118);
+    out_printf(o, "view %d potential %s / %s  spotting %s  active %s  using %s  state %d  prompt \"%s\"\n",
+               tp_pvc && alive(tp_pvc, tp_pvci) ? *((uint8_t *)tp_pvc + 0x215) + 1 : 0,
+               pa ? ue_obj_name(pa, a, sizeof a) : "-", pu ? ue_obj_name(U_CLASS(pu), b, sizeof b) : "-",
+               sp ? "yes" : "-", au ? "yes" : "-", ab ? "yes" : "-", u[0x170], t);
+    out_printf(o, "probe r %.0f len %.0f / r %.0f len %.0f  spot +%.0f  angle %.1f  unrefl 27c (%.1f %.1f %.1f %.1f) 28c (%.1f "
+                  "%.1f %.1f %.1f) 2c8 %02x %02x %02x %02x %02x\n", f[0], f[1], f[2], f[3], f[4], f[5],
+               *(float *)(u + 0x27c), *(float *)(u + 0x280), *(float *)(u + 0x284), *(float *)(u + 0x288),
+               *(float *)(u + 0x28c), *(float *)(u + 0x290), *(float *)(u + 0x294), *(float *)(u + 0x298),
+               u[0x2c8], u[0x2c9], u[0x2ca], u[0x2cb], u[0x2cc]);
+    pickup_detail(pu ? pu : sp, o);
+    UObject *obs = hero_observer(pawn), *vc = obs ? *(UObject **)((char *)obs + 0x110) : NULL;
+    out_printf(o, "  observer %s enabled %d view comp %s  (itemfix %d hooks %d %d, %u first-person refreshes, %u views "
+                  "corrected, now %d)\n", obs ? "yes" : "none", obs ? *((uint8_t *)obs + 0x108) : -1,
+               vc ? ue_obj_name(vc, a, sizeof a) : "-", item_fix, obs_hooked, gather_hooked, obs_n, gather_n, obs_aim != NULL);
+}
+// an ItemPickupUsableComponent's weak pointer at +0x660 and that object's per-user table at +0x5e0 (0x20-byte entries:
+// user, ..., +0x18, +0x19), which its strict CanUse (vtable +0x410, bool 0) checks for the user
+static void pickup_detail(UObject *uc, Out *o) {
+    UClass *ipc = ue_find_class("ItemPickupUsableComponent");
+    if (!uc || !ipc || !ue_is_a(uc, ipc)) return;
+    int32_t wi = *(int32_t *)((char *)uc + 0x660);
+    UObject *t = wi > 0 && wi < ue_num_objects() ? ue_object_at(wi) : NULL;
+    char a[128], b[128];
+    if (!t) { out_printf(o, "  +660 -> none (%d)\n", wi); return; }
+    float *r = (float *)((char *)t + 0x4fc), *ov = (float *)((char *)t + 0x5d8);   // ObservationStartRules, overrides
+    out_printf(o, "  +660 -> %s %s %p  rules flags %d dist %.0f-%.0f angle %.1f fwd %.1f coll %d sphere %.0f  override r %.0f d %.0f\n",
+               ue_obj_name(U_CLASS(t), a, sizeof a), ue_obj_name(t, b, sizeof b), (void *)t, *(int *)r, r[1], r[2], r[3], r[4],
+               *(int *)(r + 5), r[9], ov[0], ov[1]);
+    TArray *arr = (TArray *)((char *)t + 0x5e0);
+    for (int i = 0; i < arr->num && i < 8; i++) {
+        uint8_t *e = (uint8_t *)arr->data + i * 0x20;
+        UObject *u = *(UObject **)e;
+        out_printf(o, "  [%d] %s %p  +8 %016llx +10 %016llx +18 %02x +19 %02x\n", i, u ? ue_obj_name(u, a, sizeof a) : "-", (void *)u,
+                   *(unsigned long long *)(e + 8), *(unsigned long long *)(e + 0x10), e[0x18], e[0x19]);
+    }
+}
+static struct { UObject *c; int32_t i; float l[3]; } us_list[96];
+static int n_us;
+static void usables_list(char *a1, Out *o) {
+    UObject *pawn = local_hero();
+    UClass *c = ue_find_class("UsableComponent");
+    float range = a1 ? (float)atof(a1) : 1500.f, me[3] = {0};
+    char *filt = a1 ? strtok(NULL, " ") : NULL;
+    actor_loc(pawn, me);
+    n_us = 0;
+    char a[128], b[128], t[128];
+    for (int32_t i = 0, n = ue_num_objects(); c && i < n && n_us < 96; i++) {
+        UObject *x = ue_object_at(i);
+        if (!x || (U_FLAGS(x) & LIVE_FLAGS) || !ue_is_a(x, c)) continue;
+        UObject *ow = COMP_OWNER(x);
+        float l[3];
+        if (!ow || ow == pawn || !actor_loc(ow, l) || dist3(l, me) > range) continue;
+        ue_obj_name(ow, a, sizeof a); ue_obj_name(U_CLASS(x), b, sizeof b);
+        if (filt && *filt == '!' ? strstr(a, filt + 1) || strstr(b, filt + 1) : filt && !strstr(a, filt) && !strstr(b, filt)) continue;
+        uint8_t *u = (uint8_t *)x;
+        text_str(u + 0x290, t, sizeof t);
+        out_printf(o, "[%d] %s %s at (%.0f %.0f %.0f) dist %.0f en %d los %d traceloc %d front %d prio %d vt410 0x%llx \"%s\"\n",
+                   n_us, a, b, l[0], l[1], l[2], dist3(l, me), u[0x280], u[0x5d9], u[0x5da], u[0x528], u[0x658],
+                   (unsigned long long)((uintptr_t)U_VTBL(x)[0x410 / 8] - g_base_delta), t);
+        us_list[n_us].c = x; us_list[n_us].i = i; memcpy(us_list[n_us].l, l, 12); n_us++;
+        if (filt && *filt != '!') pickup_detail(x, o);
+    }
+    out_printf(o, "%d usable(s) within %.0f\n", n_us, range);
+}
+// `thirdperson los <n> [chan]`: a trace from the eyes to usable n's owner location: what it hits first
+static void usables_los(char *a1, Out *o) {
+    char *sc = a1 ? strtok(NULL, " ") : NULL;
+    int k = a1 ? atoi(a1) : -1;
+    UObject *pawn = local_hero();
+    TpCall c;
+    if (k < 0 || k >= n_us || !pawn || !tc_prep(&c, pawn, "GetActorEyesViewPoint")) { out_printf(o, "usage: thirdperson los <n> [chan]\n"); return; }
+    ue_process_event(c.obj, c.fn, c.p);
+    float el[3], d[3], hit[3];
+    memcpy(el, tc_arg(&c, "OutLocation"), 12);
+    for (int i = 0; i < 3; i++) d[i] = us_list[k].l[i] - el[i];
+    float n = sqrtf(dot3(d, d));
+    for (int i = 0; i < 3; i++) d[i] /= n;
+    char a[128];
+    trace_hit_actor = -1;
+    if (!trace_ch(pawn, el, d, n + 50, sc ? atoi(sc) : 0, hit)) { out_printf(o, "clear (%.0f)\n", n); return; }
+    UObject *ha = trace_hit_actor >= 0 ? ue_object_at(trace_hit_actor) : NULL;
+    out_printf(o, "hit %s at %.0f of %.0f (%.0f %.0f %.0f)\n", ha ? ue_obj_name(ha, a, sizeof a) : "?", dist3(hit, el), n, hit[0], hit[1], hit[2]);
+}
+// `thirdperson lookat <n> [dist [dz [z]]]`: face usable n of the last list (control rotation from the eyes to its owner's
+// location + dz; in our offset 3P the crosshair); with dist (host: its own hero) first stand dist units from it, on the
+// side the hero is now (at actor height z if given)
+static void usables_lookat(char *a1, Out *o) {
+    char *sd = a1 ? strtok(NULL, " ") : NULL, *sz = sd ? strtok(NULL, " ") : NULL, *sfz = sz ? strtok(NULL, " ") : NULL;
+    int k = a1 ? atoi(a1) : -1;
+    UObject *pawn = local_hero(), *pc = ue_local_pc();
+    if (k < 0 || k >= n_us || !alive(us_list[k].c, us_list[k].i) || !pawn || !pc) { out_printf(o, "usage: thirdperson lookat <n from usables> [dist [dz]]\n"); return; }
+    float t[3], me[3], el[3], er[3];
+    memcpy(t, us_list[k].l, 12);
+    if (sz) t[2] += (float)atof(sz);
+    actor_loc(pawn, me);
+    TpCall c;
+    if (sd && *sd != '-') {
+        float d = (float)atof(sd), v[2] = {me[0] - t[0], me[1] - t[1]}, n = sqrtf(v[0] * v[0] + v[1] * v[1]);
+        if (n < 1) { v[0] = 1; v[1] = 0; n = 1; }
+        float p[3] = {t[0] + v[0] / n * d, t[1] + v[1] / n * d, sfz ? (float)atof(sfz) : fabsf(me[2] - us_list[k].l[2]) < 150 ? me[2] : us_list[k].l[2] + 60};
+        if (tc_prep(&c, pawn, "K2_SetActorLocation")) {
+            memcpy(tc_arg(&c, "NewLocation"), p, 12);
+            uint8_t *tp = tc_arg(&c, "bTeleport"); if (tp) *tp = 1;
+            ue_process_event(c.obj, c.fn, c.p);
+        }
+        memcpy(me, p, 12);
+    }
+    if (!tc_prep(&c, pawn, "GetActorEyesViewPoint")) return;
+    ue_process_event(c.obj, c.fn, c.p);
+    memcpy(el, tc_arg(&c, "OutLocation"), 12); memcpy(er, tc_arg(&c, "OutRotation"), 12);
+    float d[3] = {t[0] - el[0], t[1] - el[1], t[2] - el[2]}, n = sqrtf(dot3(d, d));
+    if (n < 1) return;
+    float r[3] = {asinf(d[2] / n) * 180.f / 3.14159265f, atan2f(d[1], d[0]) * 180.f / 3.14159265f, 0};
+    // our offset 3P camera: put the crosshair (the camera ray) on the target instead of the eyes' ray, the way a
+    // player aims (the aim correction then turns the eyes onto the crosshair point); fixed-point on the rotation
+    for (int it = 0; aim_ok && it < 8; it++) {
+        float f[3], rt[3], up[3], cam[3];
+        basis(r, f, rt, up);
+        for (int i = 0; i < 3; i++) cam[i] = el[i] + f[i] * aim_local[0] + rt[i] * aim_local[1] + up[i] * aim_local[2];
+        for (int i = 0; i < 3; i++) d[i] = t[i] - cam[i];
+        float m = sqrtf(dot3(d, d));
+        if (m < 1) break;
+        r[0] = asinf(d[2] / m) * 180.f / 3.14159265f; r[1] = atan2f(d[1], d[0]) * 180.f / 3.14159265f;
+    }
+    if (tc_prep(&c, pc, "SetControlRotation")) { memcpy(tc_arg(&c, "NewRotation"), r, 12); ue_process_event(c.obj, c.fn, c.p); }
+    out_printf(o, "facing [%d] at %.0f (pitch %.1f yaw %.1f) from (%.0f %.0f %.0f)\n", k, n, r[0], r[1], me[0], me[1], me[2]);
+}
+
 // Dev CLI: `thirdperson [on|off|status]` = the chat command; `thirdperson view [1|2|3]` dumps the local hero's
 // PlayerViewComponent (view bytes, tag lists, owner tags, ADS), a digit sets the view once; `thirdperson aim|arm|decals`.
 int thirdperson_cmd(const char *verb, char *rest, Out *o) {
@@ -651,6 +928,18 @@ int thirdperson_cmd(const char *verb, char *rest, Out *o) {
     if (what && !strcmp(what, "arm")) { tp_arms(arg, o); return 1; }
     if (what && !strcmp(what, "decals")) { tp_decals(arg, o); return 1; }
     if (what && !strcmp(what, "targets")) { tp_targets(arg, o); return 1; }
+    if (what && !strcmp(what, "use")) { use_dump(o); return 1; }
+    if (what && !strcmp(what, "itemfix")) {   // itemfix [0|1]: the item observer override (#27), refreshed at once
+        if (arg) item_fix = atoi(arg) != 0;
+        obs_hook();
+        obs_kick();
+        UObject *obs = hero_observer(local_hero());
+        out_printf(o, "itemfix %d hook %d observer enabled %d\n", item_fix, obs_hooked, obs ? *((uint8_t *)obs + 0x108) : -1);
+        return 1;
+    }
+    if (what && !strcmp(what, "usables")) { usables_list(arg, o); return 1; }
+    if (what && !strcmp(what, "los")) { usables_los(arg, o); return 1; }
+    if (what && !strcmp(what, "lookat")) { usables_lookat(arg, o); return 1; }
     if (what && !strcmp(what, "callers")) {   // who asks for the local hero's eyes / base aim (the fire path)
         UObject *pawn = local_hero();
         aim_hook(pawn);

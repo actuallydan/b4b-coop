@@ -126,11 +126,16 @@ cheat; now a personal chat command for everyone: `/thirdperson` (`native/src/thi
   heal action.) Downed (`cheatprobe hp #0`) and `/revive`: view 2 throughout and after.
 
 ## Not verified
-- Card pickups and other interactions in 3P (#27).
 - `/freeze` (cheat) also blocks the local player's firing.
 
 ## Dev tools added (dev builds)
 `thirdperson view [1|2|3]` (dump the component, tag lists, owner tags, each ADS component; a digit sets the view),
+`thirdperson use` (the hero's HeroUseComponent: potential/spotting usable, prompt, probe sizes, an item pickup's
+observable state and rules, the item observer), `thirdperson usables [range] [substr|!substr]` (UsableComponents
+around: owner, class, location, enabled, prompt, vtable +0x410), `thirdperson lookat <n> [dist [dz [z]]]` (host: stand
+dist from usable n and face it; in our offset 3P the crosshair is put on it), `thirdperson los <n>`, `thirdperson
+itemfix 0|1` (the #27 fix on/off), `fnprobe <va> [label]` (testing.c: count a native function's calls and return
+values; `fnprobe reset|off`),
 `thirdperson [on|off|status|distance ...]` (the chat command), `thirdperson aim [pitch yaw]` (camera vs eye ray and
 where each hits; with pitch/yaw sets the control rotation), `thirdperson arm [i sx sy sz]` (the hero's spring arms; sets
 arm i's SocketOffset), `thirdperson decals [class]` (new/moved DecalComponents = shot impacts), `thirdperson watch [s]`
@@ -170,9 +175,74 @@ works for mouse buttons when the window is raised; this is how fire/ADS are test
   only as a fallback: N typed into the open chat box no longer toggles 3P (verified), and raising/switching the window
   (wmctrl) no longer fires it (0 spurious toggles over two focus changes).
 - `cheatprobe hp <#>` without a value is lethal (it downs the hero), careful.
-- #27 (interactions in 3P, deferred): the door's "PRESS F TO OPEN" prompt did show in 3P on the host; card pickups
-  not tried.
+- #27 (interactions in 3P): see "Interactions in third person" below (fixed).
 - Possible 1-frame first-person flash when a game-driven 3P moment ends (the game writes 1, our next tick writes 2); an UpdateView hook would remove it if it shows.
 
 ## Open
 - A shoulder-swap hotkey (`/thirdperson side swap` exists) if wanted.
+
+## Interactions in third person (#27, 2026-09-25, lane 2)
+Result: **item pickups (weapons, ammo, items, card shrines, collectibles, food) failed in 3P; fixed, client-side, no
+protocol change.** Everything else tried already worked in the game's own 3P.
+
+How the game picks what F uses: `HeroUseComponent` tick (0x141BFBF50) takes the pawn's `GetActorEyesViewPoint`
+(vtable +0x5F0, call at 0x141BFC082) and probes from the eyes (0x141BFDBA0): a sphere 65 ahead / 65 radius (130 reach;
+75/75 while something is already selected), widened by `SpottingHeightIncrease` (500) to find a "spotting" candidate;
+candidates filtered by the usable's CanUse (vtable +0x410; the bool arg = lenient spotting call), scored by the angle
+to the eye direction (0x141BFE750), LoS traced from the eyes (0x141BFEC10, channel 3, ignoring the user); the best one
+that also passes the strict CanUse and the small sphere becomes `PotentialUsableComponent` (+0x150, prompt and F), else
+only `SpottingUsableComponent` (+0x158, blue outline). Nothing there depends on the camera; the only view check in the
+tick is while holding a use (+0x215 → the lenient continue check 0x141BFEFF0: 2D distance < CancelDistance + CanUse),
+which only makes holds in 3P more forgiving.
+
+Why pickups failed: `ItemPickupUsableComponent`'s strict CanUse (0x1418FBA10) needs the local hero's entry in the
+pickup's `ItemObservableComponent.ObservableStates` (weak pointer at the usable's +0x660; entries of 0x20: TargetPlayer,
+HeroUseComponent, Widget, +0x18 observed, +0x19 tooltip shown) with both flags set (remote users skip this check on
+the server: `Controller` vtable +0x6B8 not local → true). Those flags come from the hero's `ItemObserverComponent`:
+1. **It switches itself off in 3P.** Its refresh (0x1418F3600, bound to `OnViewChanged` and `OnUIScreenOpened`) sets
+   `ObserverComponent.bEnabled` (+0x108) = no blocking UI screen open && ... && `!PlayerViewComponent.IsThirdPerson`
+   (weak +0x138, byte +0x215). Measured: 3P observer `enabled 0`, entry `+18 00 +19 00`, `fnprobe` on the strict
+   CanUse: 62 of 62 strict calls false in 3P vs 61/61 true in 1P.
+2. **Its view is the first-person camera.** The observation system gathers each observer's view once per frame
+   (0x140ECC480, game thread; sparse array at +0x40, records 0x68: +0x18 observer, +0x20 location, +0x2C rotation,
+   +0x38 direction) from `ObserverComponent.ViewComponent` (+0x110, `FirstPersonCamera`, set at BeginPlay; without
+   one it uses `GetActorEyesViewPoint`). An item's rule (`ObservationStartRules`: flags 2, 0-300 units, collision 4,
+   sphere 30) is a ray-sphere test, and the FP camera looks from the eyes along the control rotation: parallel to our
+   offset crosshair ray, 40 units beside it, so an item under the crosshair at arm's length is missed.
+3. The observer's own tick (0x1418F2510) picks the tooltip to show (+0x19, 0x1418F0BD0) by distance from
+   `ViewComponent` and angle to the (aim-corrected) eye direction; it does nothing without a `ViewComponent`, so
+   clearing that (tried) breaks the tooltips.
+
+Fix (thirdperson.c "Item pickups in third person"), only while our 3P is on (view byte 2, not the game's orbit):
+- MinHook on the refresh: in our 3P it runs with the view byte reading first person (restored right after), so every
+  other condition (open screens) still decides. `thirdperson: item observer hook installed`.
+- MinHook on the gather: after it, with an offset camera (the aim correction's `aim_ok`), our observer's record gets
+  the eyes' view point as the aim correction turns it (toward the point under the crosshair). `thirdperson:
+  observation view hook installed`. With `thirdperson_aimfix=0` it stays the FP camera: pickups then react
+  `side`/`height` units beside the crosshair, like shots.
+
+Inventory (dev `thirdperson usables`/`lookat`/`use`, harness: stand 80-150 units away at floor height, put the
+crosshair (3P) or the eyes (1P) on the item, read `PotentialUsableComponent`); "3P vanilla" = `thirdperson itemfix 0`:
+
+| Interactable | 1P | 3P vanilla | 3P fixed |
+|---|---|---|---|
+| Weapon/item pickups, camp range (38 kinds: AR, SMG, SG, HG, LMG, sniper, melee, grenades, bandage, medkit, pills, attachment) | 38/38 | 0/38 (blue outline only) | 38/38 (the same one: two overlapping Molotovs pick the neighbour in both views) |
+| Mission pickups: weapons, heavy/light ammo, food, Morbid collectible, card shrine (WildCard, Legendary) | all | none | all |
+| Vendors (Brynn, Dusty, Garner, Phillips = war table "open campaign menu", character select, leaderboard) | ok | ok | ok |
+| Saferoom vendor (UsableComponent "press F to shop"), saferoom exit door (DoorUsable) | ok | ok | ok |
+| Revive a downed hero (IncapUsable, "hold F to revive") | ok | ok | ok |
+
+- Screenshots: camp M4 `F PICK UP M4 CARBINE` tooltip only with the fix; mission card shrine: blue outline, no prompt
+  → `F PICK UP` + the card (`HEADS, YOU LOSE`); client in the saferoom aiming at an M4: vanilla 3P shows `PRESS F TO
+  SHOP` (the vendor behind it wins), fixed shows the M4 tooltip; client at a WildCard shrine: `HOLD TO BUY 500 / LIFE
+  INSURANCE`.
+- Using them in 3P (F via `cheatprobe press 0x46`): host picked up the M4 (slot 1 became the M4), bought a Legendary
+  card (`LogUse: CardShrine_Legendary... EndUse Reason=SuccessfulUse`, shrine disabled after). **Client** (`multi.sh
+  2`, host `tp 1` next to the item, client aims): picked up an AR (host log `AR01_1_Pickup... BeginUse / EndUse
+  Reason=SuccessfulUse`, gone on the client) and bought a WildCard card (1 s hold, host `SuccessfulUse`). The host
+  accepts: the server's CanUse skips the observation for a remote user, so no protocol change.
+- Not tried / not reproducible here: ledge-hang pick-up, supply crates (same base UsableComponent CanUse as the vendor
+  and jukebox, no observer), holding F to revive in 3P (bots revived first; SetHealth 0 stopped incapping after one
+  use), healing a teammate with a bandage (weapon-slot key and left mouse don't reach the headless instances), mission
+  objectives (none on Evansburgh B). `/freeze` makes the host's `tp` of a client hero not reach the client.
+- `e2e.py --quick` 13/13 (lane 2) with the fix.

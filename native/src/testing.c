@@ -531,7 +531,60 @@ static void cmd_duffelreward(char *rest, Out *o) {
     out_printf(o, "duffelreward: issued %s (delta %d) to slot %s\n", b, c ? atoi(c) : 1, a);
 }
 
+// ---- fnprobe: count what a native function returns (dev investigations, #27) ----
+// fnprobe <va> [label]   hook the function at static VA <va> with a pass-through detour (up to 8 integer/pointer
+//                        arguments; float arguments in xmm registers are not supported), count calls and the low
+//                        byte of the return value, and keep the last call's arguments and return
+// fnprobe                the counters; `fnprobe reset` zeroes them; `fnprobe off` disables every probe (the same
+//                        <va> again re-enables it)
+#include <windows.h>
+#include "MinHook.h"
+typedef uint64_t (*Fn8)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+#define FNP_N 8
+static struct { void *at; Fn8 orig; char label[24]; unsigned calls, ret1, ret0; uint64_t last_a[8], last_r; } fnp[FNP_N];
+static int n_fnp;
+static uint64_t fnp_run(int i, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f, uint64_t g, uint64_t h) {
+    uint64_t r = fnp[i].orig(a, b, c, d, e, f, g, h);
+    fnp[i].calls++;
+    if (r & 0xff) fnp[i].ret1++; else fnp[i].ret0++;
+    uint64_t v[8] = {a, b, c, d, e, f, g, h};
+    memcpy(fnp[i].last_a, v, sizeof v);
+    fnp[i].last_r = r;
+    return r;
+}
+#define FNP_DET(i) static uint64_t fnp_det##i(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f, \
+    uint64_t g, uint64_t h) { return fnp_run(i, a, b, c, d, e, f, g, h); }
+FNP_DET(0) FNP_DET(1) FNP_DET(2) FNP_DET(3) FNP_DET(4) FNP_DET(5) FNP_DET(6) FNP_DET(7)
+static void *const FNP_DETS[FNP_N] = {fnp_det0, fnp_det1, fnp_det2, fnp_det3, fnp_det4, fnp_det5, fnp_det6, fnp_det7};
+static void cmd_fnprobe(char *rest, Out *o) {
+    char *a = rest ? strtok(rest, " ") : NULL, *lab = a ? strtok(NULL, " ") : NULL;
+    if (a && !strcmp(a, "reset")) { for (int i = 0; i < n_fnp; i++) fnp[i].calls = fnp[i].ret0 = fnp[i].ret1 = 0; }
+    else if (a && !strcmp(a, "off")) { for (int i = 0; i < n_fnp; i++) MH_DisableHook(fnp[i].at); }
+    else if (a) {
+        void *at = (void *)(uintptr_t)VA(strtoull(a, NULL, 16));
+        int k = n_fnp, again = 0;
+        for (int i = 0; i < n_fnp; i++) if (fnp[i].at == at) { MH_EnableHook(at); again = 1; }   // after `fnprobe off`
+        if (!again && n_fnp >= FNP_N) { out_printf(o, "fnprobe: all %d slots used\n", FNP_N); return; }
+        if (again) goto show;
+        memset(&fnp[k], 0, sizeof fnp[k]);
+        fnp[k].at = at;
+        snprintf(fnp[k].label, sizeof fnp[k].label, "%s", lab ? lab : a);
+        MH_STATUS st = MH_CreateHook(at, FNP_DETS[k], (void **)&fnp[k].orig);
+        if (st != MH_OK || MH_EnableHook(at) != MH_OK) { out_printf(o, "fnprobe: hook failed (%d)\n", st); return; }
+        n_fnp++;
+    }
+show:
+    for (int i = 0; i < n_fnp; i++)
+        out_printf(o, "%-12s 0x%llx calls %u ret!=0 %u ret0 %u last r 0x%llx args %llx %llx %llx %llx %llx %llx\n", fnp[i].label,
+                   (unsigned long long)((uintptr_t)fnp[i].at - g_base_delta), fnp[i].calls, fnp[i].ret1, fnp[i].ret0,
+                   (unsigned long long)fnp[i].last_r, (unsigned long long)fnp[i].last_a[0], (unsigned long long)fnp[i].last_a[1],
+                   (unsigned long long)fnp[i].last_a[2], (unsigned long long)fnp[i].last_a[3], (unsigned long long)fnp[i].last_a[4],
+                   (unsigned long long)fnp[i].last_a[5]);
+    out_printf(o, "%d probe(s)\n", n_fnp);
+}
+
 int testing_cmd(const char *verb, char *rest, Out *o) {
+    if (!strcmp(verb, "fnprobe")) { cmd_fnprobe(rest, o); return 1; }
     if (!strcmp(verb, "stp")) { cmd_stp(rest, o); return 1; }
     if (!strcmp(verb, "items")) { nth_pickup(-1, rest && *rest ? rest : NULL, o); return 1; }
     if (!strcmp(verb, "giveitem")) { cmd_giveitem(rest, o); return 1; }
