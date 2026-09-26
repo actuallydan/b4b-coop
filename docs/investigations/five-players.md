@@ -49,7 +49,8 @@ live results (2026-09-24): 5 humans play a mission with `teamsize=5`.**
   `ApproveLogin` instruction at `0x143CC0643`, which is checked by a signature. The +2 is headroom for a stale
   connection during the follow/rejoin retry.
 - Client side: once a second, if the replicated hero team has more slots than the local (non-replicated)
-  `Config.TeamSize`, the tick raises the local value so that `GetTeamSizeData` UI agrees.
+  `Config.TeamSize`, the tick raises the local value so that `GetTeamSizeData` UI agrees. Runs on every machine,
+  whatever its own `teamsize` (until #24 it only ran with `teamsize` set locally; §7).
 - Opt-in: `teamsize=5` in `b4bcoop.ini`, or the agent command `teamsize 5`. It applies from the next map load. The default
   is 0, which leaves the game alone. Solo play is unchanged unless enabled; with it on, solo gets 4 bots.
 - Commands: `teamsize [N]` (query/set, 0–8), and `slots`, which dumps the slot layout:
@@ -207,3 +208,43 @@ no name plate (the plate widget has 4 columns). Widening the FOV or re-spacing a
 so it was not done. The character-select (type 1) and pre-round (type 2) layouts get the same extra mannequin, so a
 5th player sees their own hero on character select; that path was not looked at separately. 6+ heroes would stack
 further back (untested).
+
+## 7. Clients without `teamsize` (issue #24)
+
+Question: does a client show 5 survivors when only the host sets `teamsize=5`? Test (2026-09-25, lane 2, 4090
+headless): `B4B_INI_EXTRA1="teamsize=5" launch/multi.sh 5`, Fort Hope, `mission Easy`, `ready`, `endmission 1`,
+seamless travel to `Evansburgh_C`; presented-frame screenshots of every instance.
+
+**Verdict: nothing a player sees depended on the client's `teamsize`.** Everything in the offline session counts the
+replicated `TeamSlots`, not `Config.TeamSize`:
+
+| What (clients with no `teamsize`) | Result |
+|---|---|
+| `slots` | 5 replicated slots; `Config TeamSize=4` (before the fix below) |
+| HUD party panel, Fort Hope and mission | 4 teammates + self on all 5 instances |
+| Post-round lineup (lineup.c) | every client logs `lineup: 5 hero slots, 4 mannequins: spawned …` (character select and post-round) and `layout 3, placed 1 hero(es) beyond 4 target points`; host frame shows the 5th hero in the back row |
+| Rewards | `rewards: forwarding AdjustSupplyPoints (63)` ×4, 63 SP on every post-round screen |
+| Chapter transition | all 5 in `Evansburgh_C`, same heroes/slots, `reserved=1` |
+| World name plates over teammates | shown |
+
+**`GetTeamSizeData` callers** (the only reader of `Config.TeamSize` besides InitSlots; the 6 calls of `0x141D61AF0`):
+`UFTUETutorialScreen::OnCategoryPlayersChanged` (`0x141D08230`), `UMatchmakingScreen` (`0x141D16F40`), a quickplay
+check that shows `TEXT_Matchmaking_Error_QuickplayFull` (`0x141D1CD20`), `UPartyScreen::OnTeamSizeChanged`
+(`0x141D21F77`), `UMatchmakingPartyPromptUserWidget` (`0x141DF6BA0`), and a party team-size cache that broadcasts a
+delegate when it changes (`0x141B2B62D`). All online party / matchmaking UI, unused offline. The client sync now runs
+regardless of the local `teamsize` anyway (log `teamsize: hero team has 5 slots, local Config.TeamSize 4 -> 5`,
+client `slots` then `Config TeamSize=5`), so the doc statement holds.
+
+**Character-select list (all machines, host included, not #24):** the player list at the left of the mission-start
+character select has 4 rows (hero-team slots 0-3); the player in slot 4 is not listed, also not on its own screen.
+It is a Blueprint widget (`CharacterSelectScreen`) like the lineup name plates; the 5th player still gets a hero
+and their mannequin (lineup.c, layout 1). Cosmetic, left alone.
+
+**Reverse** (`B4B_INI_EXTRA2/3="teamsize=5" launch/multi.sh 3`, host without): 4 slots everywhere (2 humans + a
+bot on the host's side, clients' `Config TeamSize=4`, `net.MaxPlayersOverride=7` locally, unused on a client), HUD 3
+teammates + self, post-round 4 heroes and no lineup spawn, SP forwarded, no errors.
+
+**Not checked:** pings on the 5th hero specifically (ping markers are per-player replicated actors, not sized by
+team); a 5th hero's outline through walls (not visible from the safe room shots). One instance hit `LogRendererCore
+Fatal: GameThread timed out waiting for RenderThread after 120.00 secs` while loading Fort Hope during the 5-instance
+start (headless gamescope on one GPU); relaunched with `launch/instance.sh 3`, it rejoined and took slot 3.
