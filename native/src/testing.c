@@ -643,12 +643,18 @@ static void cmd_face(char *rest, Out *o) {
                                 "eyeball_l", "eyebrow_l", NULL};
     char *a = rest ? strtok(rest, " ") : NULL;
     char nm[160], b[300];
-    if (!a) {
+    if (!a) {   // #i actor mesh=<path> at=(x y z) [(you)]: position and the local pawn, to pair heroes across machines
+        UObject *pc = ue_local_pc(), *me = pc ? ue_get_ptr(pc, "Pawn") : NULL;
         for (int i = 0; ; i++) {
             UObject *h = face_hero(i);
             if (!h) break;
             UObject *m = ue_get_ptr(h, "Mesh"), *sk = m ? ue_get_ptr(m, "SkeletalMesh") : NULL;
-            out_printf(o, "#%d %s mesh=%s\n", i, ue_obj_name(h, nm, sizeof nm), sk ? ue_full_path(sk, b, sizeof b) : "-");
+            static uint8_t p[64];
+            float at[3] = {0, 0, 0};
+            UFunction *gl = ue_find_function(U_CLASS(h), "K2_GetActorLocation");
+            if (gl) { memset(p, 0, sizeof p); ue_process_event(h, gl, p); memcpy(at, p + param_off(gl, "ReturnValue"), 12); }
+            out_printf(o, "#%d %s mesh=%s at=(%.0f %.0f %.0f)%s\n", i, ue_obj_name(h, nm, sizeof nm),
+                       sk ? ue_full_path(sk, b, sizeof b) : "-", at[0], at[1], at[2], h == me ? " (you)" : "");
         }
         return;
     }
