@@ -735,3 +735,47 @@ Open: only Holly Elite 00 tested (other cloth templates should work: same writer
 template without a clothing asset can't get cloth (adding the exports/imports needs a package writer that adds
 exports); the sim ring closes coats/open-front dresses; long hair can dip into the back when the chain swings
 (`--hair-swing`); both flags are opt-in.
+
+## 15. Models from game rips (models-undertaker, 2026-09-26)
+Test: a rigged FBX ripped from another game (two outfits, a Mixamo re-rig), local only. What such files look like and
+what the survivor pipeline now does (all generic, `modkit/`):
+- Materials `Material #25` ...; the FBX image nodes point at `<name>.fbm/head.png` (or DDS next to the FBX): textures
+  came through the image nodes already; auto slots read the image names (hair/eye/head). Names that say nothing
+  (`all_color` = arms/hands/torso skin) need `--slot`.
+- Objects without a material (teeth/tongue/mouth using the body image): labelled `none` (inspect, probe, fit);
+  default dropped with a printed hint; `--slot none=<slot>`, `--tex none=<prefix>` (inspect takes `--tex` too).
+  Before: silently put on the first slot -> `--atlas ... doesn't list it`.
+- DDS BC1/BC5 (DXT1/DXT5) load in Blender 5.1 as they are (same orientation as the PNG exports); `png_size` reads
+  the DDS header. Companion maps by name (`head` -> `head_n.dds`, `head_ao.dds`; `all_color` -> `all_n`, `all_ao`).
+  Normal maps: RGB (mean B ~1) as is, two-channel/DXT5nm with Z rebuilt, anything else (a hair `_n` with mean B
+  0.50) left out. Checked the rip's green channel on the lips (upper lip underside G 0.405, lower lip top 0.564):
+  OpenGL style, so no `--normal-dx`. Hair opacity lived in `hair_n.dds` alpha (colour DXT1 opaque): used for
+  materials whose names say hair.
+- UVs: every face of the rip at v -1..0 (the old atlas clamp flattened them all). Islands (union of faces sharing a
+  vertex with the same UV) moved by whole tiles; per-face moves for islands still outside; tiling islands get
+  `repeat` [nx, ny] (max 4) in the tile, the FP run takes the 3P run's repeats (`tiles.json` / `tiles_fp.json`);
+  remaining faces squeezed (logged). Same image -> one tile (sha1 of the file: `head.dds` = `head_f.dds`).
+- Normals: custom split normals opposite to the winding on 21 of 22 objects (faces outward by the centre test):
+  rendered black in previews (and would in game); negated (`normals_split_custom_set`). The merged second outfit
+  (one object) was fine.
+- Unit scale: FBX armature scale 0.0254 on centimetre data (head joint 421 cm): only a message now (the fit scales
+  uniformly anyway).
+- Face rig: a hat brim and coat collar with head weights were taken as skin (generic material names) and the head's
+  bounds included the neck -> lips found at the chin. Now: labels = material + colour image names, clothes/hats
+  skipped (fallback if nothing is left), seeds from the eyes when the bounds-scaled eyes miss the found ones by
+  > 2 cm, the middle profile sampled on the faces (a coarse mesh left 3-bin holes 7 cm deep), and the lip line
+  walked down from the subnasale (upper lip bulge, crease, lower lip) when the nose stands out > 8 mm; the deepest
+  dent alone was the lower lip / chin fold. Regression (3P fit, old vs new, 8 corpus models): VRMs unchanged
+  (shape-key mouths), bulky/rigify better (lip 0.2 vs -3.8 cm, eyes found), monster lips no longer behind the face.
+- `preview.py`: colour textures whose alpha is a mask for the game's shader rendered black (Cycles premultiplies
+  an unlinked alpha): alpha mode channel-packed.
+
+Live (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host + client 2 with both add-ons via `addons_dir=`, client 3
+`addons=0`; Walker Elite 00 template, `--as`, own proportions; add-ons 145 / 97 MB at 4096): Fort Hope and
+Evansburgh B, both outfits seen by the other player (face close-ups, full body idle), client 3 sees the survivors'
+base pieces; host FP (gloved hands, SMG) and client FP (coat sleeve, bat); the host's 3P aiming a pistol seen by the
+client; a bot in the outfit (`/model 4 <name>`) holding a rifle and running (`face walk`). Talking: the jaw bone moves
+during a voice line (up to 1.1 deg measured on one line; under the hat brim nothing visible). No Fatal/skeletal-mesh
+errors. `e2e.py --quick --no-lock`: 14/14. Screenshots stay local (`~/.local/share/b4b-coop/characters/`).
+Open: the coat has no cloth (open front: `--cloth` would close it); auto slots can't know that an unnamed image is
+skin.

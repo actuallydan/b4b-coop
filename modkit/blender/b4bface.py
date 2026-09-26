@@ -166,9 +166,11 @@ def material_label(x):
     the texture names still say hair, eye, head ...)."""
     if x is None: return ""
     n = re.sub(r"\.\d{3}$", "", x.name)
-    if x.node_tree:
+    if x.node_tree:                  # colour images only (a "MaskMap" or normal map says nothing about the part)
         imgs = {os.path.basename(nd.image.filepath or nd.image.name) for nd in x.node_tree.nodes
-                if nd.type == "TEX_IMAGE" and nd.image is not None}
+                if nd.type == "TEX_IMAGE" and nd.image is not None and nd.image.colorspace_settings.name != "Non-Color"
+                and not re.search(r"normal|_n\.|_nrm|mask|rough|metal|_ao|occlusion|_orm|spec|gloss|height|bump",
+                                  nd.image.filepath or nd.image.name, re.I)}
         if imgs: n += " " + " ".join(sorted(imgs))
     return n
 
