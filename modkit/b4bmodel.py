@@ -12,7 +12,8 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
                              no eyes were found
         <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
         (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
-        Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
+        Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed): by
+        name, else by their texels (skin colours, see-through cards) and where they sit on the body (a quick fit).
         [--proportions own|fit|0..1]   own (default): the model keeps its own limb/torso/neck lengths in third
                                 person (the mesh's skeleton gets its joints; the game retargets the animations);
                                 fit: stretched onto the survivor's joints; a number blends. FP arms always fit
@@ -35,7 +36,7 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
   common: --src <extract folder> (where the game's files were extracted: b4bmod extract ...), --work <dir>,
           --normal-dx (the model's normal maps are DirectX style; default: OpenGL/glTF style, green flipped),
           --quality fast|balanced|best (texture encoder), --max-texture 4096|2048|1024 (largest texture made;
-          2048 makes the add-on about 4x smaller), --keep-work
+          default: as big as the model's images, at most the retail texture's size), --keep-work
 
 <SKM>/<SM> = a game path (/Game/.../3P_Mom_Elite_04_SKM) or a .uasset file. What it does:
   1. exports the template meshes to glTF (skmgltf.py export),
@@ -113,9 +114,17 @@ def blender():
     return os.environ.get("B4B_BLENDER") or shutil.which("blender") or die("Blender not found: set B4B_BLENDER")
 
 
+def blender_env():
+    """Blender's Python with a fixed string hash seed (same model -> byte-identical add-on: set and dict orders
+    otherwise change per run); the user's other PYTHON* variables are left out (--python-use-system-env reads them)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    env["PYTHONHASHSEED"] = "0"
+    return env
+
+
 def run_blender(args):
-    cmd = [blender(), "-b", "--factory-startup", "--python", FIT, "--"] + args
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    cmd = [blender(), "-b", "--factory-startup", "--python-use-system-env", "--python", FIT, "--"] + args
+    r = subprocess.run(cmd, capture_output=True, text=True, env=blender_env())
     for line in r.stdout.splitlines():
         if line.startswith("b4bfit:") or "Error" in line or "Traceback" in line: print("  " + line)
     if r.returncode or "Traceback" in r.stdout + r.stderr:
@@ -234,8 +243,11 @@ class TexTool:
         self.done = set()
         self.hair_mis = []
         self.kind = o.get("kind")
-        self.max_tex = int(o.get("max_texture", 4096))
-        if self.max_tex not in (512, 1024, 2048, 4096): die("--max-texture: 512, 1024, 2048 or 4096")
+        # textures are never bigger than the model's images need, nor than the retail texture they replace;
+        # --max-texture N caps them at N instead (up to 4096, also above the retail size)
+        self.max_tex = int(o["max_texture"]) if o.get("max_texture") else None
+        if self.max_tex not in (None, 512, 1024, 2048, 4096): die("--max-texture: 512, 1024, 2048 or 4096")
+        self.dims = {}
         self.preview = {}                # texture set -> base colour PNG (preview_textures_*.json)
         self.mi_sets = []                # (MI, texture parameter, new texture) for textures that were shared
         self.adopted = {}                # shared MI package -> its copy in the template's folder
@@ -243,6 +255,21 @@ class TexTool:
         self.hair_mode = o.get("hair", "texture")
         if self.hair_mode not in HAIR_MODES: die(f"--hair: {' or '.join(HAIR_MODES)}")
         self.mi_scalars = []             # (MI, {scalar: value}) set after the textures
+
+    def cap_of(self, tex, cap=None):
+        """Largest side a texture we write for retail texture `tex` may have: --max-texture if given, else the retail
+        texture's own size (at most `cap`)."""
+        if self.max_tex: return self.max_tex
+        if tex and tex not in self.dims:
+            self.dims[tex] = None
+            f = upkg.game_path_to_file(tex.split(".")[0], self.src)
+            if f and os.path.exists(f):
+                r = subprocess.run([sys.executable, self.b4bmod, "info", f, "--src", self.src], capture_output=True,
+                                   text=True)
+                m = re.search(r"\bPF_\w+ (\d+)x(\d+)", r.stdout)
+                if m: self.dims[tex] = max(int(m.group(1)), int(m.group(2)))
+        n = self.dims.get(tex) or TEX_CAP
+        return min(n, cap) if cap else n
 
     def retail_png(self, tex_file):
         png = os.path.join(self.work, "retail_" + os.path.basename(tex_file)[:-7] + ".png")
@@ -254,19 +281,12 @@ class TexTool:
         return png if os.path.exists(png) else None
 
     def compose_set(self, set_info, params, owned, master=None, mi=None, set_name=None):
-        """params: {param name: texture path} of the slot's MI chain. set_info: manifest set (grid, tiles)."""
+        """params: {param name: texture path} of the slot's MI chain. set_info: manifest set (tiles with atlas rects)."""
         tiles = set_info["tiles"]
         hair = bool(master and HAIR_MASTER_RX.search(master))
-        g = set_info.get("grid", 1)
-        base = 1024
-        for t in tiles:
-            for k in ("basecolor", "normal"):
-                p = t["textures"].get(k)
-                if p and os.path.exists(p): base = max(base, png_size(p))
-        size = min(self.max_tex, 1 << math.ceil(math.log2(max(256, base * g))))
-        hair_size = min(size, 2048)                  # the strand mask needs less (retail hero hair masks: 2048 or less)
         if hair and self.hair_mode == "texture" and mi:
-            self.hair_texture_set(tiles, mi, owned, size, set_name)
+            # the hair's colour textures replace the game's hair shader: at most HAIR_CAP (2048)
+            self.hair_texture_set(tiles, mi, owned, self.max_tex or HAIR_CAP, set_name, set_info.get("canvas"))
             return
         for param, tex in params.items():
             if tex in self.done: continue
@@ -289,8 +309,10 @@ class TexTool:
                 self.mi_sets.append((mi, param, path))
                 log(f"  {param} of {mi.split('.')[-1]}: {tex.split('.')[0]} is shared with other outfits; yours goes to {path}")
             out = os.path.join(self.work, os.path.basename(f)[:-7] + ".png")
-            self.jobs.append({"out": out, "size": hair_size if role == "hairmm" else
-                              size if role in ("basecolor", "normal", "pbr") else 256,
+            cap = self.cap_of(tex, HAIR_CAP if role == "hairmm" else None)
+            canvas = set_info.get("canvas")
+            size = set_size(tiles, ROLE_KEYS[role], cap, canvas) if role in ROLE_KEYS else const_size(tiles, cap, canvas)
+            self.jobs.append({"out": out, "size": size,
                               "role": role, "tiles": tiles, "mean_from": self.retail_png(f),
                               "normal_dx": self.normal_dx, "asset": asset, "path": path, "kind": self.kind})
             self.done.add(tex)
@@ -301,7 +323,7 @@ class TexTool:
                 if mi and mi.startswith(owned): self.hair_mis.append((mi, out + ".json"))
                 else: log(f"  hair: {mi} is shared with other outfits: its colours stay the game's")
 
-    def hair_texture_set(self, tiles, mi, owned, size, set_name):
+    def hair_texture_set(self, tiles, mi, owned, cap, set_name, canvas=None):
         """--hair texture: a copy of HAIR_TEX_MI in the template's folder with our colour (RGB + alpha), normal and PBR
         textures; the meshes' hair slot is pointed at it (the template's hair MI stays as it is, unused by our meshes)."""
         base = re.sub(r"_?MI$", "", mi.split(".")[0].split("/")[-1])
@@ -310,16 +332,13 @@ class TexTool:
         self.done.add(new_mi)
         self.b4b("info", HAIR_TEX_MI, *[t for _, t in HAIR_TEX_TEXTURES.values()], what="extracting the hair material")
         refs = []
-        has = {k for t in tiles for k in t.get("textures", {})}
         for param, (role, tex) in HAIR_TEX_TEXTURES.items():
             path = owned + "Textures/" + base + "Color_" + tex.rsplit("_", 2)[-2] + "_T"
             asset = self.copy_pkg(tex, path)
             refs.append(f"{tex}={path}")
             out = os.path.join(self.work, path.split("/")[-1] + ".png")
-            # colour at full size; normal / PBR maps only as big as needed (anime hair has none: flat, constant)
-            n = size if role == "hairbc" else \
-                size if role == "normal" and "normal" in has else \
-                min(size, 2048) if role == "pbr" and has & {"roughness", "orm", "mask", "gloss", "ao", "metallic"} else 256
+            # each map only as big as the model's own images need (anime hair has no normal/PBR maps: flat, constant)
+            n = set_size(tiles, ROLE_KEYS[role], cap, canvas)
             self.jobs.append({"out": out, "size": n, "role": role, "tiles": tiles,
                               "mean_from": self.retail_png(upkg.game_path_to_file(tex, self.src)),
                               "normal_dx": self.normal_dx, "asset": asset, "path": path, "kind": self.kind})
@@ -388,7 +407,7 @@ class TexTool:
                                 "--quality", self.quality, "--src", self.src], capture_output=True, text=True)
             if r.returncode:
                 sys.stderr.write(r.stdout + r.stderr); die(f"texture encoding failed for {j['path']}")
-            log(f"  {j['path'].split('/')[-1].split('.')[0]}: {j['role']} {j['size']}x{j['size']}")
+            log(f"  {j['path'].split('/')[-1].split('.')[0]}: {j['role']} {j['size'][0]}x{j['size'][1]}")
         self.jobs = []
         for mi, param, path in self.mi_sets:
             self.b4b("mi", self.mi_ref(mi), "set", param, path, "-o", self.moddir, what=f"material {mi}: {param}")
@@ -425,16 +444,196 @@ def file_hash(p):
     return _HASHES[p]
 
 
-def png_size(p):
-    """Largest side of an image without an image library (PNG IHDR, DDS header; others: assume 2048)."""
+def image_dims(p):
+    """(width, height) of an image file from its header (PNG, DDS, JPEG, TGA, BMP), None if unknown."""
     import struct
-    with open(p, "rb") as f:
-        h = f.read(24)
-    if h[:8] == b"\x89PNG\r\n\x1a\n":
-        return max(struct.unpack(">II", h[16:24]))
-    if h[:4] == b"DDS ":
-        return max(struct.unpack("<II", h[12:20]))          # height, width
-    return 2048
+    try:
+        with open(p, "rb") as f:
+            h = f.read(32)
+            if h[:8] == b"\x89PNG\r\n\x1a\n":
+                return struct.unpack(">II", h[16:24])
+            if h[:4] == b"DDS ":
+                hh, ww = struct.unpack("<II", h[12:20])
+                return ww, hh
+            if h[:2] == b"BM":
+                w, hh = struct.unpack("<ii", h[18:26])
+                return abs(w), abs(hh)
+            if h[:2] == b"\xff\xd8":                        # JPEG: the first start-of-frame marker
+                f.seek(2)
+                while True:
+                    m = f.read(4)
+                    if len(m) < 4 or m[0] != 0xFF: return None
+                    n = struct.unpack(">H", m[2:4])[0]
+                    if m[1] in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                        hh, w = struct.unpack(">xHH", f.read(5))
+                        return w, hh
+                    f.seek(n - 2, 1)
+            if p.lower().endswith(".tga") and len(h) >= 16:
+                return struct.unpack("<HH", h[12:16])
+    except (OSError, struct.error):
+        return None
+    return None
+
+
+def png_size(p):
+    """Largest side of an image (2048 when its header can't be read)."""
+    d = image_dims(p)
+    return max(d) if d else 2048
+
+
+def pow2(n):
+    return 1 << max(0, math.ceil(math.log2(max(1.0, n)) - 1e-9))
+
+
+# which of a tile's images decide the size of a texture set's image of each role
+ROLE_KEYS = {"basecolor": ("basecolor",), "hairbc": ("basecolor", "alpha"), "hairmm": ("alpha", "basecolor"),
+             "normal": ("normal",), "pbr": ("roughness", "metallic", "ao", "orm", "mask", "gloss")}
+LAYOUT_KEYS = ("basecolor", "normal", "roughness", "metallic", "ao", "orm", "mask", "gloss", "alpha")
+TEX_CAP = 4096          # the largest texture made when the retail one's size is unknown
+HAIR_CAP = 2048         # hair: its colour texture (--hair texture) or mask (--hair tint, at most the survivor's own)
+CONST_TEX = 256         # a texture without any image of the model behind it (flat normal, constant PBR): its long side
+CONST_TILE = 32         # an atlas tile without an image (one colour): 32 x 32 texels
+
+
+def tile_need(tx, keys):
+    """(w, h) the images of a tile need (the largest of `keys`), None without images."""
+    best = None
+    for k in keys:
+        p = tx.get(k)
+        d = image_dims(p) if p and os.path.exists(p) else None
+        if d is None and p and os.path.exists(p): d = (2048, 2048)
+        if d: best = (max(best[0], d[0]), max(best[1], d[1])) if best else d
+    return best
+
+
+MIN_SCALE = 0.85        # an atlas may draw its tiles down to 85 % of their images' size before it takes a bigger canvas
+
+
+def set_size(tiles, keys, cap, canvas=None):
+    """(w, h) of a texture set's image for one role (`keys`: the tile images that count). Starts from the atlas canvas
+    (b4bmodel's layout; else what the tiles' images need at their rects) and halves it while every tile's image of this
+    role still keeps its resolution (a 4096 normal map on a 2048 colour tile keeps the colour's size, a model without
+    normal maps gets a small flat one); at most `cap` on the long side. No image at all for this role: CONST_TEX."""
+    needs = [(tile_need(t.get("textures", {}), keys), t["rect"]) for t in tiles]
+    needs = [(d, r) for d, r in needs if d]
+    if not needs: return const_size(tiles, cap, canvas)
+    if canvas:
+        W, H = canvas
+    else:
+        W = pow2(max(d[0] / r[2] for d, r in needs) * 0.999)
+        H = pow2(max(d[1] / r[3] for d, r in needs) * 0.999)
+    while max(W, H) > cap: W, H = max(4, W // 2), max(4, H // 2)
+    while min(W, H) > 4 and all(d[0] * MIN_SCALE <= r[2] * W / 2 and d[1] * MIN_SCALE <= r[3] * H / 2 for d, r in needs):
+        W, H = W // 2, H // 2
+    return [W, H]
+
+
+def const_size(tiles, cap, canvas=None):
+    """A texture of constants (per tile): CONST_TEX on the long side, the atlas' aspect."""
+    W, H = canvas or ((set_size(tiles, LAYOUT_KEYS, 1 << 30)) if any(tile_need(t.get("textures", {}), LAYOUT_KEYS)
+                                                                   for t in tiles) else (1, 1))
+    n = min(CONST_TEX, cap)
+    return [max(4, n * W // max(W, H)), max(4, n * H // max(W, H))]
+
+
+def pack_tiles(needs, cap, density=None):
+    """Atlas layout: {material: (w, h) its images need} -> ((W, H) power-of-two canvas, {material: [x, y, w, h] in
+    0..1}). Tiles keep their images' resolution: the smallest canvas (square or 2:1, at most `cap`) that holds them all
+    drawn at >= MIN_SCALE of their size (packed tallest first, guillotine). When even `cap` is too small, tiles are
+    halved one at a time until they fit: the one with the most texels per area of the model it covers first (density:
+    {material: texels per m² at full size}, faces weighted down), else the largest; equal tiles are scaled together.
+    Deterministic (ties: the material order given)."""
+    order = {m: i for i, m in enumerate(needs)}
+    cur = {}
+    for m, (w, h) in needs.items():
+        while max(w, h) > cap: w, h = max(4, w // 2), max(4, h // 2)
+        cur[m] = (w, h)
+    cands = []
+    n = 4
+    while n <= cap:
+        for W, H in ((n, n), (n, n // 2), (n // 2, n)):
+            if H >= 4 and W >= 4 and (W * H, W < H, W, H) not in cands: cands.append((W * H, W < H, W, H))
+        n *= 2
+    cands.sort()
+
+    def fit(cur, cands=cands):
+        """(lo, ((W, H), rects)) of the smallest canvas holding `cur` at >= MIN_SCALE, else of the best scale."""
+        items = sorted(cur.items(), key=lambda kv: (-kv[1][1], -kv[1][0], order[kv[0]]))
+        area = sum(w * h for _, (w, h) in items)
+        best = None
+        for _, _, W, H in cands:
+            if W * H < area * MIN_SCALE ** 2 and max(W, H) < cap: continue
+            lo, hi, pos = 0.0, 1.0, None
+            for it in range(14):                    # the largest scale (<= 1) at which the tiles fit this canvas
+                sc = hi if it == 0 else (lo + hi) / 2
+                p = _guillotine([(m, _scaled(w, sc), _scaled(h, sc)) for m, (w, h) in items], W, H)
+                if p: lo, pos = sc, p
+                else: hi = sc
+                if it == 0 and p: break
+            if pos is None: continue
+            res = (lo, ((W, H), {m: [pos[m][0] / W, pos[m][1] / H, _scaled(cur[m][0], lo) / W,
+                                     _scaled(cur[m][1], lo) / H] for m in needs}))
+            if lo >= MIN_SCALE: return res
+            if best is None or lo > best[0]: best = res
+        return best
+
+    key = (lambda m, c: density[m] * c[0] * c[1] / (needs[m][0] * needs[m][1])) if density else \
+        (lambda m, c: c[0] * c[1])
+    halved = []
+    while True:
+        got = fit(cur)
+        if got and got[0] >= MIN_SCALE: break
+        top = max(key(m, cur[m]) for m in cur)
+        big = [m for m in cur if abs(key(m, cur[m]) - top) <= 1e-9 * max(1.0, top) and max(cur[m]) > 4]
+        if len(big) != 1:                            # equals are scaled down together, never one before the other
+            if got is None: raise SystemExit("atlas: the tiles don't fit one texture")
+            return got[1]
+        w, h = cur[big[0]]
+        cur[big[0]] = (max(4, w // 2), max(4, h // 2))
+        if big[0] not in halved: halved.append(big[0])
+    # tiles halved on the way that fit again at their size (a face halved before the body that had to give way)
+    for m in sorted(halved, key=lambda m: (key(m, cur[m]), order[m])):
+        while cur[m][0] < min(needs[m][0], cap) or cur[m][1] < min(needs[m][1], cap):
+            trial = dict(cur); trial[m] = (cur[m][0] * 2, cur[m][1] * 2)
+            g = fit(trial)
+            if not g or g[0] < MIN_SCALE: break
+            cur, got = trial, g
+    return got[1]
+
+
+def _guillotine(items, W, H):
+    free, out = [(0, 0, W, H)], {}
+    for m, w, h in items:
+        fits = [f for f in free if f[2] >= w and f[3] >= h]
+        if not fits: return None
+        f = min(fits, key=lambda f: (f[2] * f[3], f[1], f[0]))
+        free.remove(f)
+        x, y, fw, fh = f
+        out[m] = (x, y)
+        if fw > w: free.append((x + w, y, fw - w, h))
+        if fh > h: free.append((x, y + h, fw, fh - h))
+    return out
+
+
+FACE_DENSITY = 4.0      # face/head tiles may keep up to 4x the texel density of the rest (retail heads: about 2x)
+
+
+def tile_density(ms, needs, minfo, regions):
+    """{material: texels per m² of the model it covers} for pack_tiles (None when an area is unknown): the image's texels
+    its UVs use / its surface on the fitted model; head materials count FACE_DENSITY times less (faces keep detail)."""
+    area, reg = regions.get("area", {}), regions.get("materials", {})
+    out = {}
+    for m in ms:
+        a = area.get(m)
+        if not a: return None
+        cover = minfo.get(m, {}).get("look", {}).get("cover") or 1.0
+        boost = FACE_DENSITY if reg.get(m, {}).get("head", 0.0) > 0.5 else 1.0
+        out[m] = needs[m][0] * needs[m][1] * cover / (a * boost)
+    return out
+
+
+def _scaled(n, sc):
+    return max(4, int(n * sc) // 4 * 4) if sc < 1 else n
 
 
 def textures_for(manifest, mesh_file, tt, static=False):
@@ -486,20 +685,75 @@ def slot_kind(name, master):
     return None
 
 
-def auto_slots(mats, minfo, s3, user):
+REGIONS = ("head", "torso", "arms", "hands", "legs", "feet")
+GEAR_SLOT_RX = re.compile(r"gear|acc", re.I)
+GEAR_WORDS = {"hat", "cap", "helmet", "hood", "glasses", "goggles", "mask", "backpack", "bag", "belt", "pouch", "holster",
+              "strap", "straps", "armor", "armour", "jewel", "jewelry", "necklace", "earring", "earrings", "bracelet",
+              "watch", "gear", "accessory", "accessories", "scarf", "badge"}
+
+
+def name_words(name):
+    """Words of an object name: TheHat -> {the, hat}, left_glove.001 -> {left, glove}."""
+    return {w.lower() for w in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", name)}
+SKIN_LOOK = 0.5               # share of a material's texels in skin colours that makes it skin (names saying nothing;
+                              # not on the feet: brown leather shoes look like skin)
+CARDS_CLEAR = 0.05            # alpha cards: at least this share of the texels a material draws is see-through
+
+
+def region_fit(a, b):
+    """How well two body-region shares match (histogram intersection, 0..1)."""
+    return sum(min(a.get(r, 0.0), b.get(r, 0.0)) for r in REGIONS)
+
+
+def auto_slots(mats, minfo, s3, user, regions=None):
     """{material: slot} for every kept material, and the dropped ones. --slot MAT=SLOT (or =drop) wins; the rest by
-    what the material looks like: alpha cards and hair names -> the hair slot (alpha kept, one colour), lashes/brows
-    -> the hair slot, eyes and skin -> the skin (head) slot, clothes -> the outfit's cloth slots by body zone.
-    Eye overlays (mostly transparent, e.g. VRM eye highlights) are dropped: an opaque slot would show them as cards."""
+    what the material is: its name and its images' names when they say it (hair, lashes, eyes, skin, trousers ...),
+    else what it looks like and where it sits on the body: alpha cards -> the hair slot; texels mostly in skin colours ->
+    a skin slot (the head's, or the body skin slot for skin away from the head); clothes -> the outfit's cloth slot that
+    covers the same part of the body (regions: b4bfit's probe on the fitted model and the template). An object named
+    like gear (TheHat, backpack) puts its only material on the gear slot. Eye overlays (mostly transparent, e.g. VRM eye
+    highlights) are dropped: an opaque slot would show them as cards."""
+    regions = regions or {}
+    mreg, sreg = regions.get("materials", {}), regions.get("slots", {})
     kinds = {}
+    cloth_bc = set()
     for sname, mi, tex, master in s3:
         k = slot_kind(sname, master)
-        if k: kinds.setdefault(k, []).append(sname)
+        if not k: continue
+        bc = basecolor_of(tex)
+        if k == "cloth" and bc:
+            if bc in cloth_bc: continue                 # a variant of another cloth slot (Holly's flannel1..3)
+            cloth_bc.add(bc)
+        kinds.setdefault(k, []).append(sname)
     skin = sorted(kinds.get("skin", []), key=lambda n: (0 if "head" in n.lower() else 1))
     cloth = sorted(kinds.get("cloth", []), key=lambda n: (0 if re.search(r"body|torso", n, re.I) else 1))
     hair = kinds.get("hair", [])
+    wear = [c for c in cloth if not GEAR_SLOT_RX.search(c)] or cloth       # garments; gear slots: gear by name/place
+    gear = [c for c in cloth if GEAR_SLOT_RX.search(c)]
     out, drop, why = {}, [], {}
+    by_look = set()                                  # placed by look / body region: may follow a shared image
     single = len(mats) == 1
+
+    def skin_slot(m):
+        r = mreg.get(m)
+        body = [x for x in skin if "head" not in x.lower()]
+        if r and body and r.get("head", 0.0) < 0.1:
+            return max(body, key=lambda x: (region_fit(r, sreg.get(x, {})), -body.index(x))), \
+                "skin away from the head: the body skin slot"
+        return skin[0], None
+
+    def cloth_slot(m, names_zone=None):
+        r = mreg.get(m)
+        if names_zone is not None:
+            hit = next((c for c in cloth if names_zone.search(c)), None)
+            if hit: return hit, "clothes"
+        if r:
+            if r.get("head", 0.0) > 0.5 and gear: return gear[0], "worn on the head: gear"
+            best = max(wear, key=lambda x: (round(region_fit(r, sreg.get(x, {})), 3), -wear.index(x)))
+            main = ", ".join(f"{k} {v:.0%}" for k, v in sorted(r.items(), key=lambda kv: -kv[1])[:2])
+            return best, f"clothes on the {main.split(' ')[0]} ({main}): the slot covering that"
+        return cloth[0], "clothes"
+
     for m in mats:
         if m in user or any(k.endswith("*") and m.lower().startswith(k[:-1].lower()) for k in user):
             v = user.get(m) or next(v for k, v in user.items() if k.endswith("*") and m.lower().startswith(k[:-1].lower()))
@@ -507,7 +761,8 @@ def auto_slots(mats, minfo, s3, user):
             else: out[m] = v; why[m] = "--slot"
             continue
         inf = minfo.get(m, {})
-        if m == NO_MATERIAL and not single:
+        look = inf.get("look", {})
+        if m == NO_MATERIAL and not single and not inf.get("textures", {}).get("basecolor"):
             objs = inf.get("objects", [])
             drop.append(m)
             why[m] = (f"objects without a material ({', '.join(objs[:4])}{' ...' if len(objs) > 4 else ''}); keep them "
@@ -515,8 +770,16 @@ def auto_slots(mats, minfo, s3, user):
             continue
         clear = inf.get("alpha_clear", 0.0)
         alpha = clear > 0.2 and (inf.get("blend", "OPAQUE") != "OPAQUE" or "alpha" in inf.get("textures", {}) or clear > 0.4)
+        if look and look.get("clear", 1.0) < CARDS_CLEAR:
+            alpha = False        # the image has see-through parts, but not where this material's faces draw (shoes)
         # the material's name and its texture file names (MakeHuman eyes: material "low-poly", texture brown_eye.png)
         n = m.lower() + " " + " ".join(os.path.basename(p).lower() for p in inf.get("textures", {}).values())
+        # an object with only this material named like gear (TheHat): its name says more than generic material names
+        objs = inf.get("own_objects", [])
+        if objs and cloth and all(GEAR_WORDS & name_words(x) for x in objs) and not MAT_HAIR_RX.search(m) and \
+                not MAT_SKIN_RX.search(m):
+            out[m] = (gear or cloth)[0]; why[m] = f"object {objs[0]} named like gear"
+            continue
         if MAT_OVERLAY_RX.search(n) or (MAT_HAIR_RX.search(n) and not MAT_EYE_RX.search(n)) or \
                 (alpha and not MAT_EYE_RX.search(n) and not MAT_SKIN_RX.search(n)):
             if hair: out[m] = hair[0]; why[m] = "hair / alpha cards" if not MAT_OVERLAY_RX.search(n) else "lashes / brows (alpha)"
@@ -530,17 +793,44 @@ def auto_slots(mats, minfo, s3, user):
                 out[m] = hair[0]; why[m] = "eye layer with alpha (e.g. iris): hair slot, masked, in the hair colour"
                 continue
             if skin: out[m] = skin[0]; why[m] = "eyes (opaque, on the skin slot)"; continue
-        if (MAT_SKIN_RX.search(n) or single) and skin and not re.search(r"cloth|suit|shirt|pant", n):
-            out[m] = skin[0]; why[m] = "skin" if not single else "the model's only material (skin shader)"
+        cloth_named = re.search(r"cloth|suit|shirt|pant", n)
+        named = any(rx.search(n) for rx in (MAT_SKIN_RX, MAT_CLOTH_ZONES[0][0], MAT_CLOTH_ZONES[1][0])) or cloth_named
+        r = mreg.get(m, {})
+        if skin and not cloth_named and (MAT_SKIN_RX.search(n) or single or
+                                         (not named and look.get("skin", 0.0) >= SKIN_LOOK and r.get("feet", 0) < 0.5)):
+            out[m], w = (skin[0], None) if single else skin_slot(m)
+            why[m] = "the model's only material (skin shader)" if single else w or (
+                "skin" if MAT_SKIN_RX.search(n) else f"skin colours ({look['skin']:.0%} of its texels)")
+            if not MAT_SKIN_RX.search(n) and not single: by_look.add(m)
             continue
         if not cloth:
             if skin: out[m] = skin[0]; why[m] = "no cloth slot in the template"; continue
             die(f"material {m!r}: {os.path.basename(s3[0][1])}'s slots have no cloth or skin material to put it on; "
                 f"--slot {m}=<slot>")
-        for rx_mat, rx_slot in MAT_CLOTH_ZONES:
+        for zi, (rx_mat, rx_slot) in enumerate(MAT_CLOTH_ZONES):
             if rx_mat.search(n):
-                hit = next((c for c in cloth if rx_slot.search(c)), cloth[0])
-                out[m] = hit; why[m] = "clothes"; break
+                out[m], why[m] = cloth_slot(m, rx_slot if zi < 2 else None)
+                if zi == 2 and not re.search(r"body|torso|top|upper|jacket|shirt", n): by_look.add(m)
+                break
+    # a material placed by its look that draws the same colour image as materials on one slot joins them there (one
+    # atlas tile instead of the image twice): game rips' teeth and tongue use the body skin's image
+    img_slot = {}
+    for m, sl in out.items():
+        bc = minfo.get(m, {}).get("textures", {}).get("basecolor")
+        if bc and m not in by_look: img_slot.setdefault(file_hash(bc), {}).setdefault(sl, []).append(m)
+    for m in [m for m in mats if m in by_look or (m == NO_MATERIAL and m in out and why.get(m) != "--slot")]:
+        bc = minfo.get(m, {}).get("textures", {}).get("basecolor")
+        if not bc: continue
+        others = {sl: ms for sl, ms in img_slot.get(file_hash(bc), {}).items()}
+        if not others:
+            others = {}
+            for x, sl in out.items():
+                xb = minfo.get(x, {}).get("textures", {}).get("basecolor")
+                if x != m and xb and file_hash(xb) == file_hash(bc): others.setdefault(sl, []).append(x)
+        if others:
+            sl = max(others, key=lambda k: (len(others[k]), k))
+            if sl != out.get(m):
+                out[m] = sl; why[m] = f"draws the same image as {others[sl][0]} ({os.path.basename(bc)})"
     log("materials -> slots (auto; override with --slot MAT=SLOT or --slot MAT=drop):")
     for m in mats:
         log(f"  {m:32s} -> {out.get(m, 'dropped'):12s} ({why.get(m, '')})")
@@ -570,7 +860,16 @@ def survivor(o):
         if b.lower() != "drop" and b.lower() not in {n.lower() for n in slot_names}:
             die(f"--slot {x}: {os.path.basename(tp)} has no slot {b!r} (slots: {slot_names})")
         user[a] = next((n for n in slot_names if n.lower() == b.lower()), b)
-    slot3, drop = auto_slots(mats, info.get("material_info", {}), s3, user)
+    minfo = info.get("material_info", {})
+    g = minfo.get(NO_MATERIAL, {}).get("guessed")
+    if g and not any(t.split("=", 1)[0].lower() == NO_MATERIAL for t in o.o["tex"]):
+        o.o["tex"].append(f"{NO_MATERIAL}={g}")      # the image inspect found for faces without a material
+    # where each material sits on the body (and each template slot): the model fitted once, quickly (no face, LODs)
+    rp = os.path.join(work, "regions")
+    run_blender(["character", "--template", template_glb(tp, work), "--source", os.path.abspath(model), "--out", rp,
+                 "--mode", "3p", "--probe", "regions", "--proportions", o.get("proportions") or "own"] + fit_args(o.o))
+    regions = json.load(open(os.path.join(rp, "regions.json")))
+    slot3, drop = auto_slots(mats, minfo, s3, user, regions)
     o.o["drop_mat"] = drop
     mats = [m for m in mats if m not in drop]
     if not mats: die("every material of the model is dropped: nothing left to fit")
@@ -608,7 +907,6 @@ def survivor(o):
             if m not in atlas.setdefault(st, []): atlas[st].append(m)
         log(f"FP slots: {fp_slot}; FP texture sets: {fp_slotset}")
     # materials drawing the same textures (one image used by several materials, as game rips do) share one tile
-    minfo = info.get("material_info", {})
 
     def sig(m):
         inf = minfo.get(m, {})
@@ -626,8 +924,29 @@ def survivor(o):
         if alias.get(st):
             log(f"texture set {st}: " + ", ".join(f"{m} shares {c}'s tile (same textures)" for m, c in alias[st].items()))
     canon = {st: [m for m in ms if m not in alias.get(st, {})] for st, ms in atlas.items()}
+    # atlas layouts: each tile as big as its images need (a 256 eye texture gets a small tile), packed into the smallest
+    # canvas, at most the size of the retail texture it replaces (or --max-texture)
+    tt = TexTool(o.o)
+    cap_of_set = {}
+    for s, mi, tex, master in (sf if fp else []) + s3:
+        if master and HAIR_MASTER_RX.search(master):
+            cap_of_set[s] = tt.max_tex or HAIR_CAP if tt.hair_mode == "texture" else \
+                tt.cap_of(next((t for p_, t in tex.items() if p_.lower() == "hair multimask"), None), HAIR_CAP)
+        else:
+            cap_of_set[s] = tt.cap_of(basecolor_of(tex))
+    layout = {}
+    for st, ms in canon.items():
+        if len(ms) < 2: continue
+        needs = {}
+        for m in ms:
+            d = tile_need(minfo.get(m, {}).get("textures", {}), LAYOUT_KEYS)
+            needs[m] = (pow2(d[0]), pow2(d[1])) if d else (CONST_TILE, CONST_TILE)
+        (W, H), rects = pack_tiles(needs, cap_of_set.get(st) or tt.cap_of(None), tile_density(ms, needs, minfo, regions))
+        layout[st] = {"canvas": [W, H], "rects": rects}
+        log(f"texture set {st}: atlas {W}x{H}: " + ", ".join(
+            f"{m} {round(r[2] * W)}x{round(r[3] * H)}" for m, r in rects.items()))
     tiles_json = os.path.join(work, "tiles.json")
-    json.dump({"alias": alias}, open(tiles_json, "w"), indent=1)
+    json.dump({"alias": alias, "layout": layout}, open(tiles_json, "w"), indent=1)
     atlas_args = ["--tiles", tiles_json]
     for st, ms in canon.items():
         if len(ms) > 1: atlas_args += ["--atlas", f"{st}=" + ",".join(ms)]
@@ -653,7 +972,8 @@ def survivor(o):
         # the FP arms draw the same atlas tiles as the 3P mesh: same repeats of tiling textures
         rep = {st: {t["material"]: t["repeat"] for t in v["tiles"] if t.get("repeat")} for st, v in man3["sets"].items()}
         tiles_fp = os.path.join(work, "tiles_fp.json")
-        json.dump({"alias": alias, "repeat": {k: v for k, v in rep.items() if v}}, open(tiles_fp, "w"), indent=1)
+        json.dump({"alias": alias, "layout": layout, "repeat": {k: v for k, v in rep.items() if v}}, open(tiles_fp, "w"),
+                  indent=1)
         atlas_args[1] = tiles_fp
         df = os.path.join(work, "fitfp")
         run_blender(["character", "--template", template_glb(fp, work), "--source", os.path.abspath(model), "--out",
@@ -663,13 +983,13 @@ def survivor(o):
         manf = json.load(open(os.path.join(df, "manifest.json")))
         skmgltf.import_gltf(fp, manf["lods"], out_file(fp, moddir))
         mans.append((manf, fp))
-    tt = TexTool(o.o)
     tt.meshes = [out_file(m, moddir) for _, m in mans]
     # a texture set is named after the 3P slot whose material instance owns it; compose each once
     sets = {}
     for man, _ in mans:
         for k, v in man["sets"].items():
             cur = sets.setdefault(k, {"grid": v["grid"], "tiles": []})
+            if v.get("canvas"): cur["canvas"] = v["canvas"]
             for t in v["tiles"]:
                 old = next((x for x in cur["tiles"] if x["material"].lower() == t["material"].lower()), None)
                 if old is None: cur["tiles"].append(t)
