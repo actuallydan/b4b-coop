@@ -47,7 +47,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`,
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
     never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
-    (hand a pickup, e.g. a duffel bag, to a hero), `duffelreward <slot> <product guid> [delta]`.
+    (hand a pickup, e.g. a duffel bag, to a hero), `duffelreward <slot> <product guid> [delta]`, `fnprobe <va>` (count
+    a native function's calls/return values, for investigations).
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
   - `lineup.c` post-round/pre-round/character-select lineup with 5+ heroes (#8): spawns an extra mannequin when the
@@ -85,7 +86,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     until toggled off (all maps, sessions; not saved). Local only, no protocol bump. Ini `thirdperson=1` (start on),
     `thirdperson_key=` (toggle, default N); camera settings `/thirdperson distance|side|height|fov|reset` + ini
     `thirdperson_distance|side|height|fov` (default distance 180, right shoulder side 40: shots come from the eyes,
-    so side/height offsets move hits off the crosshair by that much). Dev `thirdperson view|aim|arm|decals|watch`. docs/investigations/third-person.md.
+    so side/height offsets move hits off the crosshair by that much). Item pickups (weapons, ammo, card shrines) in 3P:
+    the hero's ItemObserverComponent turns itself off in third person and looks from the FP camera; hooks on its
+    refresh and on the observation view gather fix both in our 3P (#27). Dev `thirdperson view|aim|arm|decals|watch|
+    use|usables|lookat|itemfix`, `fnprobe`. docs/investigations/third-person.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
@@ -288,7 +292,6 @@ Known issues / open:
   simulated join requests verified on one account; the real callback, the Join Game menu and Steam-initiated launch
   need the two-account plan in docs/investigations/steam-invites.md (#10). Local copies on one account overwrite each
   other's rich presence.
-- #27: in third person some interactions fail / their prompt is missing (e.g. picking up cards); deferred.
 - Steam's own relay sockets (in-process steamclient) bind 0.0.0.0; outside the game-socket loopback promise (Dan to
   confirm the wording).
 - A client that disconnects before the saferoom-exit charge keeps its burn card. Skull totem points and duffel-bag
