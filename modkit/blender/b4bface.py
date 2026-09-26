@@ -28,6 +28,8 @@ GEAR_RX = re.compile(r"hat\b|cap\b|helmet|glass|goggle|mask|hood|visor|headphone
 EYE_RX = re.compile(r"eye(?!_?(line|lash|brow|shadow|liner|extra|highlight))|iris|cornea|pupil|sclera", re.I)
 MOUTH_RX = re.compile(r"teeth|tooth|tongue|gum|mouth(?!.*skin)", re.I)
 HIGHLIGHT_RX = re.compile(r"highlight|extra|spec", re.I)
+CLOTH_RX = re.compile(r"jacket|coat|collar|shirt|tops?\b|outfit|cloth|scarf|vest\b|hoodie|sweater|dress|robe|cape|"
+                      r"cloak|armou?r|uniform", re.I)
 
 # shape keys: (role, regex on the key name)
 SK_RULES = [("jaw", re.compile(r"jaw_?open|mouth_?open|open_?mouth|mth_a$|(^|[._ ])(a|aa|ah)$|v_aa$|viseme_?aa$", re.I)),
@@ -159,8 +161,20 @@ def set_weights(m, W):
             g.add([vi], w, "REPLACE")
 
 
-def vertex_materials(m):
-    mats = [re.sub(r"\.\d{3}$", "", x.name) if x else "" for x in m.data.materials]
+def material_label(x):
+    """A material's name plus its images' file names: 'Material #34 hair.png' (game rips name materials generically;
+    the texture names still say hair, eye, head ...)."""
+    if x is None: return ""
+    n = re.sub(r"\.\d{3}$", "", x.name)
+    if x.node_tree:
+        imgs = {os.path.basename(nd.image.filepath or nd.image.name) for nd in x.node_tree.nodes
+                if nd.type == "TEX_IMAGE" and nd.image is not None}
+        if imgs: n += " " + " ".join(sorted(imgs))
+    return n
+
+
+def vertex_materials(m, labels=False):
+    mats = [(material_label(x) if labels else re.sub(r"\.\d{3}$", "", x.name)) if x else "" for x in m.data.materials]
     out = [""] * len(m.data.vertices)
     for p in m.data.polygons:
         n = mats[p.material_index] if p.material_index < len(mats) else ""
@@ -288,23 +302,28 @@ def template_face(tpl, F):
 
 # ---- model landmarks --------------------------------------------------------------------------------------------------
 
-def model_head(meshes, face, F, tl):
-    """Model vertices that may take face weights: [(mesh, index, face-frame pos, material, class)]."""
+def model_head(meshes, face, F, tl, no_cloth=True):
+    """Model vertices that may take face weights: [(mesh, index, face-frame pos, material, class)]. Hair, hats and
+    other gear, and clothes (a collar or coat reaching up to the head) are left out, by material and texture names."""
     out = []
     zmin = min(tl["chin"].z, tl["mouth_l"].z) - 0.06
     for m in meshes:
         W = weights_of(m)
-        mats = vertex_materials(m)
+        mats = vertex_materials(m, labels=True)
         for i, (v, w, mt) in enumerate(zip(m.data.vertices, W, mats)):
             hw = sum(x for b, x in w.items() if b == "head" or b in face)
             if hw < 0.05: continue
             if (HAIR_RX.search(mt) and not OVERLAY_RX.search(mt)) or GEAR_RX.search(mt) or HIGHLIGHT_RX.search(mt):
+                continue
+            if no_cloth and CLOTH_RX.search(mt) and not EYE_RX.search(mt) and not MOUTH_RX.search(mt):
                 continue
             p = F.loc(m.matrix_world @ v.co)
             if p.z < zmin: continue
             cls = "eye" if EYE_RX.search(mt) else "mouth" if MOUTH_RX.search(mt) else \
                 "overlay" if OVERLAY_RX.search(mt) else "skin"
             out.append((m, i, p, mt, cls))
+    if no_cloth and not any(c == "skin" for *_, c in out):   # one material named like clothes: it is the skin too
+        return model_head(meshes, face, F, tl, no_cloth=False)
     return out
 
 
@@ -345,10 +364,20 @@ def profile_landmarks(pts, seed, scale, lips=None):
     zs = [seed["nose"].z + 0.03 * scale, seed["chin"].z - 0.03 * scale] if lips is None else \
         [lips[0].z + 0.06 * scale, lips[1].z - 0.045 * scale]
     prof = front_profile(pts, zs[1], zs[0], 0.004 * scale)
+    # a coarse mesh leaves thin slices with no front vertex (the slice then shows the back of the head: a false
+    # dent many cm deep): those take the value of a slice three times as wide. A gap between open lips stays a gap
+    # in the wide slice too (the lips run sideways)
+    wide = front_profile(pts, zs[1], zs[0], 0.012 * scale)
+    for k, x in wide.items():
+        if k not in prof or prof[k] < x - 0.025 * scale: prof[k] = x
+    prof = dict(sorted(prof.items()))
     if len(prof) < 10: return {}
     ks = list(prof)
     # smooth over 3 bins
     sm = {k: sum(prof[x] for x in ks[max(0, i - 1):i + 2]) / len(ks[max(0, i - 1):i + 2]) for i, k in enumerate(ks)}
+    if DEBUG:
+        print("b4bface: profile (z cm: x cm):", " ".join(f"{k * 100:.1f}:{sm[k] * 100:.1f}" for k in ks),
+              "seed lips", fmt(seed["lip_up"]), fmt(seed["lip_lo"]), "scale", round(scale, 2))
     def near(z, r):
         return [k for k in ks if abs(k - z) <= r]
     out = {}
@@ -358,6 +387,22 @@ def profile_landmarks(pts, seed, scale, lips=None):
     lm = (seed["lip_up"].z + seed["lip_lo"].z) / 2
     # crease: the deepest dent (x below the maxima on both sides) near the seed's mouth line
     cand = near(lm, 0.015 * scale)
+    # with a nose that stands out: walk down the profile from the dent under it (subnasale, often deeper than a
+    # closed mouth's crease): upper lip (a bulge), crease (the next dent), lower lip (the next bulge). The deepest
+    # dent alone may be the fold between the lower lip and the chin
+    nz = [k for k in ks if lm < k <= lm + 0.045 * scale]
+    if nz:
+        kn = max(nz, key=lambda x: sm[x])
+        under = [k for k in ks if kn - 0.025 * scale <= k < kn - 0.003 * scale]
+        if under:
+            ksub = min(under, key=lambda x: sm[x])
+            walk = lip_walk([k for k in reversed(ks) if ksub - 0.045 * scale <= k < ksub], sm, 0.0003 * scale) \
+                if sm[kn] - sm[ksub] > 0.008 * scale else None
+            if walk:
+                ku, kc, kl = walk
+                out["crease"] = Vector((sm[kc], 0.0, kc))
+                out["lip_up"] = Vector((sm[ku], 0.0, ku)); out["lip_lo"] = Vector((sm[kl], 0.0, kl))
+                return chin_nose(out, ks, sm, ku, kl, scale)
     best, bd = None, 0.0
     for k in cand:
         above = [sm[x] for x in ks if k < x <= k + 0.012 * scale]
@@ -376,6 +421,19 @@ def profile_landmarks(pts, seed, scale, lips=None):
     return chin_nose(out, ks, sm, ku, kl, scale)
 
 
+def lip_walk(seq, sm, tol):
+    """Down the profile (seq: bins from the subnasale down): the first bulge, the dent after it, the bulge after that
+    (each change by more than tol). (upper lip, crease, lower lip) or None."""
+    marks, mode, best = [], "max", None
+    for k in seq:
+        if best is None or (sm[k] > sm[best] if mode == "max" else sm[k] < sm[best]): best = k
+        elif abs(sm[k] - sm[best]) > tol:
+            marks.append(best)
+            if len(marks) == 3: return tuple(marks)
+            mode, best = ("min" if mode == "max" else "max"), k
+    return None
+
+
 def chin_nose(out, ks, sm, ku, kl, scale):
     """Chin: the front-most point below the lower lip; nose tip: the front-most above the upper lip."""
     ch = [x for x in ks if kl - 0.035 * scale <= x < kl - 0.005 * scale]
@@ -384,6 +442,28 @@ def chin_nose(out, ks, sm, ku, kl, scale):
     no = [x for x in ks if ku + 0.008 * scale <= x <= ku + 0.05 * scale]
     if no:
         kn = max(no, key=lambda x: sm[x]); out["nose"] = Vector((sm[kn], 0.0, kn))
+    return out
+
+
+def middle_surface(head, scale, half=0.02, n=6):
+    """Points on the skin's faces near the face's middle (|lateral| < 2 cm): the profile of a coarse mesh (large
+    faces between the vertices, common in game models) has no holes then."""
+    by = {}
+    for (m, i, p, mt, c) in head:
+        if c in ("skin", "overlay"): by.setdefault(m, {})[i] = p
+    out = []
+    for m, d in by.items():
+        for poly in m.data.polygons:
+            vs = poly.vertices
+            if any(v not in d for v in vs): continue
+            ps = [d[v] for v in vs]
+            if min(abs(q.y) for q in ps) > half * scale: continue
+            for k in range(1, len(ps) - 1):             # fan triangles, points on a barycentric grid
+                a, b, c_ = ps[0], ps[k], ps[k + 1]
+                for u in range(n + 1):
+                    for v in range(n + 1 - u):
+                        w = n - u - v
+                        out.append((a * u + b * v + c_ * w) / n)
     return out
 
 
@@ -459,6 +539,20 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
         o = "r" if sd == "l" else "l"
         for k in ("eye_{}", "eye_in_{}", "eye_out_{}"):
             q = lm[k.format(sd)]; lm[k.format(o)] = Vector((q.x, -q.y, q.z)); src[k.format(o)] = how + " (mirrored)"
+    # the first guess scaled the template by the head's bounds; when those take in much of the neck, a beard or hair
+    # the guessed eyes land far from the found ones, and the mouth search would look at the chin: search relative to
+    # the eyes instead (the template's face scaled by the eye distance)
+    if len(eyes) == 2:
+        tm, mm = (tl["eye_l"] + tl["eye_r"]) / 2, (lm["eye_l"] + lm["eye_r"]) / 2
+        sm_ = (seed["eye_l"] + seed["eye_r"]) / 2
+        k = min(1.6, max(0.6, (lm["eye_l"] - lm["eye_r"]).length / max(1e-4, (tl["eye_l"] - tl["eye_r"]).length)))
+        if abs(sm_.z - mm.z) > 0.02 * scale or abs(sm_.x - mm.x) > 0.03 * scale:
+            for key in seed:
+                if key.startswith("eye"): continue
+                seed[key] = mm + (tl[key] - tm) * k
+                if src[key].startswith("scaled"): lm[key] = seed[key]
+            notes.setdefault("the eyes (the head's bounds take in neck or hair: the rest is searched from the eyes)",
+                             []).append("seeds")
     # 2. mouth: source lip/jaw bones, else the mouth-open shape key, else the middle profile
     got_mouth = False
     if src_bones:
@@ -486,7 +580,8 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
         if mk:
             lm.update(mk); got_mouth = True
             for k in mk: src[k] = "mouth-open shape key"
-    prof = profile_landmarks(skin, seed, scale, (lm["lip_up"], lm["lip_lo"]) if got_mouth else None)
+    prof = profile_landmarks(skin + middle_surface(head, scale), seed, scale,
+                             (lm["lip_up"], lm["lip_lo"]) if got_mouth else None)
     if not got_mouth and "crease" in prof:
         lm["lip_up"], lm["lip_lo"] = prof["lip_up"], prof["lip_lo"]
         src["lip_up"] = src["lip_lo"] = "face profile"
