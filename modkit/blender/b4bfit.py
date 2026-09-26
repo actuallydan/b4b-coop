@@ -538,6 +538,7 @@ for s in ("l", "r"):
     LIMB_FAMILIES[f"calf_{s}"] = [f"calf_{s}", f"calf_twist_01_{s}", f"knee_twist_01_{s}"]
     LIMB_FAMILIES[f"foot_{s}"] = [f"foot_{s}", f"foot_twist_01_{s}"]
 ARM_BONES_RX = re.compile(r"^(upperarm|lowerarm|hand|wrist|elbow|shoulder|thumb|index|middle|ring|pinky)_")
+FP_HAIR_RX = re.compile(r"hair|ponytail|pony_?tail|bangs?\b|fringe|braid|\bbun\b|wig|beard|mustache|moustache", re.I)
 FP_MIN_SHARE = 0.1        # unrigged FP: a material keeps its arm faces only if at least this share of it is on the arms
 
 
@@ -1010,7 +1011,7 @@ def fit_character(o):
         unit_hint((hi.z - lo.z) / 1.13, k)             # the head joint sits about 1/1.13 of the stature up
         # arms in another pose than the template's A-pose (T-pose, hanging down): pose the template's arms like the
         # model's, take the weights from the posed template, then un-pose the model into the template's bind pose
-        unpose_arms(tpl, meshes)
+        unpose_arms(tpl, meshes, chain=mode == "fp")
         o["weights"] = "done"
     if own_bind:
         # the template (skeleton + meshes) takes the model's proportions too: later steps (twist weights, the face)
@@ -1360,10 +1361,14 @@ def allowed(bone, rule):
     return bone.endswith("_" + rule["side"]) and bone.startswith(rule["prefixes"])
 
 
-def unpose_arms(tpl, meshes):
+def unpose_arms(tpl, meshes, chain=False):
     """Unrigged model: bring its arms into the template's bind pose. The template armature is posed so its arms point
     like the model's (upperarm rotated about the shoulder), the weights are copied from the posed template mesh (named
-    parts like "arm-left" only take bones of that part), then the inverse pose is applied to the model."""
+    parts like "arm-left" only take bones of that part), then the inverse pose is applied to the model.
+    chain (first person): the FP bind pose bends the elbow (~40 deg) and the hand, so the model's straight arm is
+    matched joint by joint (elbow and wrist on its shoulder-tip line at the template's proportions): upperarm, lowerarm
+    and hand each turned. Turning only the upperarm left the model's hand on the template's metacarpals, so in game the
+    hand hung below the view (no hands in first person)."""
     arm = tpl.arm
     tv = [tm.matrix_world @ v.co for tm in tpl.meshes for v in tm.data.vertices]
     mv = [(m, m.matrix_world @ v.co) for m in meshes for v in m.data.vertices]
@@ -1373,7 +1378,7 @@ def unpose_arms(tpl, meshes):
                   {n: (r["prefixes"][1] + "_" + r["side"]) if "prefixes" in r else r["exact"][0] for n, r in named.items()})
     tlo = Vector((min(p.x for p in tv), min(p.y for p in tv), min(p.z for p in tv)))
     thi = Vector((max(p.x for p in tv), max(p.y for p in tv), max(p.z for p in tv)))
-    rot = {}
+    rot, hands = {}, {}
     for sd, sign in (("l", 1), ("r", -1)):          # heroes face +X: their left is +Y
         ua = tpl.pos.get(f"upperarm_{sd}")
         if ua is None: continue
@@ -1400,20 +1405,64 @@ def unpose_arms(tpl, meshes):
             m_tip = tip([p for m, p in mv if sign * p.y > 0])
         dt, dm = (t_tip - ua), (m_tip - shoulder)
         if dt.length < 1e-4 or dm.length < 1e-4: continue
+        side = 'left' if sd == 'l' else 'right'
+        el, wr = tpl.pos.get(f"lowerarm_{sd}"), tpl.pos.get(f"hand_{sd}")
+        if chain and el is not None and wr is not None:
+            # each segment of the template's arm mapped onto the model's (turned, stretched along itself, moved):
+            # the model's joints land exactly on the FP skeleton's; 8 cm off and the game's FP view misses the hands
+            def seg(a0, a1, b0, b1):
+                da, db = a1 - a0, b1 - b0
+                d = da.normalized()
+                k = db.length / max(da.length, 1e-6)
+                S = Matrix.Identity(3) + (k - 1.0) * Matrix(((d.x * d.x, d.x * d.y, d.x * d.z),
+                                                             (d.y * d.x, d.y * d.y, d.y * d.z),
+                                                             (d.z * d.x, d.z * d.y, d.z * d.z)))
+                q = d.rotation_difference(db.normalized())
+                return q, k, Matrix.Translation(b0) @ (q.to_matrix() @ S).to_4x4() @ Matrix.Translation(-a0)
+            l1, l2, l3 = (el - ua).length, (wr - el).length, (t_tip - wr).length
+            d = dm.normalized()
+            e_m = shoulder + d * (dm.length * l1 / (l1 + l2 + l3))
+            w_m = shoulder + d * (dm.length * (l1 + l2) / (l1 + l2 + l3))
+            parts = [seg(ua, el, shoulder, e_m), seg(el, wr, e_m, w_m), seg(wr, t_tip, w_m, m_tip)]
+            # the hand: its own frame (along the fingers, across to the thumb, palm normal) from the template's hand
+            # vertices and the model's, so a hand hanging palm-in is turned into the FP grip's orientation
+            ht = hand_frame([tm.matrix_world @ v.co for tm in tpl.meshes for v, w in zip(tm.data.vertices, mesh_weights(tm))
+                             if w and max(w, key=w.get).endswith("_" + sd) and HAND_BONE_RX.match(max(w, key=w.get))], wr)
+            fa = (w_m - e_m).normalized()
+            hl = (m_tip - w_m).length
+            hm = hand_frame([p for mm, p in mv if (p - w_m).dot(fa) > 0.01 * hl and
+                             (p - (w_m + fa * (p - w_m).dot(fa))).length < 0.8 * hl], w_m)
+            hands[sd] = (w_m, fa, hl)
+            if ht and hm:
+                R3 = hm @ ht.transposed()
+                k2 = parts[1][1]
+                q3 = R3.to_quaternion()
+                parts[2] = (q3, k2, Matrix.Translation(w_m) @ (R3 * k2).to_4x4() @ Matrix.Translation(-wr))
+            log(f"unrigged: {side} arm onto the FP skeleton: " + ", ".join(
+                f"{n} {math.degrees(q.angle):.0f} deg x{k:.2f}" for n, (q, k, M) in zip(("upper arm", "forearm", "hand"),
+                                                                                       parts)))
+            rot[sd] = [(f"{b}_{sd}", M) for b, (q, k, M) in zip(("upperarm", "lowerarm", "hand"), parts)]
+            continue
         q = dt.normalized().rotation_difference(dm.normalized())
         ang = math.degrees(q.angle)
-        log(f"unrigged: {'left' if sd == 'l' else 'right'} arm is {ang:.0f} deg from the template's pose")
-        if ang > 8: rot[sd] = q
+        log(f"unrigged: {side} arm is {ang:.0f} deg from the template's pose")
+        if ang > 8:
+            rot[sd] = [(f"upperarm_{sd}", Matrix.Translation(ua) @ q.to_matrix().to_4x4() @ Matrix.Translation(-ua))]
+    if chain and rot:
+        return _unpose_chain(tpl, meshes, rules, rot, hands)
     # pose the template (armature space == world: the template armature has no transform of its own)
-    select_only([arm], arm)
-    bpy.ops.object.mode_set(mode="POSE")
-    for sd, q in rot.items():
-        pb = arm.pose.bones[f"upperarm_{sd}"]
-        head = arm.matrix_world @ pb.bone.head_local
-        M = Matrix.Translation(head) @ q.to_matrix().to_4x4() @ Matrix.Translation(-head)
-        pb.matrix = arm.matrix_world.inverted() @ M @ arm.matrix_world @ pb.bone.matrix_local
-    bpy.context.view_layer.update()
-    bpy.ops.object.mode_set(mode="OBJECT")
+    Mw = arm.matrix_world
+
+    def pose(inverse):
+        select_only([arm], arm)
+        bpy.ops.object.mode_set(mode="POSE")
+        for sd, bones in rot.items():
+            for name, M in bones:                     # parents first: each set in armature space
+                pb = arm.pose.bones[name]
+                pb.matrix = Mw.inverted() @ (M.inverted() if inverse else M) @ Mw @ pb.bone.matrix_local
+                bpy.context.view_layer.update()
+        bpy.ops.object.mode_set(mode="OBJECT")
+    pose(False)
     # weights from the posed template (evaluated meshes), restricted by part names
     dg = bpy.context.evaluated_depsgraph_get()
     pts, wts = [], []
@@ -1447,15 +1496,7 @@ def unpose_arms(tpl, meshes):
     log("weights: copied from the template" + (" (posed like the model)" if rot else ""))
     if not rot: return
     # un-pose: skin to the template with the inverse arm rotation, apply
-    select_only([arm], arm)
-    bpy.ops.object.mode_set(mode="POSE")
-    for sd, q in rot.items():
-        pb = arm.pose.bones[f"upperarm_{sd}"]
-        head = arm.matrix_world @ pb.bone.head_local
-        M = Matrix.Translation(head) @ q.inverted().to_matrix().to_4x4() @ Matrix.Translation(-head)
-        pb.matrix = arm.matrix_world.inverted() @ M @ arm.matrix_world @ pb.bone.matrix_local
-    bpy.context.view_layer.update()
-    bpy.ops.object.mode_set(mode="OBJECT")
+    pose(True)
     for m in meshes:
         md = m.modifiers.new("Unpose", "ARMATURE"); md.object = arm
         select_only([m], m)
@@ -1464,6 +1505,97 @@ def unpose_arms(tpl, meshes):
         pb.matrix_basis = Matrix.Identity(4)
     bpy.context.view_layer.update()
     log("unrigged: arms moved into the template's pose")
+
+
+HAND_BONE_RX = re.compile(r"^(hand|thumb|index|middle|ring|pinky)_")
+
+
+def hand_frame(pts, wrist):
+    """Rotation matrix (columns: along the fingers, towards the thumb, palm normal) of a hand's vertices by PCA: the
+    long axis points away from the wrist, the middle one towards the side the thumb sticks out (third moment)."""
+    import numpy as np
+    if len(pts) < 30: return None
+    P = np.array([tuple(p) for p in pts])
+    c = P.mean(0)
+    w, V = np.linalg.eigh(np.cov((P - c).T))
+    major, mid = V[:, 2], V[:, 1]
+    if (c - np.array(tuple(wrist))) @ major < 0: major = -major
+    if (((P - c) @ mid) ** 3).sum() < 0: mid = -mid
+    n = np.cross(major, mid)
+    return Matrix([list(major), list(mid), list(n)]).transposed()
+
+
+def _unpose_chain(tpl, meshes, rules, rot, hands):
+    """unpose_arms for first person: the per-bone transforms (with stretch, which a Blender pose can't hold on these
+    bones) applied by hand, linear blend skinning: the template's vertices posed like the model for the weights, then
+    the model's vertices (and custom normals) through the inverse transforms onto the FP skeleton."""
+    import numpy as np
+    arm = tpl.arm
+    Mb = {name: M for bones in rot.values() for name, M in bones}
+    Mi = {n: M.inverted() for n, M in Mb.items()}
+    owner = {}
+    for b in arm.data.bones:                          # a bone below a turned one (fingers, twists) moves with it
+        x = b
+        while x is not None and x.name not in Mb: x = x.parent
+        owner[b.name] = x.name if x is not None else None
+
+    def skin(p, w, mats):
+        acc, tot = Vector(), 0.0
+        for n, x in w.items():
+            o = owner.get(n)
+            acc += x * ((mats[o] @ p) if o else p); tot += x
+        return acc / tot if tot > 0 else p
+    pts, wts = [], []
+    for tm in tpl.meshes:
+        W = mesh_weights(tm)
+        for v, w in zip(tm.data.vertices, W):
+            pts.append(skin(tm.matrix_world @ v.co, w, Mb)); wts.append(w)
+    kd = KDTree(len(pts))
+    for i, p in enumerate(pts): kd.insert(p, i)
+    kd.balance()
+    face = face_bones_of(tpl)
+    for m in meshes:
+        rule = rules[m.name]
+        out = []
+        for v in m.data.vertices:
+            p = m.matrix_world @ v.co
+            acc, tot = {}, 0.0
+            for co, i, d in kd.find_n(p, 16 if rule else 4):
+                w = {n: x for n, x in wts[i].items() if allowed(n, rule)}
+                if not w: continue
+                f = 1.0 / max(d, 1e-4); tot += f
+                for n, x in w.items(): acc[n] = acc.get(n, 0.0) + x * f
+            if not acc and rule:
+                first = rule["exact"][0] if "exact" in rule else f"{rule['prefixes'][0]}_{rule['side']}"
+                acc, tot = {first: 1.0}, 1.0
+            w = fold_face({n: x / tot for n, x in acc.items()}, face) if tot else {"pelvis": 1.0}
+            # hand and finger bones only for the model's hands (the thigh next to a hanging hand would follow it)
+            inhand = any((p - wm).dot(fa) > 0 and (p - (wm + fa * (p - wm).dot(fa))).length < 0.8 * hl
+                         for wm, fa, hl in hands.values())
+            if not inhand and any(HAND_BONE_RX.match(n) for n in w):
+                rest = {n: x for n, x in w.items() if not HAND_BONE_RX.match(n)}
+                tot2 = sum(rest.values())
+                if tot2 > 1e-6: w = {n: x / tot2 for n, x in rest.items()}
+            out.append(w)
+        set_weights(m, out)
+        # un-pose: each vertex by its weights' inverse transforms; custom normals by the blended linear part
+        me = m.data
+        mw, mwi = m.matrix_world, m.matrix_world.inverted()
+        lin = []
+        for v, w in zip(me.vertices, out):
+            p = mw @ v.co
+            A = Matrix(((0, 0, 0), (0, 0, 0), (0, 0, 0))); tot = 0.0
+            for n, x in w.items():
+                o = owner.get(n)
+                A += x * (Mi[o].to_3x3() if o else Matrix.Identity(3)); tot += x
+            v.co = mwi @ skin(p, w, Mi)
+            lin.append((A * (1.0 / tot)).inverted_safe().transposed() if tot > 0 else Matrix.Identity(3))
+        if me.has_custom_normals:
+            cn = [lin[me.loops[i].vertex_index] @ Vector(n.vector) for i, n in enumerate(me.corner_normals)]
+            me.normals_split_custom_set([tuple(x.normalized()) for x in cn])
+        me.update()
+    log("weights: copied from the template (posed like the model)")
+    log("unrigged: arms moved onto the FP skeleton's joints")
 
 
 def body_segments(tpl):
@@ -1495,6 +1627,7 @@ def fp_arm_mask(tpl, m, segs):
         closer = d < best
         best[closer] = d[closer]
         arm[closer] = bool(ARM_BONES_RX.match(n))
+    arm &= best < 0.12                               # nothing far from every bone (parts of the body the arm fit threw)
     return arm.tolist()
 
 
@@ -1510,13 +1643,15 @@ def keep_arms(m, mask=None):
         tot, cut = {}, {}
         for f in bm.faces: tot[f.material_index] = tot.get(f.material_index, 0) + 1
         for f in kill: cut[f.material_index] = cut.get(f.material_index, 0) + 1
-        few = {i for i, n in tot.items() if 0 < n - cut.get(i, 0) < FP_MIN_SHARE * n}
+        mats = m.data.materials
+        mname = lambda i: mats[i].name if i < len(mats) and mats[i] else NO_MATERIAL
+        few = {i for i, n in tot.items() if 0 < n - cut.get(i, 0) and (n - cut.get(i, 0) < FP_MIN_SHARE * n or
+                                                                       FP_HAIR_RX.search(mname(i)))}
         if few:
             ks = set(kill)
             kill += [f for f in bm.faces if f.material_index in few and f not in ks]
-            mats = m.data.materials
             log(f"fp: {m.name}: left out " + ", ".join(
-                f"{mats[i].name if i < len(mats) and mats[i] else NO_MATERIAL} ({tot[i] - cut.get(i, 0)} of {tot[i]} "
+                f"{mname(i)} ({tot[i] - cut.get(i, 0)} of {tot[i]} "
                 f"faces on the arms)" for i in sorted(few)))
     bmesh.ops.delete(bm, geom=kill, context="FACES")
     bm.to_mesh(m.data); bm.free()

@@ -1096,11 +1096,23 @@ Elite 00, now in the local suite manifest. General bugs they showed, all in `mod
   weights now give face bones to `head` (`face_bones_of`/`fold_face`); plus `b4bface.smooth_jaw_edges`: around every
   edge whose jaw share jumps > 0.3 outside the lip band, the share is averaged over the mesh within 1.5 cm (175 -> 66
   jump edges on the unrigged head, the rest on the lip line; 432 vertices blended).
-- **No hands in first person (unrigged)**: FP weights come from the FP template, which is only arms, so every vertex
-  got arm weights and `keep_arms` kept the whole body (100k verts; in game nothing drew but the gun). Unrigged FP now
-  also needs the vertex's nearest template body segment to be an arm bone (`fp_arm_mask`, numpy), and a material with
-  < 10 % of its faces on the arms is left out (hair 1002/23822, trousers 176/5388). Result 25.5k verts (template
-  26k). 8 influences are not the problem: the rigged model's FP (8 influences) draws hands fine.
+- **No hands in first person (unrigged) — half done.** (a) The cut: FP weights come from the FP template, which is
+  only arms, so every vertex got arm weights and `keep_arms` kept the whole body (100k verts). Now unrigged FP also
+  needs the vertex's nearest template body segment to be an arm bone within 12 cm (`fp_arm_mask`), hair materials and
+  materials with < 10 % of their faces on the arms are left out: 25.5k verts (template 26k). (b) Still no hands in
+  game after the cut. Bisected live with the add-on's FP mesh swapped (`exp` builds, lane 1): the template's own arms
+  and the rigged model's arms show; the unrigged arms don't, whatever their weights, UVs or normals; the rigged
+  arms **moved 8 cm back** vanish too. So FP arms must sit on the FP skeleton's joints within a few cm (the FP view
+  is tight; hands end up below it). The unrigged un-pose only turned the upper arm (straight arm vs the FP bind
+  pose's 40 deg elbow; hands 8 cm short, palm-in). Now (`unpose_arms(chain=True)` + `_unpose_chain`): each segment
+  (upper arm, forearm, hand) mapped onto the FP skeleton's (turn + stretch + move, applied by hand as linear blend
+  skinning because Blender poses can't hold the stretch), the hand by a PCA frame (fingers, thumb side, palm normal),
+  hand/finger bones only inside the model's hands. Hand centroid now matches the template's (5, 4, -6 cm from the hand
+  bone vs 6, 3, -7). Last live look: sleeves now in view, but distorted (a sleeve stretched up past the gun), hands
+  not yet clean. Next: check the forearm/sleeve weights after the chain un-pose (sleeve vertices near the elbow),
+  maybe weight sleeves by segment instead of nearest template surface; then re-run the suite. Also fixed on the way:
+  imported meshes keep the template's constant extra UV channels (FP Arms slot UV1 = 0) and never get bounds smaller
+  than the template's (neither alone was the cause). 8 influences are fine (the rigged FP with 8 draws hands).
 - **Hair physics "no simulated hair bones" on Holly E00**: false; `3P_Holly_PA` simulates hair_00..02 (all 28 hero PAs
   scanned: Holly, Holly E06, Walker E03 hair_00..02; Doc E03 hair_00..01; Mom, Mom E07 pigtails; backpack/gasmask
   elsewhere). The physics asset simply wasn't extracted (not among the mesh's material/texture references), and
