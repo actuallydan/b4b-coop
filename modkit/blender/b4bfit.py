@@ -73,6 +73,7 @@ def import_any(path):
         bpy.ops.import_scene.fbx(filepath=path, use_anim=False, ignore_leaf_bones=False, automatic_bone_orientation=False)
     elif ext in (".glb", ".gltf", ".vrm"):                # VRM 0.x/1.0 = glTF 2.0 with extensions (ignored)
         bpy.ops.import_scene.gltf(filepath=path)
+        vrm0_colors(path)
     elif ext == ".obj":
         bpy.ops.wm.obj_import(filepath=path)
     elif ext == ".dae":
@@ -95,6 +96,30 @@ def import_any(path):
     for o in new:
         if o.animation_data: o.animation_data_clear()
     return new
+
+
+def vrm0_colors(path):
+    """VRM 0.x MToon: the colour is materialProperties[]._Color, an sRGB (Unity) value that exporters such as VRoid
+    Studio also copy unconverted into glTF's (linear) baseColorFactor, which Blender's importer puts on a Multiply node.
+    MToon renderers (UniVRM, three-vrm) read it as sRGB: so do we (VRoid hair: a grey texture x a dark hair colour)."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            head = f.read(20)
+            if head[:4] != b"glTF": return
+            j = json.loads(f.read(struct.unpack_from("<I", head, 12)[0]))
+    except (OSError, ValueError):
+        return
+    props = {m.get("name"): m for m in j.get("extensions", {}).get("VRM", {}).get("materialProperties", [])}
+    for mat in bpy.data.materials:
+        mp = props.get(re.sub(r"\.\d{3}$", "", mat.name))
+        c = (mp or {}).get("vectorProperties", {}).get("_Color") if mp and mp.get("shader") == "VRM/MToon" else None
+        if not c or not mat.node_tree: continue
+        lin = [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in c[:3]]
+        for n in mat.node_tree.nodes:
+            if n.type in ("MIX", "MIX_RGB") and n.blend_type == "MULTIPLY":
+                const = [i for i in n.inputs if i.enabled and i.type == "RGBA" and not i.is_linked]
+                if len(const) == 1: const[0].default_value = (*lin, 1.0)
 
 
 def select_only(objs, active=None):
@@ -1148,6 +1173,27 @@ def material_textures(mat, tex_dirs, user=None, n_materials=1):
     return out
 
 
+def basecolor_factor(mat):
+    """The colour a material multiplies its base colour texture by (linear RGB), else None: glTF baseColorFactor, VRM
+    MToon _Color (VRoid hair and brows: a grey texture x the hair colour), a Multiply node in a hand-made material.
+    Blender's glTF importer builds it as a Mix node (Multiply, RGBA) between the image and the shader."""
+    if not (mat and mat.node_tree): return None
+    for n in mat.node_tree.nodes:
+        if n.type not in ("MIX", "MIX_RGB") or n.blend_type != "MULTIPLY": continue
+        if n.type == "MIX" and getattr(n, "data_type", "RGBA") != "RGBA": continue
+        cols = [i for i in n.inputs if i.enabled and i.type == "RGBA"]
+        fac = next((i for i in n.inputs if i.enabled and i.type == "VALUE"), None)
+        if len(cols) != 2 or (fac is not None and fac.is_linked): continue
+        img = [c for c in cols if c.is_linked and c.links[0].from_node.type == "TEX_IMAGE"]
+        const = [c for c in cols if not c.is_linked]
+        if len(img) != 1 or len(const) != 1: continue
+        f = fac.default_value if fac is not None else 1.0
+        rgb = [1.0 + f * (x - 1.0) for x in list(const[0].default_value)[:3]]
+        if max(abs(x - 1.0) for x in rgb) < 1e-3: return None
+        return rgb
+    return None
+
+
 def bsdf_values(mat):
     """Constant material values (used where the material has no texture for them)."""
     out = {}
@@ -1157,6 +1203,8 @@ def bsdf_values(mat):
             out["basecolor"] = list(b.inputs["Base Color"].default_value)[:3]
             out["roughness"] = b.inputs["Roughness"].default_value
             out["metallic"] = b.inputs["Metallic"].default_value
+        f = basecolor_factor(mat)
+        if f: out["basecolor_factor"] = f
     elif mat is not None:
         out["basecolor"] = list(mat.diffuse_color)[:3]
         out["roughness"] = mat.roughness
@@ -1540,6 +1588,15 @@ def lin2srgb(c):
     return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
 
 
+def tinted(rgb, val):
+    """sRGB texels x the material's base colour factor (linear, as glTF/Blender multiply), back to sRGB."""
+    f = val.get("basecolor_factor")
+    if not f: return rgb
+    import numpy as np
+    lin = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4) * np.array(f, np.float32)
+    return np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.maximum(lin, 0) ** (1 / 2.4) - 0.055).astype(np.float32)
+
+
 def tile_alpha(tx, pw):
     """A tile's opacity: its alpha texture (A if it has an alpha channel, else R), else the base colour's alpha."""
     import numpy as np
@@ -1572,7 +1629,7 @@ def hair_multimask(j, size):
         a = tile_alpha(tx, pw)
         canvas[py:py + pw, px:px + pw, 3] = a
         if tx.get("basecolor") and os.path.exists(tx["basecolor"]):
-            c = load_px(tx["basecolor"], pw)[..., :3]
+            c = tinted(load_px(tx["basecolor"], pw)[..., :3], val)
             m = a > 0.5
             if m.any():
                 cols.append(c[m].mean(axis=0)); weights.append(float(m.sum()))
@@ -1585,8 +1642,62 @@ def hair_multimask(j, size):
     return canvas
 
 
+def fill_transparent(rgb, a, thresh=0.5):
+    """Colour of the see-through texels = the colour of the nearest strands (pull-push over a mip pyramid), so mips
+    and filtering at strand edges blend strand colour, not whatever the see-through texels held (often black/white)."""
+    import numpy as np
+    w = (a >= thresh).astype(np.float32)
+    if w.all() or not w.any(): return rgb
+    levels = [(rgb * w[..., None], w)]
+    while levels[-1][1].shape[0] > 1:
+        c, ww = levels[-1]
+        h = c.shape[0] // 2
+        c2 = c[:h * 2, :h * 2].reshape(h, 2, h, 2, 3).sum(axis=(1, 3))
+        w2 = ww[:h * 2, :h * 2].reshape(h, 2, h, 2).sum(axis=(1, 3))
+        levels.append((c2, w2))
+    fill = levels[-1][0] / np.maximum(levels[-1][1], 1e-6)[..., None]
+    for c, ww in reversed(levels[:-1]):
+        up = np.repeat(np.repeat(fill, 2, axis=0), 2, axis=1)[:c.shape[0], :c.shape[1]]
+        own = c / np.maximum(ww, 1e-6)[..., None]
+        fill = np.where((ww > 0)[..., None], own, up)
+    out = rgb.copy()
+    m = w == 0
+    out[m] = fill[m]
+    return out
+
+
+def hair_basecolor(j, size):
+    """Hair on a colour-textured masked material (b4bmodel --hair texture): RGB = the model's hair colour texture
+    (sRGB as is), A = its alpha (strand coverage: masked + dithered in game); see-through texels take the colour of
+    the nearest strands. Also writes <out>.json with the mean colour of the opaque texels (log / preview)."""
+    import numpy as np
+    canvas = np.zeros((size, size, 4), np.float32)
+    canvas[..., :3] = 0.23
+    cols, weights = [], []
+    for t in j["tiles"]:
+        x0, y0, w, h = t["rect"]
+        px, py, pw = int(round(x0 * size)), int(round(y0 * size)), int(round(w * size))
+        tx, val = t.get("textures", {}), t.get("values", {})
+        a = tile_alpha(tx, pw)
+        region = canvas[py:py + pw, px:px + pw]
+        if tx.get("basecolor") and os.path.exists(tx["basecolor"]):
+            region[..., :3] = tinted(load_px(tx["basecolor"], pw)[..., :3], val)
+        elif "basecolor" in val:
+            region[..., :3] = [lin2srgb(c) for c in val["basecolor"]]
+        region[..., 3] = a
+        m = a > 0.5
+        if m.any():
+            cols.append(region[..., :3][m].mean(axis=0)); weights.append(float(m.sum()))
+    canvas[..., :3] = fill_transparent(canvas[..., :3], canvas[..., 3])
+    srgb = np.average(np.array(cols), axis=0, weights=weights) if cols else np.array([0.3, 0.2, 0.12])
+    json.dump({"color_srgb": srgb.tolist(), "opaque": float(np.mean(canvas[..., 3] > 0.5))}, open(j["out"] + ".json", "w"))
+    log("hair: colour texture, mean (sRGB)", [round(float(x), 3) for x in srgb], "coverage",
+        round(float(np.mean(canvas[..., 3] > 0.5)), 3))
+    return canvas
+
+
 def compose(job_path):
-    """Jobs: [{out, size, role basecolor|normal|pbr|zero|mean, tiles, mean_from, normal_dx}]"""
+    """Jobs: [{out, size, role basecolor|normal|pbr|zero|mean|hairmm|hairbc, tiles, mean_from, normal_dx}]"""
     import numpy as np
     jobs = json.load(open(job_path))
     for j in jobs:
@@ -1597,6 +1708,8 @@ def compose(job_path):
             canvas = np.zeros((size, size, 4), np.float32)
         elif role == "hairmm":
             canvas = hair_multimask(j, size)
+        elif role == "hairbc":
+            canvas = hair_basecolor(j, size)
         elif role == "mean":
             canvas = np.tile(mean.astype(np.float32), (size, size, 1))
         else:
@@ -1611,7 +1724,7 @@ def compose(job_path):
                 region = canvas[py:py + pw, px:px + pw]
                 if role == "basecolor":
                     if ok("basecolor"):
-                        region[..., :3] = load_px(tx["basecolor"], pw)[..., :3]
+                        region[..., :3] = tinted(load_px(tx["basecolor"], pw)[..., :3], val)
                     elif "basecolor" in val:
                         region[..., :3] = [lin2srgb(c) for c in val["basecolor"]]
                     region[..., 3] = mean[3]
