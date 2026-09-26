@@ -2,7 +2,8 @@
 //
 // Rules:
 //  - Every cheat is a chat command run by admin.c's dispatcher (`/god`, `/fly`, ...). Nothing works until the host types
-//    `/cheats on`; `/cheats off` or the next map change that lands in Fort Hope (camp) or the menus turns them off.
+//    `/cheats on`; `/cheats off`, leaving Fort Hope (camp) for a mission, or the next map change that lands in Fort Hope
+//    or the menus turns them off. The next chapter of a mission keeps them on.
 //  - Host only: the machine must be the server (listen host or standalone). A client's `/cheat ...` never leaves its
 //    machine (chat.c) and gets "host only". admin.c enforces it from VERBS' permissions (CMD_HOST / CMD_CHEAT).
 //  - Transparent: enabling/disabling, and every cheat that touches another player or the whole session, is announced to
@@ -1165,13 +1166,24 @@ void cheats_slash(const char *verb, char *rest, Out *o) {
     else if (!strcmp(verb, "unlockall")) cmd_unlockall(rest, o);
 }
 
-// Map change: per-map effects end with the map (their actors are gone); back in camp or the menus turns cheats off.
-// Decided once the new map has its game mode (a map change passes through worlds without one): a mission (the next
-// chapter, a restart) keeps cheats on; Fort Hope, the menus, anything else turns them off.
+// Map change: per-map effects end with the map (their actors are gone). Leaving Fort Hope (camp) turns cheats off:
+// cheats turned on in camp don't carry into the mission started from there (#30: they used to, and the whole mission
+// then sent the other players no rewards or stats, so their post-round summary showed nothing). Otherwise decided
+// once the new map has its game mode (a map change passes through worlds without one): a mission (the next chapter,
+// a restart) keeps cheats on; Fort Hope, the menus, anything else turns them off.
 static int world_check;
-static void on_world_change(void) {
+static int cur_is_camp, world_kind_known;   // the current world is Fort Hope; decided once it has a game mode
+static void on_world_change(int from_camp) {
     all_effects_off(0);
     if (!on) return;
+    if (from_camp) {
+        on = 0;
+        taint_world = NULL;
+        LOG("cheats: off (left Fort Hope)");
+        snprintf(pending_notice, sizeof pending_notice, "cheats turned off (they don't carry over from Fort Hope)");
+        pending_in = 60.f;
+        return;
+    }
     taint_world = ue_world();   // still on: this map's rewards stay with the host
     world_check = 1;
 }
@@ -1224,7 +1236,18 @@ static int own_window_focused(void) {
 
 void cheats_tick(float dt) {
     UObject *w = ue_world();
-    if (w != cur_world) { cur_world = w; on_world_change(); }
+    if (w != cur_world) {
+        int from_camp = cur_is_camp;
+        cur_world = w;
+        cur_is_camp = world_kind_known = 0;
+        on_world_change(from_camp);
+    }
+    if (!world_kind_known && w && game_mode()) {
+        char pkg[256] = "";
+        ue_world_package(w, pkg, sizeof pkg);
+        cur_is_camp = strstr(pkg, "FortHope") != NULL;
+        world_kind_known = 1;
+    }
     if (on && !world_check && w) { int n = ue_num_clients(w); if (n > clients_seen) clients_seen = n; }
     if (world_check && on && w && game_mode()) {
         world_check = 0;
@@ -1235,6 +1258,11 @@ void cheats_tick(float dt) {
             taint_world = NULL;
             LOG("cheats: off (map change out of the mission)");
             snprintf(pending_notice, sizeof pending_notice, "cheats turned off (back in camp)");
+            pending_in = 60.f;
+        } else {   // next chapter / restart: say it again, the other players' post-round will show no stats
+            LOG("cheats: still on in the next map");
+            snprintf(pending_notice, sizeof pending_notice,
+                     "cheats are still on (this map's rewards and stats aren't sent to other players' saves)");
             pending_in = 60.f;
         }
     }
@@ -1506,6 +1534,30 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
         call_go(&c);
         out_printf(o, "damage: health %.0f -> %.0f (damage disabled %d)\n", before, call_float(hc, "GetHealth"),
                    call_bool(hc, "IsDamageDisabled"));
+    } else if (what && !strcmp(what, "killas") && arg) {   // killas <#n> [count]: lethal damage to ridden, credited
+        // to player #n (Instigator = its controller, SourcePawn = its hero), so the game's own kill/damage stat
+        // trackers count it for that player (post-round stats tests)
+        char *cnt_s = strtok(NULL, " ");
+        int want = cnt_s ? atoi(cnt_s) : 5, n = 0;
+        UObject *ps = admin_find_player(arg, o), *ctrl = ps_controller(ps), *pawn = ps_pawn(ps);
+        UClass *gc = cls("GobiCharacter"), *hcc = cls("HeroCharacter"), *pcc = cls("PlayerController");
+        if (!ctrl || !pawn || !gc) { out_printf(o, "killas: no controller/hero\n"); return 1; }
+        for (UObject *z = next_live(gc, NULL); z && n < want; z = next_live(gc, z)) {
+            if (hcc && ue_is_a(z, hcc)) continue;
+            UObject *zc = ue_get_ptr(z, "Controller");
+            if (zc && pcc && ue_is_a(zc, pcc)) continue;
+            UObject *ls = life_of(z), *hc = health_of(z);
+            Call c;
+            if (!ls || !hc || call_bool(ls, "IsAlive") != 1 || !call_prep(&c, hc, "Damage")) continue;
+            SET(&c, "InDamage", float, 100000.f);
+            SET(&c, "DamageTypeClass", UObject *, cls("GobiDamageType"));
+            SET(&c, "Instigator", UObject *, ctrl);
+            SET(&c, "SourcePawn", UObject *, pawn);
+            SET(&c, "SourceActor", UObject *, pawn);
+            call_go(&c);
+            if (call_bool(ls, "IsAlive") != 1) n++;
+        }
+        out_printf(o, "killas: %d ridden killed as %s\n", n, arg);
     } else if (what && !strcmp(what, "ammo")) {   // the host hero's weapons: clip / reserve / infinite flag
         UClass *c = cls("ClipAmmoComponent");
         UObject *me = ps_pawn(host_ps());
@@ -1581,7 +1633,7 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
                        ls ? call_bool(ls, "IsAlive") : -1, ls ? call_bool(ls, "IsIncapped") : -1, mm >= 0 ? *((uint8_t *)cmc + mm) : -1,
                        col >= 0 ? *((uint8_t *)pawn + col) : -1, v[0], v[1], v[2]);
         }
-    } else out_printf(o, "usage: cheatprobe classes <Base> | live <Class> | cm | state\n");
+    } else out_printf(o, "usage: cheatprobe classes <Base> | live <Class> | cm | state | killas <#n> [count]\n");
     return 1;
 }
 #endif
