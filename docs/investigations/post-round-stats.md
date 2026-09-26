@@ -1,70 +1,78 @@
 # Post-round stats for remote players (issue #30)
 
 Build 14216215. Report (Dan, real play): on the post-round screen the other players don't see their kills and the
-other per-player stats. Status: **not reproduced yet** (the live run was stopped before the mission: the test lane
-was needed for real play). Static analysis and the host log of a real session (`b4bcoop-552.log`, 0.5.0, 2026-09-25,
-host + Kopkins over Steam P2P) below; the agent now logs every machine's post-round values so the next session shows
-which link breaks.
+other per-player stats.
 
-## 1. Where the numbers come from
+## 1. Result
+**Cause: cheats turned on in Fort Hope carried into the mission.** Both of Dan's real host logs (`b4bcoop-552.log`,
+0.5.0, with Kopkins; `b4bcoop-556.log`, 0.4.0, with bird-meme.jpg) have `/cheats on` in camp, then the war-table
+`servertravel` with cheats still on. cheats.c kept them on because the new map is a mission (the rule meant for
+chapter → chapter) and tainted it, so for the whole mission the host held back every `ClientApplyStatDeltas`
+(`cheats: not sending ClientApplyStatDeltas to a remote player (cheats were on this map)`, ~20× per mission) and the
+rewards (`rewards: NOT forwarding AdjustSupplyPoints (151) ... cheats were on this map`). The client's post-round
+summary reads its **own** `PlayerStatsComponent`, which only those deltas fill: every stat showed `(0)` / `+0`.
+
+**Fix** (cheats.c, host only, no protocol bump): leaving Fort Hope turns cheats off (`cheats: off (left Fort Hope)`,
+notice `cheats turned off (they don't carry over from Fort Hope)`); the mission is not tainted. Chapter → chapter
+still keeps them on, now with a reminder notice (`cheats are still on (this map's rewards and stats aren't sent to
+other players' saves)`). Cheats turned on during a mission still withhold that map's stats and rewards (by design:
+docs/COMMANDS.md "Cheats"), and the players' post-round summary then shows 0 for that map.
+
+Verified live (lane 2, Flatpak Steam, 2 instances, kills credited with dev `cheatprobe killas`: host 6, client 9):
+
+| Run | cheats state in the mission | Client summary STATS | Client SP |
+|---|---|---|---|
+| before (old cheats.c): `/cheats on` in camp, `mission Easy` | `on=1 tainted=1` | RIDDEN KILLED (0), ENEMY DAMAGE (0) | 73 shown, not credited (650) |
+| after: same steps | `on=0 tainted=0` | RIDDEN KILLED (9), ENEMY DAMAGE (1,059,300) | forwarded (650 → 723) |
+| no cheats (old build; new build: e2e) | - | RIDDEN KILLED (9) ... | forwarded |
+
+The host's summary showed its own 6 / 642,000 in every run. Chapter carry-over checked: `cheats on` in Evansburgh C,
+`endmission 1`, Evansburgh D has `on=1 tainted=1` and the reminder notice.
+
+## 2. Where the post-round numbers come from (PvE)
+Panels (GetPostRoundPanelInfos 0x141D5F0C0): Splash, Lineup, Summary. The Stats table (EPostRoundPanel::Stats) is a
+PvP-only panel. The Summary opens behind modal pages (REWARD UNLOCKS, SUPPLY POINTS EARNED) that need Continue.
 
 | Panel | Data | Code |
 |---|---|---|
-| Stats table (one row per stat, one column per player) | each player's `GobiPlayerState.PostRoundStatValues` (TArray<int32>, one per `PostRoundStatConfigs` entry, Replicated) | `PostRoundStatsUserWidget::InitializeStats` 0x141E49C90: local PS's team, `GameState.PlayerArray`, skips PS with `bFromPreviousLevel` (PS+0x2AA bit 0x40); per PS 0x141BD0220 pairs config i with `PostRoundStatValues[i]` (no bounds check) |
-| Lineup (stat under each hero) | `PlayerSlot.ControllingPlayer` → `PostRoundLineupStats[EPostRoundLineupStat]` (double[11], Replicated) | 0x141E47210 |
-| Summary (own stats, old → new) | the **local** player's `PlayerStatsComponent` banks, read directly (PS+0x768) | 0x141E4E260 (ShowStat) |
+| Lineup (one stat under each hero) | `PlayerSlot.ControllingPlayer` → `GobiPlayerState.PostRoundLineupStats[EPostRoundLineupStat]` (double[11], Replicated) | 0x141E47210 |
+| Summary STATS (`SummaryStatEntry_WBP`: name, (total), +this map) | the **local** player's `PlayerStatsComponent` (PS+0x768) banks +0x158 / +0x1078, per `PostRoundSummaryUserWidget.Stats` (+0x470) | 0x141E4E260 (from 0x141E4A930) |
+| Stats table (PvP) | each player's `PostRoundStatValues` (TArray<int32>, one per `PostRoundStatConfigs`, Replicated); skips PS with `bFromPreviousLevel` | 0x141E49C90, 0x141BD0220 |
 
-Server side, `GobiPlayerState::Tick` 0x141BCE320 calls 0x141BCE650 when `Role == Authority` (+0x120 == 3; verified
-against the `BeginPlay Role:` log code): throttled, it copies the stats component's banks into
-`PostRoundStatValues` (+0x790), `PostRoundLineupStats` (+0x7E0) and `ScoreboardStats` (+0x838); **no component
-(PS+0x768 null) zeroes them all**. All three are registered with no condition (GetLifetimeReplicatedProps
-0x141BD8080, params zeroed: COND_None, not push-based).
+Server side, `GobiPlayerState::Tick` 0x141BCE320 → 0x141BCE650 when `Role == Authority` (+0x120 == 3): copies the
+stats component's banks into `PostRoundStatValues` (+0x790), `PostRoundLineupStats` (+0x7E0), `ScoreboardStats`
+(+0x838); no component (bots: `HasStats:0`) = all 0. Registered with COND_None (GetLifetimeReplicatedProps 0x141BD8080).
 
-`PlayerStatsComponent` (size 0x2F68): three banks of 44 `EPlayerProfileStat` entries, 0x58 bytes each, value first:
-- +0x158 this map: reconciled into the profile and zeroed on OnLeavingMap/EndPlay (0x141C24D80, "resetting map stats").
-- +0x1078 since the component was created ("clearing stats" 0x141C25080 zeroes all three banks).
-- +0x1F98 not yet sent to the owning client: flushed by `ClientApplyStatDeltas` (0x141C24530; forced at mission end,
-  "forcing network flush"); the client's `_Implementation` (0x141C25250, vtable) adds each delta to its own +0x158 and
-  +0x1078.
-`StatTrackerBase::IncrementStatValue` 0x1422B6890 adds to +0x158 and +0x1078, and to +0x1F98 when the owning
-controller is not local.
+`PlayerStatsComponent` (0x2F68): three banks of 44 `EPlayerProfileStat` entries, 0x58 bytes each, value first.
++0x158 this map (reconciled into the profile and zeroed on OnLeavingMap/EndPlay, 0x141C24D80 "resetting map stats"),
++0x1078 since the component was created (the summary's total; "clearing stats" 0x141C25080 zeroes all three),
++0x1F98 not yet sent to the owning client. `StatTrackerBase::IncrementStatValue` 0x1422B6890 adds to +0x158 and
++0x1078, and to +0x1F98 when the controller is remote; the host flushes +0x1F98 with `ClientApplyStatDeltas`
+(0x141C24530, periodic, forced at mission end: `forcing network flush`); the client's `_Implementation` (0x141C25250,
+vtable) adds the deltas to its own +0x158 / +0x1078. PS+0x768 is cached from the owner controller in
+`GobiPlayerState::SetOwner` 0x141BCD600 / `OnRep_Owner` 0x141BCD790 (logged `SetOwner ... HasStats:%d`).
 
-PS+0x768 is cached from the owner controller (`FindComponentByClass`) in `GobiPlayerState::SetOwner` 0x141BCD600 and
-`OnRep_Owner` 0x141BCD790 (0x141BCE540), logged as `SetOwner ... HasProfile:%d HasStats:%d`.
+Without cheats, replication and the client's deltas worked in every test: host and client `poststats` dumps matched
+(e.g. `values[3]: 9 0 0 lineup: 9 ... 1059300` on both), lineups identical, both summaries correct, and after a
+seamless chapter the client's own component had the new map's deltas (`kills map 7 all 16`).
 
-## 2. What the real session's host log shows
-- The remote player's mission PS had its component: `GobiPlayerState_BP_C_2147472888 SetOwner 0//GobiPlayerController_BP_C_2147472894 HasProfile:1 HasStats:1` (19:01:25).
-- The host tracked the remote player's kills: at OnLeavingMap after the post-round, `[offline.76561198084368598]:
-  adjusting stat RiddenKilled:base by 163` (the host itself: 202).
-- So on the host, that PS's replicated values should have been non-zero during the post-round. Bots have no stats
-  component (`HasStats:0`): their columns are always 0.
-- Mission end: `InProgress -> WaitingForPlayerStatSync` (forced flush for the remote player), 2 s timer, then
-  `WaitingPostMatch` (post-round screen).
+Side notes: `PostRoundStatValues` grows by one config's worth per seamless chapter on a carried-over PS (BeginPlay
+appends zeros to the copied array: `values[9]`); harmless, retail behaviour. Bots never get stats.
 
-Nothing found statically that would blank remote players on a client: every panel is fed from replicated
-PlayerState values or from the client's own component, which receives the deltas. Open candidates, to check live:
-1. The host's values for the remote PS are zero after all (PS+0x768 stale or null at the time, e.g. after a
-   seamless chapter transition), which the lineup/table would show on every machine.
-2. The client's copy of the remote PS is filtered out (`bFromPreviousLevel` set on a PS carried over by seamless
-   travel) or its values arrive late (PS net update rate vs. the moment the table is built).
-3. It is the Summary panel on the client (own component): deltas missing or late.
+## 3. Tools added (`native/src/poststats.c`, `cheats.c`)
+- Every build: `poststats: post-round values (host|client)` + one line per player, once per post-round screen, 5 s in
+  (`#i name values[n]: ... lineup: ... scoreboard: k p bits=<PS bool byte> stats: kills map M all A` or `stats: none`).
+- Dev: `poststats`; `cheatprobe killas <#n> [count]` (host: lethal damage to ridden with player #n as instigator, so
+  the kill/damage trackers credit that player); UI probes for headless runs (no input reaches UMG there):
+  `uitext <path part> [max]` (live TextBlock/RichTextBlock texts), `callw <path suffix> <Func>`,
+  `uihide <path suffix> [visibility]`, `funcs <Class>` (Blueprint classes too), `objat <addr>`.
+- Summary on screen in an unattended run: `callw WidgetTree_0.UnlockPreviewPanel OnFadeOutCompleted` on each instance
+  (what Continue ends in), then `launch/shot.sh`.
 
-## 3. Diagnostics added (`native/src/poststats.c`)
-- Every build logs once per post-round screen, 5 s in, on host and clients: `poststats: post-round values (host|client)`
-  then per player `#i <name> values[n]: ... lineup: ... scoreboard: k p bits=<PS bool byte> stats: kills map M all A`
-  (`stats: none` = no component on that machine, normal for other players on a client and for bots).
-- Dev: `poststats` (same dump, any time); `cheatprobe killas <#n> [count]` (host: lethal damage to ridden credited to
-  player #n, so a client gets kills in unattended tests).
-
-## 4. Live test (to run)
 ```
-export B4B_GPU=4090; launch/gamelock.sh acquire <me>; launch/install.sh
-B4B_INI_EXTRA="allow_joins=anyone" launch/multi.sh 2      # allow_joins: when no Steam client is running
-B4B_AGENT=0 tools/b4b.py mission Easy; ...ready
-B4B_AGENT=0 tools/b4b.py cheatprobe killas '#0' 8; ... killas '#1' 8   # after the horde spawns (or /spawn with cheats
-                                                                          # off again before the end: cheats taint stats)
-B4B_AGENT=0 tools/b4b.py poststats; B4B_AGENT=1 tools/b4b.py poststats  # before the end
-B4B_AGENT=0 tools/b4b.py endmission 1
-# every ~8 s during the ~2 min post-round: launch/shot.sh 1 host-N.png; launch/shot.sh 2 client-N.png; poststats on both
+export B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090   # or lane 1 when allowed
+launch/gamelock.sh acquire <me>; launch/install.sh; launch/multi.sh 2
+b4b.py cheat cheats on; b4b.py mission Easy; ...; b4b.py ready
+b4b.py cheatprobe killas '#0' 6; b4b.py cheatprobe killas '#2' 9     # the humans' indices from `players`
+b4b.py endmission 1; sleep 20; uitext SummaryStatEntry_WBP_C_ on both; callw ... OnFadeOutCompleted; shot.sh 1/2
 ```
-Compare the Stats/Lineup/Summary panels between host and client with the `poststats` values on each side.

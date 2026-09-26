@@ -1,7 +1,8 @@
-// Post-round stats of remote players (docs/investigations/post-round-stats.md).
-// Diagnostics for now: every build logs each player's post-round values once per post-round screen
-// ("poststats: ..." lines), so a real session's logs (host and clients) show what each machine had; dev builds also
-// have the `poststats` command (same dump, any time).
+// Post-round stats diagnostics (#30, docs/investigations/post-round-stats.md). Every build logs each player's
+// post-round values once per post-round screen ("poststats: ..." lines), so a session's logs (host and clients) show
+// what each machine had. Dev builds: `poststats` (same dump, any time) and UI probes for unattended tests
+// (`uitext`, `uihide`, `callw`, `funcs`, `objat`). The #30 fix itself is in cheats.c (cheats no longer carry from
+// camp into a mission).
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -86,8 +87,113 @@ void poststats_tick(float dt) {
 #ifndef B4B_RELEASE
 static void emit_out(void *ctx, const char *line) { out_printf((Out *)ctx, "%s\n", line); }
 
+// dev: `uitext <path substring> [max]` prints the Text of every live TextBlock / RichTextBlock whose full path
+// contains the substring (what a panel shows, without a screenshot)
+static void uitext(const char *needle, int max, Out *o) {
+    UClass *tb = ue_find_class("TextBlock"), *rtb = ue_find_class("RichTextBlock"), *ktl = ue_find_class("KismetTextLibrary");
+    UFunction *conv = ktl ? ue_find_function(ktl, "Conv_TextToString") : NULL;
+    if (!conv || !UC_CDO(ktl)) { out_printf(o, "no Conv_TextToString\n"); return; }
+    FField *pin = ue_find_prop(conv, "InText"), *pret = ue_find_prop(conv, "ReturnValue");
+    static char path[1024];
+    int hits = 0;
+    for (int i = 0, n = ue_num_objects(); i < n && hits < max; i++) {
+        UObject *x = ue_object_at(i);
+        if (!x || !U_CLASS(x) || (U_FLAGS(x) & 0x30)) continue;
+        if (!((tb && ue_is_a(x, tb)) || (rtb && ue_is_a(x, rtb)))) continue;
+        ue_full_path(x, path, sizeof path);
+        if (!strstr(path, needle)) continue;
+        int32_t off = ue_prop_offset(x, "Text");
+        if (off < 0) continue;
+        uint8_t parms[128] = {0};
+        memcpy(parms + FP_OFFSET(pin), (char *)x + off, 0x18);
+        ue_process_event(UC_CDO(ktl), conv, parms);
+        FString *s = (FString *)(parms + FP_OFFSET(pret));
+        char txt[256] = "";
+        for (int k = 0; s->data && k < s->num && k < 255 && s->data[k]; k++) txt[k] = s->data[k] < 128 ? (char)s->data[k] : '?';
+        const char *tail = strstr(path, needle) + strlen(needle);   // the path below the match, WidgetTree_0 dropped
+        static char shortp[512];
+        int k2 = 0;
+        for (const char *p = tail; *p && k2 < 500; ) {
+            if (!strncmp(p, "WidgetTree_0.", 13)) { p += 13; continue; }
+            shortp[k2++] = *p++;
+        }
+        shortp[k2] = 0;
+        tail = shortp;
+        int32_t voff = ue_prop_offset(x, "Visibility");
+        out_printf(o, "%s [vis %d] \"%s\"\n", tail, voff >= 0 ? *((uint8_t *)x + voff) : -1, txt);
+        hits++;
+    }
+    out_printf(o, "%d text(s)\n", hits);
+}
+
 int poststats_cmd(const char *verb, char *rest, Out *o) {
-    (void)rest;
+    if (!strcmp(verb, "uitext") && rest) {
+        char *needle = strtok(rest, " "), *m = strtok(NULL, " ");
+        uitext(needle, m ? atoi(m) : 60, o);
+        return 1;
+    }
+    if (!strcmp(verb, "objat") && rest) {   // objat <hex address>: class and full path of a live object
+        UObject *x = (UObject *)(uintptr_t)strtoull(rest, NULL, 16);
+        char p[1024], c[128];
+        int ok = 0;
+        for (int i = 0, n = ue_num_objects(); i < n && !ok; i++) ok = ue_object_at(i) == x;
+        if (!ok) { out_printf(o, "not a live object\n"); return 1; }
+        out_printf(o, "%s %s\n", ue_obj_name(U_CLASS(x), c, sizeof c), ue_full_path(x, p, sizeof p));
+        return 1;
+    }
+    if (!strcmp(verb, "uihide") && rest) {   // uihide <path suffix> [visibility]: set live widgets whose path ends so
+        UClass *wc = ue_find_class("Widget");  // Collapsed (1, default) or e.g. Visible (0): screenshots of what a
+        char *sfx = strtok(rest, " "), *vs = strtok(NULL, " ");   // modal hides (the post-round summary behind popups)
+        if (!sfx) return 1;
+        rest = sfx;
+        size_t L = strlen(rest);
+        char p[1024];
+        int n = 0;
+        for (int i = 0, m = ue_num_objects(); i < m; i++) {
+            UObject *x = ue_object_at(i);
+            if (!x || !U_CLASS(x) || (U_FLAGS(x) & 0x30) || !wc || !ue_is_a(x, wc)) continue;
+            ue_full_path(x, p, sizeof p);
+            size_t pl = strlen(p);
+            if (pl < L || strcmp(p + pl - L, rest) || !strstr(p, "Transient")) continue;
+            UFunction *f = ue_find_function(U_CLASS(x), "SetVisibility");
+            uint8_t v[16] = {(uint8_t)(vs ? atoi(vs) : 1)};   // ESlateVisibility
+            if (f) { ue_process_event(x, f, v); n++; out_printf(o, "visibility %d: %s\n", v[0], p); }
+        }
+        out_printf(o, "%d widget(s)\n", n);
+        return 1;
+    }
+    if (!strcmp(verb, "callw") && rest) {   // callw <path suffix> <Func>: call a parameterless function on live widgets
+        char *sfx = strtok(rest, " "), *fn = strtok(NULL, " "), p[1024];
+        if (!sfx || !fn) return 1;
+        size_t L = strlen(sfx);
+        for (int i = 0, m = ue_num_objects(); i < m; i++) {
+            UObject *x = ue_object_at(i);
+            if (!x || !U_CLASS(x) || (U_FLAGS(x) & 0x30)) continue;
+            ue_full_path(x, p, sizeof p);
+            size_t pl = strlen(p);
+            if (pl < L || strcmp(p + pl - L, sfx) || !strstr(p, "Transient")) continue;
+            UFunction *f = ue_find_function(U_CLASS(x), fn);
+            if (!f) { out_printf(o, "no %s on %s\n", fn, p); continue; }
+            static uint8_t parms[1024];
+            memset(parms, 0, sizeof parms);
+            ue_process_event(x, f, parms);
+            out_printf(o, "called %s on %s\n", fn, p);
+        }
+        return 1;
+    }
+    if (!strcmp(verb, "funcs") && rest) {   // funcs <Class>: the UFunctions a class declares (incl. Blueprint classes)
+        UClass *c = ue_find_class(rest);
+        char nm[128];
+        int n = 0;
+        for (int i = 0, m = ue_num_objects(); i < m && !c; i++) {   // Blueprint classes: the class of a live instance
+            UObject *x = ue_object_at(i);
+            if (x && U_CLASS(x) && !strcmp(ue_obj_name(U_CLASS(x), nm, sizeof nm), rest)) c = U_CLASS(x);
+        }
+        if (!c) { out_printf(o, "no class %s\n", rest); return 1; }
+        for (UObject *f = US_CHILDREN(c); f; f = UF_NEXT(f)) { out_printf(o, "%s\n", ue_obj_name(f, nm, sizeof nm)); n++; }
+        out_printf(o, "%d function(s)\n", n);
+        return 1;
+    }
     if (strcmp(verb, "poststats")) return 0;
     dump(emit_out, o);
     return 1;
