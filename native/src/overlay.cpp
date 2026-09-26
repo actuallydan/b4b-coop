@@ -26,6 +26,8 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <stdint.h>
+#include <math.h>
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 extern "C" {
@@ -208,8 +210,15 @@ static void render(IDXGISwapChain3 *sc) {
     n_drawn++;
 }
 
+#ifndef B4B_RELEASE
+static volatile LONG shot_state;   // dev `screenshot`: 0 idle, 1 requested (next Present copies), 2 copy/PNG in flight
+static void shot_capture(IDXGISwapChain3 *sc);
+#endif
 static HRESULT STDMETHODCALLTYPE present_hook(IDXGISwapChain3 *sc, UINT sync, UINT flags) {
     if (open_ && !(flags & DXGI_PRESENT_TEST)) render(sc);
+#ifndef B4B_RELEASE
+    if (shot_state == 1 && !(flags & DXGI_PRESENT_TEST)) shot_capture(sc);   // after the overlay: the frame as shown
+#endif
     return orig_present(sc, sync, flags);
 }
 static HRESULT STDMETHODCALLTYPE resize_hook(IDXGISwapChain3 *sc, UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl) {
@@ -260,6 +269,204 @@ static int install_hooks(void) {
     if (w) DestroyWindow(w);
     return ok;
 }
+
+#ifndef B4B_RELEASE
+// ---- dev `screenshot <windows path>`: the presented frame (game + overlay) as a PNG ----
+// Engine screenshots (`shot`) don't contain the overlay and come out black on some screens. Here Present (RHI thread)
+// copies the back buffer that is about to be shown, after the overlay has drawn on it, into a readback buffer on the
+// game's queue (one capture in flight); a worker thread waits for the copy, converts it to 8-bit RGB (8-bit, 10-bit and
+// FP16 scRGB back buffers) and writes an uncompressed PNG (<path>.part, then renamed).
+static ID3D12Device *shot_dev;
+static ID3D12CommandAllocator *shot_alloc;
+static ID3D12GraphicsCommandList *shot_list;
+static ID3D12Fence *shot_fence;
+static UINT64 shot_fence_val;
+static HANDLE shot_ev;
+static char shot_path[MAX_PATH], shot_result[260];
+static struct { ID3D12Resource *rb; D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp; UINT w, h; DXGI_FORMAT fmt; UINT64 v; } shot_job;
+static unsigned shot_n;
+
+static uint32_t crc_tab[256];
+static uint32_t crc(uint32_t c, const uint8_t *p, size_t n) {
+    if (!crc_tab[1])
+        for (uint32_t i = 0; i < 256; i++) { uint32_t k = i; for (int j = 0; j < 8; j++) k = k & 1 ? 0xEDB88320u ^ (k >> 1) : k >> 1; crc_tab[i] = k; }
+    c = ~c;
+    while (n--) c = crc_tab[(c ^ *p++) & 255] ^ (c >> 8);
+    return ~c;
+}
+static void be32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+// PNG, 8-bit RGB, filter 0, zlib with stored (uncompressed) deflate blocks: a few dozen lines, no dependency
+static int png_write(const char *path, const uint8_t *rgb, UINT w, UINT h) {
+    size_t raw = (size_t)(w * 3 + 1) * h, nblk = (raw + 65534) / 65535, zlen = 2 + raw + nblk * 5 + 4;
+    size_t total = 8 + 25 + 12 + zlen + 12;
+    uint8_t *b = (uint8_t *)malloc(total), *q = b;
+    if (!b) return 0;
+    memcpy(q, "\x89PNG\r\n\x1a\n", 8); q += 8;
+    be32(q, 13); memcpy(q + 4, "IHDR", 4); be32(q + 8, w); be32(q + 12, h);
+    q[16] = 8; q[17] = 2; q[18] = q[19] = q[20] = 0;
+    be32(q + 21, crc(0, q + 4, 17)); q += 25;
+    be32(q, (uint32_t)zlen); memcpy(q + 4, "IDAT", 4);
+    uint8_t *z = q + 8, *d = z + 2;
+    z[0] = 0x78; z[1] = 0x01;
+    uint32_t a1 = 1, a2 = 0;
+    size_t left = raw, pos = 0, row = (size_t)w * 3 + 1;
+    while (left) {
+        size_t n = left < 65535 ? left : 65535;
+        d[0] = left == n; d[1] = (uint8_t)n; d[2] = (uint8_t)(n >> 8); d[3] = (uint8_t)~n; d[4] = (uint8_t)(~n >> 8); d += 5;
+        for (size_t i = 0; i < n; i++, pos++) {   // the raw stream: a filter byte (0) before each row
+            size_t r = pos / row, c = pos % row;
+            uint8_t v = c ? rgb[r * w * 3 + c - 1] : 0;
+            *d++ = v;
+            a1 = (a1 + v) % 65521; a2 = (a2 + a1) % 65521;
+        }
+        left -= n;
+    }
+    be32(d, a2 << 16 | a1); d += 4;
+    be32(d, crc(0, q + 4, (size_t)(d - (q + 4)))); q = d + 4;
+    be32(q, 0); memcpy(q + 4, "IEND", 4); be32(q + 8, crc(0, q + 4, 4)); q += 12;
+    char tmp[MAX_PATH + 8];
+    snprintf(tmp, sizeof tmp, "%s.part", path);
+    HANDLE f = CreateFileA(tmp, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD wr = 0;
+    int ok = f != INVALID_HANDLE_VALUE && WriteFile(f, b, (DWORD)(q - b), &wr, nullptr) && wr == (DWORD)(q - b);
+    if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    free(b);
+    return ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
+}
+static float half_f(uint16_t h) {
+    uint32_t s = (uint32_t)(h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023, u;
+    if (!e) { if (!m) u = s; else { e = 113; while (!(m & 1024)) { m <<= 1; e--; } u = s | e << 23 | (m & 1023) << 13; } }
+    else if (e == 31) u = s | 0x7F800000u | m << 13;
+    else u = s | (e + 112) << 23 | m << 13;
+    float f; memcpy(&f, &u, 4); return f;
+}
+static uint8_t lin_srgb(float v) {   // scRGB (linear, 1.0 = SDR white) -> sRGB byte
+    if (!(v > 0)) return 0;
+    if (v >= 1) return 255;
+    float s = v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1 / 2.4f) - 0.055f;
+    return (uint8_t)(s * 255 + 0.5f);
+}
+static DWORD WINAPI shot_worker(void *) {
+    int ok = 0;
+    char why[120] = "";
+    if (shot_fence->GetCompletedValue() < shot_job.v) { shot_fence->SetEventOnCompletion(shot_job.v, shot_ev); WaitForSingleObject(shot_ev, 5000); }
+    uint8_t *m = nullptr, *rgb = nullptr;
+    D3D12_RANGE rr = {0, (SIZE_T)shot_job.fp.Footprint.RowPitch * shot_job.h};
+    if (shot_fence->GetCompletedValue() < shot_job.v) snprintf(why, sizeof why, "copy not done after 5 s");
+    else if (FAILED(shot_job.rb->Map(0, &rr, (void **)&m))) snprintf(why, sizeof why, "Map failed");
+    else if (!(rgb = (uint8_t *)malloc((size_t)shot_job.w * shot_job.h * 3))) snprintf(why, sizeof why, "out of memory");
+    else {
+        UINT w = shot_job.w, h = shot_job.h, pitch = shot_job.fp.Footprint.RowPitch;
+        for (UINT y = 0; y < h; y++) {
+            const uint8_t *s = m + (size_t)y * pitch;
+            uint8_t *d = rgb + (size_t)y * w * 3;
+            for (UINT x = 0; x < w; x++, d += 3) switch (shot_job.fmt) {
+            case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            case DXGI_FORMAT_B8G8R8X8_UNORM: case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+                d[0] = s[x * 4 + 2]; d[1] = s[x * 4 + 1]; d[2] = s[x * 4]; break;
+            case DXGI_FORMAT_R10G10B10A2_UNORM: case DXGI_FORMAT_R10G10B10A2_TYPELESS: {
+                uint32_t v; memcpy(&v, s + x * 4, 4);
+                d[0] = (uint8_t)((v & 1023) >> 2); d[1] = (uint8_t)((v >> 10 & 1023) >> 2); d[2] = (uint8_t)((v >> 20 & 1023) >> 2);
+                break;
+            }
+            case DXGI_FORMAT_R16G16B16A16_FLOAT: {
+                uint16_t c[3]; memcpy(c, s + x * 8, 6);
+                d[0] = lin_srgb(half_f(c[0])); d[1] = lin_srgb(half_f(c[1])); d[2] = lin_srgb(half_f(c[2]));
+                break;
+            }
+            default: d[0] = s[x * 4]; d[1] = s[x * 4 + 1]; d[2] = s[x * 4 + 2];   // R8G8B8A8 (checked at capture)
+            }
+        }
+        D3D12_RANGE none = {0, 0};
+        shot_job.rb->Unmap(0, &none);
+        m = nullptr;
+        ok = png_write(shot_path, rgb, w, h);
+        if (!ok) snprintf(why, sizeof why, "cannot write the file (error %lu)", GetLastError());
+    }
+    if (m) { D3D12_RANGE none = {0, 0}; shot_job.rb->Unmap(0, &none); }
+    free(rgb);
+    if (shot_fence->GetCompletedValue() >= shot_job.v) shot_job.rb->Release();   // else the GPU may still write it: leak
+    if (ok) snprintf(shot_result, sizeof shot_result, "wrote %s (%ux%u, format %d)", shot_path, shot_job.w, shot_job.h, (int)shot_job.fmt);
+    else snprintf(shot_result, sizeof shot_result, "FAILED %s: %s", shot_path, why);
+    LOG("screenshot: %s", shot_result);
+    shot_n++;
+    InterlockedExchange(&shot_state, 0);
+    return 0;
+}
+static int shot_fmt_ok(DXGI_FORMAT f) {
+    switch (f) {
+    case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8X8_UNORM: case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+    case DXGI_FORMAT_R10G10B10A2_UNORM: case DXGI_FORMAT_R10G10B10A2_TYPELESS: case DXGI_FORMAT_R16G16B16A16_FLOAT: return 1;
+    default: return 0;
+    }
+}
+static void shot_fail(const char *why) {
+    snprintf(shot_result, sizeof shot_result, "FAILED %s: %s", shot_path, why);
+    LOG("screenshot: %s", shot_result);
+    InterlockedExchange(&shot_state, 0);
+}
+// RHI thread, in Present: copy the current back buffer (state PRESENT) to a new readback buffer on the game's queue
+static void shot_capture(IDXGISwapChain3 *sc) {
+    if (!queue) return;   // not seen the game's queue yet: the next Present
+    if (!shot_dev) {
+        if (FAILED(sc->GetDevice(IID_PPV_ARGS(&shot_dev))) ||
+            FAILED(shot_dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&shot_alloc))) ||
+            FAILED(shot_dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, shot_alloc, nullptr, IID_PPV_ARGS(&shot_list))) ||
+            FAILED(shot_dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&shot_fence)))) {
+            if (shot_dev) { shot_dev->Release(); shot_dev = nullptr; }
+            return shot_fail("D3D12 setup failed");
+        }
+        shot_list->Close();
+        shot_ev = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    }
+    ID3D12Resource *bb = nullptr;
+    if (FAILED(sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&bb)))) return shot_fail("GetBuffer failed");
+    D3D12_RESOURCE_DESC rd = bb->GetDesc();
+    if (!shot_fmt_ok(rd.Format)) {
+        bb->Release();
+        char w[64]; snprintf(w, sizeof w, "unsupported back buffer format %d", (int)rd.Format);
+        return shot_fail(w);
+    }
+    UINT64 total = 0;
+    shot_dev->GetCopyableFootprints(&rd, 0, 1, 0, &shot_job.fp, nullptr, nullptr, &total);
+    D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = total; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    shot_job.rb = nullptr;
+    if (FAILED(shot_dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                 IID_PPV_ARGS(&shot_job.rb)))) { bb->Release(); return shot_fail("no readback buffer"); }
+    shot_job.w = (UINT)rd.Width; shot_job.h = rd.Height; shot_job.fmt = rd.Format;
+    shot_alloc->Reset();   // the previous capture's copy is done (the worker waited for it)
+    shot_list->Reset(shot_alloc, nullptr);
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = bb;
+    b.Transition.Subresource = 0;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    shot_list->ResourceBarrier(1, &b);
+    D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+    dst.pResource = shot_job.rb; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; dst.PlacedFootprint = shot_job.fp;
+    src.pResource = bb; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; src.SubresourceIndex = 0;
+    shot_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    shot_list->ResourceBarrier(1, &b);
+    shot_list->Close();
+    ID3D12CommandList *l = shot_list;
+    orig_ecl(queue, 1, &l);
+    queue->Signal(shot_fence, ++shot_fence_val);
+    shot_job.v = shot_fence_val;
+    bb->Release();
+    InterlockedExchange(&shot_state, 2);
+    HANDLE t = CreateThread(nullptr, 0, shot_worker, nullptr, 0, nullptr);
+    if (t) CloseHandle(t);
+    else shot_worker(nullptr);
+}
+#endif
 
 // ---- window log (replies of ov_run, chat_local lines) ----
 #define LOG_LINES 80
@@ -848,7 +1055,27 @@ extern "C" int overlay_is_open(void) { return open_ != 0; }
 
 #ifndef B4B_RELEASE
 // dev: overlay [open|close|status|log|tab <name>|press <label>|set <label> <value>|locate <label>|mouse <x> <y>]
+// dev: screenshot <windows path> (the next presented frame, overlay included, as a PNG; installs the Present hook if
+// the overlay was never opened) | screenshot (state and the last result)
+static int screenshot_cmd(char *rest, Out *o) {
+    while (rest && *rest == ' ') rest++;
+    if (!rest || !*rest) {
+        out_printf(o, "screenshot: hooks=%d state=%s taken=%u last: %s\n", hooks, shot_state == 1 ? "requested" : shot_state ? "writing" : "idle",
+                   shot_n, shot_result[0] ? shot_result : "-");
+        return 1;
+    }
+    if (!hooks) hooks = install_hooks() ? 1 : -1;
+    if (hooks != 1) { out_printf(o, "error: no Present hook (see the log)\n"); return 1; }
+    InterlockedCompareExchange(&shot_state, 0, 1);   // a request no Present picked up yet is replaced
+    if (shot_state) { out_printf(o, "error: busy (%s)\n", shot_path); return 1; }
+    snprintf(shot_path, sizeof shot_path, "%s", rest);
+    shot_result[0] = 0;
+    InterlockedExchange(&shot_state, 1);
+    out_printf(o, "queued %s\n", shot_path);
+    return 1;
+}
 extern "C" int overlay_cmd(const char *verb, char *rest, Out *o) {
+    if (!strcmp(verb, "screenshot")) return screenshot_cmd(rest, o);
     if (strcmp(verb, "overlay")) return 0;
     char *a = rest ? strtok(rest, " ") : nullptr, *b = a ? strtok(nullptr, "") : nullptr;
     while (b && *b == ' ') b++;
