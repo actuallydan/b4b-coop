@@ -130,9 +130,10 @@ can't find is guessed from the survivor's face scaled to yours (`scaled from the
 - `--face off` leaves the face on the head bone (no talking or blinking), as before.
 
 ## Swinging hair and skirts
-Two options make long hair and skirts move with the character instead of sticking to the head and hips:
+Long hair and skirts move with the character instead of sticking to the head and hips, whenever the survivor/outfit
+supports it (on by default; `--hair-physics off` / `--cloth off` turn them off):
 ```
-b4bmod survivor model.vrm --outfit .../3P_Holly_Elite_00_SKM ... --hair-physics auto --cloth auto
+b4bmod survivor model.vrm --outfit .../3P_Holly_Elite_00_SKM ...
 b4bfit: hair: 3859 of 13057 hair vertices on the survivor's physics hair bones (hair_00,hair_01,hair_02)
 b4bfit: cloth: ['F00_001_01_Bottoms_01_CLOTH'] -> 568 cloth faces, simulation mesh 7x20 (140 vertices), waist 105 cm, hem 72 cm
   cloth: section on slot flannel1 (two-sided variant of Body)
@@ -214,7 +215,7 @@ What the survivor pipeline prints, and what to do about it.
 | Hair is one colour / a bit dark | only with `--hair tint` (the game's hair shader: one colour root to tip, your texture's average, root 40 % darker). The default `--hair texture` keeps your texture's colours |
 | Hair much darker / another colour than the texture file | the material multiplies the texture by a colour (glTF base colour factor, VRoid/MToon hair colour): that is applied, as in Blender / VRoid. VRM 0.x colours are read as sRGB, like VRoid does |
 | Eyes look flat | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in its own colours (`--hair tint`: in the hair colour); highlights are left out |
-| Skirts, long hair, capes don't swing | `--hair-physics auto --cloth auto` on a survivor/outfit that supports it ([Swinging hair and skirts](#swinging-hair-and-skirts)); capes and coats: not supported |
+| Skirts, long hair, capes don't swing | pick a survivor/outfit that supports it (swinging is on by default there) ([Swinging hair and skirts](#swinging-hair-and-skirts)); capes and coats: not supported |
 | A low-poly model turns into triangles at a distance | fixed: models under ~1500 triangles keep every LOD whole (older kits: `--lods 1,1,1,1,1`) |
 | The add-on is 150-200 MB | 4096 textures (several materials packed into one texture set): `--max-texture 2048` |
 | The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |

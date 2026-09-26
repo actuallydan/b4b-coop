@@ -671,7 +671,7 @@ Custom long hair and skirts used to move rigidly with head/pelvis. Code: `modkit
 `b4bfit.py` 3P, `--hair_bones`, `--cloth`), `modkit/cloth.py` (template inspection, clothing asset writer, render
 mapping), `modkit/uprops.py` (tagged-property tree parse/write, byte-identical on retail cloth/PA exports),
 section tagging in `skmgltf.py` (glTF nodes `B4BCLOTH_*` -> own section). Flags: `b4bmod survivor ... --hair-physics
-auto [--hair-swing 0..1] --cloth auto|off|MAT,...` (opt-in).
+auto [--hair-swing 0..1] --cloth auto|off|MAT,...` (default auto since 2026-09-26: on where the template supports it).
 
 **How retail heroes get secondary motion (static):**
 - **RigidBody node**: `3P_Hero_ABP` has 3 `AnimNode_RigidBody` (OverridePhysicsAsset None = the mesh's physics
@@ -734,4 +734,4 @@ skeleton moved, waist 114 cm) the same build and live run: skirt and hair still 
 Open: only Holly Elite 00 tested (other cloth templates should work: same writer, their asset's PA/config); a
 template without a clothing asset can't get cloth (adding the exports/imports needs a package writer that adds
 exports); the sim ring closes coats/open-front dresses; long hair can dip into the back when the chain swings
-(`--hair-swing`); both flags are opt-in.
+(`--hair-swing`); both flags default to auto (Dan, 2026-09-26: on when the model/template supports it).
