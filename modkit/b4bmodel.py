@@ -6,10 +6,12 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
   b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir>
         [--slot MAT=SLOT|drop]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
         [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none] [--facing -y]
-        [--face auto|off]    auto: the face is skinned to the survivor's face bones (talks, blinks; mesh-mods.md §11)
+        [--face auto|off]    auto: the face is skinned to the survivor's face bones (talks, blinks; mesh-mods.md §12)
         <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
         (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
         Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
+        [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
+                                tint = the game's hair shader, one colour root to tip (your texture's average)
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
                                             `outfit=` line in <moddir>/addoninfo.txt (in game: /model <name>)
   b4bmodel.py weapon <model> --fp-mesh <FP weapon SKM> [--3p-mesh <3P weapon SKM>] [--static <SM>]... -o <moddir>
@@ -194,6 +196,19 @@ def linear_to_srgb(c): return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 /
 # hero hair MIs) it samples one RGBA "Hair MultiMask" on UV0 whose A is the strand alpha; colour = RootColor..TipColor
 HAIR_MASTER_RX = re.compile(r"/Master_Hair_M(\.|$)")
 HAIR_ROOT_DARKEN = 0.6
+# --hair texture (default): the hair slot gets a copy of a retail material instance that draws a colour TEXTURE with its
+# alpha as the mask: the Cultist Melee's hair (Master_Zombie_Outfit_M: two-sided, masked + dithered like hero hair, cloth
+# shading; static switches "Enable BC.A Opacity Mask" on, "Enable Wounds" off). Copying a retail MI keeps its cooked
+# shaders (a new switch combination would need shaders the game doesn't have). mesh-mods.md §11.
+HAIR_TEX_MI = "/Game/TU11/Characters/Cultists/CultistMelee/Materials/CultistMelee_Hair_MI"
+HAIR_TEX_TEXTURES = {"Base Color": ("hairbc", "/Game/TU11/Characters/Cultists/CultistMelee/Textures/CultistMelee_Hair_BC_T"),
+                     "Normal Map": ("normal", "/Game/TU11/Characters/Cultists/CultistMelee/Textures/CultistMelee_Hair_N_T"),
+                     "PBR Map": ("pbr", "/Game/TU11/Characters/Cultists/CultistMelee/Textures/CultistMelee_Hair_PBR_T")}
+# its "Microtile (R)" detail layer (a fabric pattern) is switched on in that MI: its intensities go to 0
+HAIR_TEX_SCALARS = {"Detail BC Intensity (R)": 0.0, "Detail Roughness Intensity (R)": 0.0,
+                    "Detail NRM Intensity (R)": 0.0, "Detail Height Scale (R)": 0.0,
+                    "Fuzz Spread": 0.0, "Fuzz Brightness": 0.1}      # cloth sheen as on Sharice Elite 02's hair
+HAIR_MODES = ("texture", "tint")
 
 
 class TexTool:
@@ -215,6 +230,9 @@ class TexTool:
         self.mi_sets = []                # (MI, texture parameter, new texture) for textures that were shared
         self.adopted = {}                # shared MI package -> its copy in the template's folder
         self.meshes = []                 # the cooked meshes written (repointed when an MI is adopted)
+        self.hair_mode = o.get("hair", "texture")
+        if self.hair_mode not in HAIR_MODES: die(f"--hair: {' or '.join(HAIR_MODES)}")
+        self.mi_scalars = []             # (MI, {scalar: value}) set after the textures
 
     def retail_png(self, tex_file):
         png = os.path.join(self.work, "retail_" + os.path.basename(tex_file)[:-7] + ".png")
@@ -237,6 +255,9 @@ class TexTool:
                 if p and os.path.exists(p): base = max(base, png_size(p))
         size = min(self.max_tex, 1 << math.ceil(math.log2(max(256, base * g))))
         hair_size = min(size, 2048)                  # the strand mask needs less (retail hero hair masks: 2048 or less)
+        if hair and self.hair_mode == "texture" and mi:
+            self.hair_texture_set(tiles, mi, owned, size, set_name)
+            return
         for param, tex in params.items():
             if tex in self.done: continue
             role = role_of(param)
@@ -270,6 +291,48 @@ class TexTool:
                 if mi and mi.startswith(owned): self.hair_mis.append((mi, out + ".json"))
                 else: log(f"  hair: {mi} is shared with other outfits: its colours stay the game's")
 
+    def hair_texture_set(self, tiles, mi, owned, size, set_name):
+        """--hair texture: a copy of HAIR_TEX_MI in the template's folder with our colour (RGB + alpha), normal and PBR
+        textures; the meshes' hair slot is pointed at it (the template's hair MI stays as it is, unused by our meshes)."""
+        base = re.sub(r"_?MI$", "", mi.split(".")[0].split("/")[-1])
+        new_mi = owned + "Materials/" + base + "Color_MI"
+        if new_mi in self.done: return
+        self.done.add(new_mi)
+        self.b4b("info", HAIR_TEX_MI, *[t for _, t in HAIR_TEX_TEXTURES.values()], what="extracting the hair material")
+        refs = []
+        has = {k for t in tiles for k in t.get("textures", {})}
+        for param, (role, tex) in HAIR_TEX_TEXTURES.items():
+            path = owned + "Textures/" + base + "Color_" + tex.rsplit("_", 2)[-2] + "_T"
+            asset = self.copy_pkg(tex, path)
+            refs.append(f"{tex}={path}")
+            out = os.path.join(self.work, path.split("/")[-1] + ".png")
+            # colour at full size; normal / PBR maps only as big as needed (anime hair has none: flat, constant)
+            n = size if role == "hairbc" else \
+                size if role == "normal" and "normal" in has else \
+                min(size, 2048) if role == "pbr" and has & {"roughness", "orm", "mask", "gloss", "ao", "metallic"} else 256
+            self.jobs.append({"out": out, "size": n, "role": role, "tiles": tiles,
+                              "mean_from": self.retail_png(upkg.game_path_to_file(tex, self.src)),
+                              "normal_dx": self.normal_dx, "asset": asset, "path": path, "kind": self.kind})
+            if role == "hairbc" and set_name: self.preview.setdefault(set_name, out)
+        self.copy_pkg(HAIR_TEX_MI, new_mi, refs)
+        self.mi_scalars.append((new_mi, HAIR_TEX_SCALARS))
+        self.repoint(mi.split(".")[0], new_mi, "hair: colour texture (masked by its alpha) instead of the game's hair shader")
+
+    def repoint(self, pkg, new, why):
+        """Every mesh written so far that uses material package `pkg` is pointed at `new` instead."""
+        name = pkg.split("/")[-1]
+        for mf in self.meshes:
+            if not os.path.exists(mf): continue
+            if not any(n == pkg for cp, cn, outer, n in upkg.Package(mf).imports):
+                continue
+            tmp = os.path.join(self.work, "repoint", "Gobi", "Content", os.path.basename(mf))
+            os.makedirs(os.path.dirname(tmp), exist_ok=True)
+            for ext in (".uasset", ".uexp"):
+                shutil.copyfile(mf[:-7] + ext, tmp[:-7] + ext)
+            self.b4b("rename", tmp, upkg.file_to_game_path(mf), "-o", self.moddir, "--ref", f"{pkg}={new}",
+                     what=f"pointing {os.path.basename(mf)} at {new}")
+            log(f"  {os.path.basename(mf)[:-7]}: slot material {name} -> {new} ({why})")
+
     def mi_ref(self, mi):
         """An MI for `b4bmod mi`: the copy in the mod folder if there is one (adopted, or edited before)."""
         f = upkg.game_path_to_file(mi.split(".")[0], self.moddir)
@@ -301,17 +364,7 @@ class TexTool:
         new = owned + "Materials/" + pkg.split("/")[-1]
         self.copy_pkg(pkg, new)
         name = pkg.split("/")[-1]
-        for mf in self.meshes:
-            if not os.path.exists(mf): continue
-            if not any(n == pkg for cp, cn, outer, n in upkg.Package(mf).imports):
-                continue
-            tmp = os.path.join(self.work, "repoint", "Gobi", "Content", os.path.basename(mf))
-            os.makedirs(os.path.dirname(tmp), exist_ok=True)
-            for ext in (".uasset", ".uexp"):
-                shutil.copyfile(mf[:-7] + ext, tmp[:-7] + ext)
-            self.b4b("rename", tmp, upkg.file_to_game_path(mf), "-o", self.moddir, "--ref", f"{pkg}={new}",
-                     what=f"pointing {os.path.basename(mf)} at {new}")
-            log(f"  {os.path.basename(mf)[:-7]}: slot material {name} -> {new} (a copy: the original is shared)")
+        self.repoint(pkg, new, "a copy: the original is shared")
         self.adopted[pkg] = f"{new}.{name}"
         return self.adopted[pkg]
 
@@ -330,6 +383,11 @@ class TexTool:
         for mi, param, path in self.mi_sets:
             self.b4b("mi", self.mi_ref(mi), "set", param, path, "-o", self.moddir, what=f"material {mi}: {param}")
         self.mi_sets = []
+        for mi, vals in self.mi_scalars:
+            sets = [x for k, v in vals.items() for x in ("set", k, f"{v:g}")]
+            self.b4b("mi", self.mi_ref(mi), *sets, "-o", self.moddir, what=f"material {mi}")
+            log(f"  {mi.split('/')[-1]}: {', '.join(f'{k} {v:g}' for k, v in vals.items())}")
+        self.mi_scalars = []
         for mi, stats in self.hair_mis:
             c = json.load(open(stats))["color_linear"]
             root = ",".join(f"{x * HAIR_ROOT_DARKEN:.4f}" for x in c) + ",1"
@@ -525,7 +583,10 @@ def survivor(o):
                  "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06")] + fit_args(o.o) + atlas_args +
                 slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")])
     man3 = json.load(open(os.path.join(d3, "manifest.json")))
-    hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)}
+    # the game's hair shader tints vertex-coloured strands (retail: mostly black); the colour-texture material doesn't
+    # (the cultist's hair is white, the default)
+    hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)} \
+        if o.get("hair", "texture") == "tint" else {}
     skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair, bones=face_bone_moves(man3))
     face_preview(o.o, tp, man3, work)
     mans = [(man3, tp)]

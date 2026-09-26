@@ -27,7 +27,11 @@ size = int(opts["size"])
 bpy.ops.wm.read_factory_settings(use_empty=True)
 ext = os.path.splitext(src)[1].lower()
 if ext == ".fbx": bpy.ops.import_scene.fbx(filepath=src)
-elif ext in (".glb", ".gltf"): bpy.ops.import_scene.gltf(filepath=src)
+elif ext in (".glb", ".gltf", ".vrm"):
+    bpy.ops.import_scene.gltf(filepath=src)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from b4bfit import vrm0_colors
+    vrm0_colors(src)                              # MToon _Color as sRGB, as the pipeline reads it
 elif ext == ".obj": bpy.ops.wm.obj_import(filepath=src)
 elif ext == ".blend": bpy.ops.wm.open_mainfile(filepath=src)
 for o in list(bpy.data.objects):
@@ -121,6 +125,8 @@ if opts["textures"]:
                 nm.node_tree.links.new(t.outputs["Alpha"], b.inputs["Alpha"])
             else:
                 nm.node_tree.links.new(t.outputs["Color"], b.inputs["Base Color"])
+                if "haircolor_bc" in p.lower():                     # hair colour texture: A = strands (masked)
+                    nm.node_tree.links.new(t.outputs["Alpha"], b.inputs["Alpha"])
             b.inputs["Roughness"].default_value = 0.7
             o.data.materials[i] = nm
 # B4B skeleton: views relative to the model's facing (heroes face +X)

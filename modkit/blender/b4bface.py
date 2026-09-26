@@ -11,7 +11,7 @@ expressions) and a blink animation; there are no morph targets. So a custom head
 Landmarks on the model, best source first: its own face bones (Rigify, VRoid, Mixamo/CC eyes, a jaw bone), shape keys
 (a mouth-open key gives the lip line, a blink key the lids), mesh islands shaped like eyeballs, the front profile of the
 face along the middle (nose, lip crease, chin), else the template's own landmarks scaled onto the model's head.
-Used by b4bfit.py (`character --mode 3p`, `--face auto|off`); how it works: docs/investigations/mesh-mods.md §11
+Used by b4bfit.py (`character --mode 3p`, `--face auto|off`); how it works: docs/investigations/mesh-mods.md §12
 (b4b-coop repository).
 """
 import bmesh, math, os, re

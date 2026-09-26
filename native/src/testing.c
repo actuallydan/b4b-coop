@@ -596,7 +596,7 @@ show:
     out_printf(o, "%d probe(s)\n", n_fnp);
 }
 
-// ---- faces (model mods #23: custom heads on the survivors' face bones; docs/investigations/mesh-mods.md §11) ----
+// ---- faces (model mods #23: custom heads on the survivors' face bones; docs/investigations/mesh-mods.md §12) ----
 // face                          list heroes (index, mesh)
 // face <hero#> [bone...]        each face bone's current rotation/offset from the mesh's reference pose (parent space)
 //                               and its reference-pose position (the bind pose the mesh brought: moved face bones)
