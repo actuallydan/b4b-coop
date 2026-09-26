@@ -241,8 +241,11 @@ crosshair (3P) or the eyes (1P) on the item, read `PotentialUsableComponent`); "
   2`, host `tp 1` next to the item, client aims): picked up an AR (host log `AR01_1_Pickup... BeginUse / EndUse
   Reason=SuccessfulUse`, gone on the client) and bought a WildCard card (1 s hold, host `SuccessfulUse`). The host
   accepts: the server's CanUse skips the observation for a remote user, so no protocol change.
+- Holding F to revive in 3P (host, a bot downed with `cheatprobe hp #3 0`): "Reviving [BOT] WALKER..." bar in our
+  3P view, `LogUse: Hero_BP_C_... EndUse Reason=SuccessfulUse` after 2.4 s. (`/freeze` blocks the local player's use
+  too, like firing; a hero downed by `hp <#> 0` once does not go down from it again.)
 - Not tried / not reproducible here: ledge-hang pick-up, supply crates (same base UsableComponent CanUse as the vendor
-  and jukebox, no observer), holding F to revive in 3P (bots revived first; SetHealth 0 stopped incapping after one
-  use), healing a teammate with a bandage (weapon-slot key and left mouse don't reach the headless instances), mission
-  objectives (none on Evansburgh B). `/freeze` makes the host's `tp` of a client hero not reach the client.
+  and jukebox, no observer), healing a teammate with a bandage (weapon-slot key and left mouse don't reach the
+  headless instances), mission objectives (none on Evansburgh B). `/freeze` also keeps the host's `tp` of a client
+  hero from reaching the client.
 - `e2e.py --quick` 13/13 (lane 2) with the fix.
