@@ -13,6 +13,9 @@ Cycles on the CPU (works without a GPU). For checking a model before and after t
   game adds it (lip-sync visemes AH, E, OW, MBP ...; expressions Joy, Anger, Surprise ...), and/or the upper eyelids
   rotated shut by DEG degrees (a blink). Without a pose: the face at rest. --face-view mouth|eyes: a closer look at
   the mouth or the eyes (with --zoom). Back faces of one-sided materials are left out (as in the game).
+  --fp hold: first-person arms (an FP_ mesh: b4bfit's fitfp/lod*.glb or the retail FP mesh) in a two-handed gun hold
+  (arms bent onto fixed hand targets in front of the camera bone), seen from the FP camera (90 deg); render the retail
+  FP mesh the same way to compare: the game's FP view is tight, arms off the FP skeleton's joints don't show.
 """
 import bpy, math, os, sys
 from mathutils import Vector
@@ -20,7 +23,7 @@ from mathutils import Vector
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out = argv[0], argv[1]
 opts = {"size": "512", "views": "front,side,back", "zoom": "1.0", "focus": "", "pose": "", "textures": "", "face": "",
-        "face_pose": "", "face_blink": "0", "face_view": "face", "sim": ""}
+        "face_pose": "", "face_blink": "0", "face_view": "face", "sim": "", "fp": ""}
 i = 2
 while i < len(argv):
     opts[argv[i].lstrip("-").replace("-", "_")] = argv[i + 1]; i += 2
@@ -103,6 +106,46 @@ def face_pose(fj, pose_name, blink_deg):
     return arm
 
 
+# --fp hold: FP skeleton space (x forward, y left, z up; the camera bone at the eyes): right hand on the grip, left
+# hand on the fore-end, elbows down and out; two-bone IK per arm, the hand keeps its bind bend to the forearm
+FP_HOLD = {"r": (Vector((0.30, -0.15, 1.40)), Vector((0.1, -0.6, -1.0))),
+           "l": (Vector((0.52, -0.02, 1.46)), Vector((0.0, 0.7, -1.0)))}
+
+
+def fp_hold():
+    from mathutils import Matrix as M4
+    a = next(x for x in bpy.data.objects if x.type == "ARMATURE")
+    bpy.context.view_layer.objects.active = a
+    bpy.ops.object.mode_set(mode="POSE")
+    Mw = a.matrix_world
+    cam_b = a.data.bones.get("camera")
+    eye = Mw @ cam_b.head_local if cam_b else Vector((0, 0, 1.65))
+    for sd, (tgt, pole) in FP_HOLD.items():
+        names = [f"upperarm_{sd}", f"lowerarm_{sd}", f"hand_{sd}"]
+        if not all(n in a.pose.bones for n in names): continue
+        S, E, W = (Mw @ a.data.bones[n].head_local for n in names)
+        T = tgt + (eye - Vector((0, 0, 1.65)))
+        l1, l2 = (E - S).length, (W - E).length
+        d = min((T - S).length, (l1 + l2) * 0.999)
+        u = (T - S).normalized(); T = S + u * d
+        x = (l1 * l1 - l2 * l2 + d * d) / (2 * d)
+        h = math.sqrt(max(l1 * l1 - x * x, 0.0))
+        pp = (pole - u * pole.dot(u)).normalized()
+        E2 = S + u * x + pp * h
+        R1 = (E - S).normalized().rotation_difference((E2 - S).normalized()).to_matrix().to_4x4()
+        M1 = M4.Translation(S) @ R1 @ M4.Translation(-S)
+        Wm = M1 @ W
+        R2 = (Wm - E2).normalized().rotation_difference((T - E2).normalized()).to_matrix().to_4x4()
+        M2 = M4.Translation(E2) @ R2 @ M4.Translation(-E2) @ M1
+        for n, M in zip(names[:2], (M1, M2)):
+            pb = a.pose.bones[n]
+            pb.matrix = Mw.inverted() @ M @ Mw @ pb.bone.matrix_local
+            bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return eye
+
+
+FP_EYE = fp_hold() if opts["fp"] else None
 FACE_ARM = face_pose(opts["face"], opts["face_pose"], opts["face_blink"]) if opts["face"] else None
 
 for o in list(bpy.data.objects):                  # glTF importer bone-shape helpers
@@ -194,6 +237,7 @@ if FACE_ARM is not None:                          # close-up of the face
         c = sum((FACE_ARM.matrix_world @ fb[n].head_local for n in look), Vector()) / 2
     ext_ = 0.26 / float(opts["zoom"])
 print("bounds", tuple(round(x, 3) for x in lo), tuple(round(x, 3) for x in hi))
+if FP_EYE is not None and "--views" not in argv: opts["views"] = "fp"
 
 scene = bpy.context.scene
 scene.render.engine = "CYCLES"
@@ -219,6 +263,17 @@ dirs = {"front": Vector((0, -1, 0)), "back": Vector((0, 1, 0)), "side": Vector((
 tiles = []
 base = os.path.splitext(out)[0]
 for v in opts["views"].split(","):
+    if v == "fp":                                 # the FP camera: at the camera bone, looking forward (+X), 90 deg
+        cam.data.type = "PERSP"; cam.data.sensor_fit = "HORIZONTAL"; cam.data.angle = math.radians(90)
+        cam.data.clip_start = 0.01
+        cam.location = FP_EYE
+        cam.rotation_euler = Vector((1, 0, 0)).to_track_quat("-Z", "Y").to_euler()
+        sun.rotation_euler = Vector((-0.3, 0.3, 1.0)).normalized().to_track_quat("Z", "Y").to_euler()
+        p = f"{base}_{v}.png"
+        scene.render.filepath = p
+        bpy.ops.render.render(write_still=True)
+        tiles.append(p)
+        continue
     d = dirs[v]
     if face_rot is not None and v != "top": d = face_rot @ d
     cam.location = c + d * ext_ * 3

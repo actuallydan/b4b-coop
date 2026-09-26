@@ -1118,3 +1118,44 @@ Elite 00, now in the local suite manifest. General bugs they showed, all in `mod
   elsewhere). The physics asset simply wasn't extracted (not among the mesh's material/texture references), and
   `hair_chains` returned no chain. `dangle_args` now extracts it; `hair_chains` no longer adds a second chain for a
   simulated bone below another one (Mom: `['hair_02_l']` twice). Docs (meshes.md) were right; Mom E07 added.
+
+## 20. Finishing the two models: FP arms from the 3P fit, arm surface fit, textures, mouth landmarks (models-fixA, 2026-09-26)
+Same two local models as §19 (rigged ARP FBX, unrigged Daz FBX). Offline checks with a new preview mode:
+`preview.py --fp hold` poses the FP skeleton's arms by two-bone IK onto fixed hand targets in front of the `camera`
+bone (right hand on the grip, left on the fore-end) and renders from the camera (90 deg); the retail FP mesh rendered
+the same way is the reference (charsuite now adds it to the previews: column "preview FP"). It reproduced the live
+§19 finding offline: the unrigged sleeve stretched up past the hands, the rigged arms matching the retail ones.
+- **Unrigged FP arms = the rigged path.** The 3P fit of an unrigged model (the regions probe, `--rigged_out`) saves the
+  model on the survivor skeleton (bind pose, template weights) as `<work>/rigged3p.blend` (object names kept); the FP
+  probe and FP fit load it (`--rigged`, identity bone map of the survivor names) and fit it like a rigged model: every
+  joint exactly on the FP skeleton's (`pose fit: max joint error 0.00 cm`). `_unpose_chain` stays as the fallback
+  (no `--rigged`). Named arm parts of blocky figures are kept whole in FP.
+- **Arm surface fit (unrigged, 3P and so FP).** The tip guess (`left arm is 4 deg from the template's pose`) left the
+  hands 8 cm behind and below the template's: the model's hands took forearm and thigh weights. `fit_arm_pose` turns
+  the template's clavicle, upper arm, forearm (coordinate search, mean distance of each segment's points and those
+  below it to the model's nearest vertex, limits 25/70/70 deg), then the hand by frames: the model's hand = vertices
+  reached over the welded mesh within 1.3 hand lengths of the wrist, on its far side (so the thigh next to a hanging
+  hand isn't taken); direction wrist -> hand centre, palm normal = thinnest PCA axis (sign nearest the template's).
+  Result: hand surface distance 4.6 -> 1.7 cm, 1834/1886 hand vertices; FP hands where the retail ones are. Fit worse
+  than 3 cm (blocky figure: 9-10 cm) -> the old tip turn (`no fit onto the model's surface`).
+- **Palm roll (rigged).** The hand's aim-only turn left the palm wherever the model had it; now also the knuckle line
+  (pinky_01 -> index_01) onto the template's (`palms turned l -2 deg, r 2 deg` on the rigged model), fingers keep the
+  hand's roll (parent's turn first, then the shortest turn onto their segment).
+- **Wrong dress colour (rigged model).** Its FBX links the dress's colour image only to Alpha (colour socket empty), so
+  the name guess took `<Mat>Inner_BaseColor` (substring of another material's set): an olive dress instead of black
+  with gold vines. Now an alpha-only image whose name says base colour is the colour too, and the name guess prefers
+  files named exactly after the material. Then the dress followed its necklace (same image) to Gear, where cloth
+  would be refused: garment-named materials no longer count as "placed by look". Circlet (was on the Head skin slot:
+  pale, "skin colours 100%") and other jewellery words (circlet, crown, tiara, bangle, armband, anklet, pendant,
+  amulet) go to Gear.
+- **Cheek slash in Joy/OW (rigged).** Mouth corners from the mouth-open key were the sides of everything it moves:
+  model half width 4.3 cm (template 2.4), the corner bones sat on the cheeks. Now the corners are where the key's motion
+  jumps across the lip slit (> 40 % of its max within 3 mm of height, 2 mm bins walking out from the middle): 2.2 cm.
+  Smile, "O" and "AH" read as a mouth.
+- **Chin left behind (unrigged).** The profile chin was the front-most point under the lower lip = the bottom of a
+  full lower lip (0.4 cm below it); the warp then sent the real chin below the template's (5-7 cm from its surface):
+  no jaw weight, the chin stayed while the lip dropped. The chin is now the bulge below the fold under the lower lip
+  (-0.8 cm): the whole chin follows the jaw.
+- Also: ARP jaw-side bones (`c_lips_bot*`, `c_teeth_bot*`, `tong_*`) recognised for `b4b_face_jawsrc`.
+- Not fixed: the rigged model's inner upper lip hangs slightly into an opened mouth (AH), the unrigged model's lips
+  part at the corners in a smile (its mouth interior is the generated one); both small at talking strength.

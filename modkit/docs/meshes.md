@@ -113,7 +113,13 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb out.png --textures <work>/preview_textures_3p.json --views front,side,back
    blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb out.png --textures <work>/preview_textures_3p.json --pose test --views front,front3q
    ```
-   (the first-person arms: `fitfp/lod0.glb` with `preview_textures_fp.json`). Run it in the kit folder; `blender` is
+   The first-person arms as the game shows them (a two-handed gun hold seen from the FP camera; render the outfit's
+   retail `FP_` mesh from `<work>/FP_*.glb` the same way to compare: hands where the survivor's are, sleeves not
+   stretched):
+   ```
+   blender -b --python blender/preview.py -- <work>/fitfp/lod0.glb fp.png --fp hold --textures <work>/preview_textures_fp.json
+   ```
+   Run it in the kit folder; `blender` is
    the path `b4bmod status` shows. Step 4 prints the command with `<work>` filled in (or give `--work DIR` there).
 6. **Install and test**: `b4bmod install mymod.pak`, start the game, wear the outfit (customization screen, or chat
    `/model mom_elite_04`). Other players see it only if they have the add-on too.
@@ -289,6 +295,8 @@ What the survivor pipeline prints, and what to do about it.
 | `face: ... from scaled from the template` | that part of the face wasn't found on your model (see [Talking and blinking](#talking-and-blinking)); check the mouth with the face preview |
 | The lip line opens in the wrong place (upper lip moves with the jaw) | give the model a mouth-open shape key or lip bones, or `--face off` |
 | `unrigged: left arm is 50 deg from the template's pose` | an unrigged model not in an A-pose: it is un-posed automatically. If the arms come out bent or stuck to the body, rig the model (Mixamo auto-rigger, Blender Rigify) and try again |
+| `unrigged: left arm fitted onto the model's: clavicle ..., hand ... (N hand vertices); hand surface distance 4.6 -> 1.7 cm` | the survivor's arm turned segment by segment onto your model's arm, the hand onto your model's hand (found over the mesh from the wrist), before the weights are copied: hands get hand weights, not the forearm's or the thigh's. `no fit onto the model's surface ... turned by its tip only`: the arm shapes are too different (blocky, stylised): only the whole arm is turned |
+| `unrigged: rigged model for the first-person arms -> .../rigged3p.blend` | an unrigged model's first-person arms are made from the third-person fit (your model on the survivor's skeleton), like a rigged model's: every joint lands on the FP skeleton's, so the hands show in the first-person view |
 | `materials -> slots (auto ...)` table | where each material went. Wrong? `--slot <material>=<slot>` or `=drop` |
 | Materials named `Material #25`, `Material #26` ... (a model from a game rip with generic material names) | placed by what they look like and where they sit ([How materials are placed](#how-materials-are-placed)); the table says why (`skin colours`, `clothes on the hands ...`, `object TheHat named like gear`) |
 | `none (objects without a material ...): their UVs land on all_color.png where no material draws` | objects without a material (often teeth, tongue, the inside of the mouth) take the image their UVs fit: painted texels no other material uses. `none -> dropped`: no image fits; keep them with `--slot none=<slot> --tex none=<image>` |
@@ -322,7 +330,11 @@ What the survivor pipeline prints, and what to do about it.
 | A dress renders dark grey, the game log says `missing bUsedWithClothing ... Default Material` | fixed: garments go to a clothing slot, and cloth only on slots whose material supports it. With `--slot dress=Arm` (a skin slot) the dress stays skinned |
 | The add-on is big | textures are as big as your images (at most the survivor's own texture sizes); `--max-texture 2048` or `1024` for a smaller add-on, smaller images in your model do the same |
 | The first-person arms are the old ones | the outfit has no `FP_..._SKM` in its folder (the log warns), or `--fp none` was given: give `--fp <FP arms SKM>` (the arms are cut from your own model: faces skinned to the arms) |
-| No hands in first person, only the gun (unrigged model) | fixed: an unrigged model's first-person arms are cut by where each part sits on the survivor's skeleton (`fp: body: kept ... arm faces`; `left out hair (... faces on the arms)` for materials with only a sliver there); older kits kept the whole body |
+| No hands in first person, only the gun, or sleeves stretched past the gun (unrigged model) | fixed: an unrigged model's first-person arms come from its third-person fit (`rigged model for the first-person arms`), fitted onto the FP skeleton like a rigged model's; check them with `preview.py --fp hold` |
+| A dress in the wrong colour / with another material's pattern (FBX exports) | fixed: a colour image linked only as the opacity (FBX exporters leave the colour socket empty) is used as the colour (`linked only as the opacity; its name says base colour`), and images named exactly after a material win over another material's set (`<mat>_BaseColor` before `<mat>Inner_BaseColor`) |
+| A crown, circlet or bracelets look like skin (pale, no metal) | fixed: jewellery (circlet, crown, tiara, bangle, armband, pendant ...) goes to the gear slot |
+| The mouth corners sit on the cheeks: a smile or an "O" pulls a slash across the cheek (models with a mouth-open shape key) | fixed: the corners are where the key parts the lips (`mouth_l ... -> model (... 2.2 ...)`), not the whole region it moves |
+| Talking moves only the lower lip; the chin stays behind (models without a rig or mouth key) | fixed: the chin is the bulge below the fold under the lower lip, not the bottom of a full lower lip |
 | Mouth wide open, tongue out, face looking up (rigs with chin/lip/tongue bones under the jaw, e.g. Auto-Rig Pro) | fixed: bones under the jaw move with it and the head keeps the model's own orientation |
 | White eyes (a clear cornea shell over the eyeball) | fixed: a clear eye cover (material named cornea, tearline, ... or see-through without an image) is left out (`clear cover over the eye (cornea)`) |
 | The chin tears off the face when talking | fixed: hard edges in the jaw's weights (chin, jaw line) are blended over 1.5 cm (`face: jaw: ... blended`) |

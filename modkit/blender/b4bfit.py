@@ -604,6 +604,25 @@ def proportions_report(sp, inv, tp, keep, mode="3p"):
             f"them)")
 
 
+FINGER_RX = re.compile(r"^(thumb|index|middle|ring|pinky)_0\d_[lr]$")
+
+
+def hand_roll(t, q, dir_t, spos, inv, tp):
+    """The hand's turn about its own axis: the knuckle line (pinky_01 -> index_01) onto the template's, so the palm
+    faces the way the survivor's does (the shortest turn onto the hand's direction leaves the palm wherever the model
+    had it: a palm-in hand held the gun on its side). Returns (q, degrees turned or None)."""
+    sd = t[-1]
+    a, b = f"index_01_{sd}", f"pinky_01_{sd}"
+    if not all(x in inv and x in tp for x in (a, b)): return q, None
+    ax = dir_t.normalized()
+    ks = q @ (spos[inv[a]] - spos[inv[b]]); kt = tp[a] - tp[b]
+    ks -= ax * ks.dot(ax); kt -= ax * kt.dot(ax)
+    if ks.length < 1e-4 or kt.length < 1e-4: return q, None
+    ks.normalize(); kt.normalize()
+    ang = math.atan2(ks.cross(kt).dot(ax), ks.dot(kt))
+    return Quaternion(ax, ang) @ q, math.degrees(ang)
+
+
 def own_bind_pose(tpl, sarm, meshes, bmap, inv, spos, D_of):
     """The model's own proportions: stand the chained joints on the template's ground (the model's soles where the
     template's are) and return the mapped joints' new positions {template bone: Vector}. Moves every D in D_of."""
@@ -727,7 +746,8 @@ def rebind_template(tpl, P, chains, chain_of, o):
 
 def fit_character(o):
     tpl = Template(o["template"])
-    src_objs = import_any(o["source"])
+    # --rigged: an unrigged model as the 3P fit rigged it (save_rigged), used for its first-person arms
+    src_objs = import_any(o.get("rigged") or o["source"])
     src_objs = [x for x in src_objs if x.name in bpy.data.objects]
     if o.get("drop"):
         rx = re.compile(o["drop"], re.I)
@@ -780,6 +800,9 @@ def fit_character(o):
             except (OSError, ValueError) as e:
                 raise SystemExit(f"--bonemap {o['bonemap']}: not a readable JSON file ({e})")
             user_map = {k: v for k, v in user_map.items() if v}
+        if o.get("rigged"):                         # our own 3P rig: the survivor's names, weighted or not
+            user_map = {b.name: b.name for b in sarm.data.bones if b.name in targets and
+                        (b.name in B4B_MAIN or "_twist_" in b.name)}
         skinned = mesh_children(sarm, meshes)
         bmap, kind = build_bonemap(sarm, targets, user_map, skinned)
         missing = [b for b in REQUIRED if b not in bmap.values()]
@@ -891,6 +914,7 @@ def fit_character(o):
             return Matrix.Translation(a_t) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-a_s)
         # phase 1: the fit transform D of every mapped bone (joint onto the template joint, aimed, stretched)
         q_of = {}
+        rolls = {}
         fit_order = order if keep == 0.0 else \
             sorted((pb for pb in order if bmap.get(pb.name) in tdepth), key=lambda pb: tdepth[bmap[pb.name]])
         for pb in fit_order:
@@ -916,6 +940,15 @@ def fit_character(o):
                 dir_s = dir_t = None
             if dir_s is not None and dir_s.length > 1e-6 and dir_t.length > 1e-6:
                 q = dir_s.normalized().rotation_difference(dir_t.normalized())
+                if FINGER_RX.match(t):
+                    # fingers keep the hand's roll (the shortest turn onto their own segment alone drops it)
+                    p = tparent.get(t)
+                    qp = q_of.get(inv[p]) if p in inv else None
+                    if qp is not None:
+                        q = (qp @ dir_s).normalized().rotation_difference(dir_t.normalized()) @ qp
+                elif t in ("hand_l", "hand_r"):
+                    q, r = hand_roll(t, q, dir_t, spos, inv, tp)
+                    if r is not None: rolls[t] = r
                 st = (dir_t.length / dir_s.length) ** (1.0 - keep)
             else:
                 # no aim joint (end bones, head): keep the nearest mapped parent's rotation change; the head keeps the
@@ -959,7 +992,8 @@ def fit_character(o):
             pb.matrix = D @ pb.bone.matrix_local
             D_used[pb.name] = D
             bpy.context.view_layer.update()
-        log(f"pose fit: max joint error {worst * 100:.2f} cm")
+        log(f"pose fit: max joint error {worst * 100:.2f} cm" +
+            (" (palms turned " + ", ".join(f"{t[-1]} {r:.0f} deg" for t, r in sorted(rolls.items())) + ")" if rolls else ""))
         bpy.ops.object.mode_set(mode="OBJECT")
         # 3. bake the pose into the meshes
         for m in smeshes:
@@ -1013,6 +1047,8 @@ def fit_character(o):
         # model's, take the weights from the posed template, then un-pose the model into the template's bind pose
         unpose_arms(tpl, meshes, chain=mode == "fp")
         o["weights"] = "done"
+        if mode == "3p" and o.get("rigged_out"):
+            save_rigged(o["rigged_out"], tpl.arm, meshes)
     if own_bind:
         # the template (skeleton + meshes) takes the model's proportions too: later steps (twist weights, the face)
         # compare against it, and its joints become the mesh's bind skeleton (manifest extras bind_bones_m)
@@ -1028,6 +1064,10 @@ def fit_character(o):
     if mode == "fp":
         segs = body_segments(tpl) if not arms else None
         for m in smeshes:
+            r = part_bones(m.name)
+            if r and "upperarm" in r.get("prefixes", ()):   # a part named as an arm (blocky figures): all of it
+                log(f"fp: {m.name}: kept whole (named as an arm)")
+                continue
             keep_arms(m, fp_arm_mask(tpl, m, segs) if segs else None)
         smeshes = [m for m in smeshes if len(m.data.polygons)]
     if o.get("probe") == "regions":
@@ -1345,7 +1385,7 @@ def part_bones(name):
     if not p: return None
     part, sd = p[0], p[1]
     arm_all = ("clavicle", "upperarm", "lowerarm", "hand", "wrist", "elbow", "shoulder") + tuple(FINGERS)
-    fam = {"upperarm": arm_all, "lowerarm": ("lowerarm", "hand", "wrist", "elbow") + tuple(FINGERS),
+    fam = {"upperarm": arm_all, "arm": arm_all, "lowerarm": ("lowerarm", "hand", "wrist", "elbow") + tuple(FINGERS),
            "hand": ("hand", "wrist") + tuple(FINGERS), "clavicle": ("clavicle", "upperarm", "shoulder"),
            "thigh": ("thigh", "calf", "foot", "ball", "knee", "hip"), "calf_or_thigh": ("thigh", "calf", "foot", "ball", "knee", "hip"),
            "calf": ("calf", "foot", "ball", "knee"), "foot": ("foot", "ball"), "ball": ("ball",)}.get(part)
@@ -1379,6 +1419,10 @@ def unpose_arms(tpl, meshes, chain=False):
     tlo = Vector((min(p.x for p in tv), min(p.y for p in tv), min(p.z for p in tv)))
     thi = Vector((max(p.x for p in tv), max(p.y for p in tv), max(p.z for p in tv)))
     rot, hands = {}, {}
+    mkd = KDTree(len(mv))
+    for i, (m, p) in enumerate(mv): mkd.insert(p, i)
+    mkd.balance()
+    graph = None
     for sd, sign in (("l", 1), ("r", -1)):          # heroes face +X: their left is +Y
         ua = tpl.pos.get(f"upperarm_{sd}")
         if ua is None: continue
@@ -1446,7 +1490,13 @@ def unpose_arms(tpl, meshes, chain=False):
         q = dt.normalized().rotation_difference(dm.normalized())
         ang = math.degrees(q.angle)
         log(f"unrigged: {side} arm is {ang:.0f} deg from the template's pose")
-        if ang > 8:
+        # then each arm segment turned onto the model's own arm (its surface): the tip guess alone left a hand
+        # hanging behind the template's by 8 cm, which took forearm and thigh weights (and missed the FP view)
+        if graph is None: graph = model_graph(meshes)
+        fit = fit_arm_pose(tpl, mkd, graph, sd, q if ang > 8 else Quaternion(), side)
+        if fit:
+            rot[sd] = fit
+        elif ang > 8:
             rot[sd] = [(f"upperarm_{sd}", Matrix.Translation(ua) @ q.to_matrix().to_4x4() @ Matrix.Translation(-ua))]
     if chain and rot:
         return _unpose_chain(tpl, meshes, rules, rot, hands)
@@ -1463,6 +1513,8 @@ def unpose_arms(tpl, meshes, chain=False):
                 bpy.context.view_layer.update()
         bpy.ops.object.mode_set(mode="OBJECT")
     pose(False)
+    if os.environ.get("B4B_DEBUG_ARMS"):
+        bpy.ops.wm.save_as_mainfile(filepath=os.environ["B4B_DEBUG_ARMS"], copy=True)
     # weights from the posed template (evaluated meshes), restricted by part names
     dg = bpy.context.evaluated_depsgraph_get()
     pts, wts = [], []
@@ -1507,7 +1559,172 @@ def unpose_arms(tpl, meshes, chain=False):
     log("unrigged: arms moved into the template's pose")
 
 
+ARM_PARTS = (("clavicle", ("clavicle_",)), ("upperarm", ("upperarm_", "shoulder_")),
+             ("lowerarm", ("lowerarm_", "elbow_")), ("hand", ("hand_", "wrist_", "thumb_", "index_", "middle_", "ring_",
+                                                             "pinky_")))
+ARM_FIT_MAX = 0.03         # m: mean hand surface distance above which the segment fit is not used
+ARM_FIT_LIMIT = {"clavicle": 25, "upperarm": 70, "lowerarm": 70, "hand": 70}    # degrees per segment
+
+
+def model_graph(meshes):
+    """The model's vertices welded by position (all objects, UV seams closed) and their edges: (points, neighbours)."""
+    import numpy as np
+    key, pts, nb = {}, [], []
+    ids = []
+    for m in meshes:
+        mw = m.matrix_world
+        loc = []
+        for v in m.data.vertices:
+            p = mw @ v.co
+            k = (round(p.x * 5000), round(p.y * 5000), round(p.z * 5000))
+            if k not in key:
+                key[k] = len(pts); pts.append(tuple(p)); nb.append(set())
+            loc.append(key[k])
+        for e in m.data.edges:
+            a, b = loc[e.vertices[0]], loc[e.vertices[1]]
+            if a != b: nb[a].add(b); nb[b].add(a)
+    return np.array(pts).reshape(-1, 3), nb
+
+
+def hand_vertices(graph, J, fa, reach):
+    """The model's hand: vertices reached over the mesh within `reach` of the ones around the wrist joint J, on the
+    far side of the wrist (fa: forearm direction). Over the surface, so a thigh next to a hanging hand isn't taken."""
+    import heapq
+    import numpy as np
+    P, nb = graph
+    d0 = np.linalg.norm(P - np.array(tuple(J)), axis=1)
+    seeds = np.nonzero(d0 < 0.04)[0]
+    if not len(seeds): return []
+    dist = {int(i): 0.0 for i in seeds}
+    h = [(0.0, int(i)) for i in seeds]
+    heapq.heapify(h)
+    while h:
+        d, i = heapq.heappop(h)
+        if d > dist.get(i, 1e9): continue
+        for j in nb[i]:
+            nd = d + float(np.linalg.norm(P[i] - P[j]))
+            if nd < reach and nd < dist.get(j, 1e9):
+                dist[j] = nd; heapq.heappush(h, (nd, j))
+    f = np.array(tuple(fa))
+    return [Vector(P[i]) for i in dist if float((P[i] - np.array(tuple(J))) @ f) > 0.2 * reach / 1.3]
+
+
+def fit_arm_pose(tpl, mkd, graph, sd, q0, side):
+    """Unrigged model: turn the template's arm segment by segment (clavicle, upper arm, forearm; each about its
+    joint, children carried along) so its surface lies on the model's (mean distance to the model's nearest vertex,
+    each segment's points and those below it), then the hand onto the model's hand (found over the mesh from the
+    wrist: its long axis, and the thumb side by PCA). q0: the upper arm's first guess. Returns
+    [(bone, total world transform)] parents first, or None."""
+    import numpy as np
+    pos = tpl.pos
+    names = [p for p, _ in ARM_PARTS]
+    if not all(f"{p}_{sd}" in pos for p in names): return None
+    pts = {p: [] for p in names}
+    for tm in tpl.meshes:
+        for v, w in zip(tm.data.vertices, mesh_weights(tm)):
+            if not w: continue
+            b = max(w, key=w.get)
+            if not b.endswith("_" + sd): continue
+            for p, pre in ARM_PARTS:
+                if b.startswith(pre):
+                    pts[p].append(tuple(tm.matrix_world @ v.co)); break
+    if any(len(pts[p]) < 20 for p in names[1:]): return None
+    P = {p: np.array(x[::max(1, len(x) // 400)] if x else np.zeros((0, 3))).reshape(-1, 3) for p, x in pts.items()}
+    tot = {p: Matrix.Identity(4) for p in names}
+    CLIP = 0.10
+
+    def near(A):
+        return np.array([min(mkd.find(Vector(a))[2], CLIP) for a in A]) if len(A) else np.zeros(0)
+
+    def moved(p, M):
+        A = P[p]
+        if not len(A): return A
+        R = np.array(M)
+        return A @ R[:3, :3].T + R[:3, 3]
+
+    def err(k, S):
+        e = [near(moved(p, S @ tot[p])).mean() for p in names[k:] if len(P[p])]
+        if names[k] == "hand":                         # the model's vertices around the hand -> the template's hand
+            H = moved("hand", S @ tot["hand"])
+            c = H.mean(0)
+            r = 0.6 * float(np.linalg.norm(H - c, axis=1).max())
+            around = [x[0] for x in mkd.find_range(Vector(c), r)]
+            if around:
+                hk = KDTree(len(H))
+                for i, h in enumerate(H): hk.insert(Vector(h), i)
+                hk.balance()
+                e.append(np.mean([min(hk.find(a)[2], CLIP) for a in around[::max(1, len(around) // 400)]]))
+        return float(np.mean(e))
+
+    out, report = [], []
+    before = err(len(names) - 1, Matrix.Identity(4))
+    for k, p in enumerate(names):
+        J = (tot[names[k - 1]] if k else Matrix.Identity(4)) @ pos[f"{p}_{sd}"]
+        about = lambda q: Matrix.Translation(J) @ q.to_matrix().to_4x4() @ Matrix.Translation(-J)
+        q = q0.copy() if p == "upperarm" else Quaternion()
+        if p == "hand":
+            E = tot["lowerarm"] @ pos[f"lowerarm_{sd}"]
+            fa = (J - E).normalized()
+            H = [Vector(x) for x in moved("hand", tot["hand"])]
+            hl = max((x - J).dot(fa) for x in H)
+            mh = hand_vertices(graph, J, fa, 1.3 * hl)
+            ht, hm = palm_frame(H, J), palm_frame(mh, J)
+            if ht is not None and hm is not None:
+                # along the hand (wrist -> its centre), then about that axis until the palms' normals agree (the
+                # flat hand's thinnest direction; its sign: the one nearer the template's, turns stay under 90 deg)
+                q = ht[0].rotation_difference(hm[0])
+                ax = hm[0]
+                a = q @ ht[1]; b = hm[1] if hm[1].dot(q @ ht[1]) >= 0 else -hm[1]
+                a = a - ax * a.dot(ax); b = b - ax * b.dot(ax)
+                roll = math.atan2(a.cross(b).dot(ax), a.dot(b)) if a.length > 1e-6 and b.length > 1e-6 else 0.0
+                q = Quaternion(ax, roll) @ q
+                if math.degrees(q.angle) > ARM_FIT_LIMIT[p]:
+                    q = Quaternion(q.axis, math.radians(ARM_FIT_LIMIT[p]))
+            S = about(q)
+            tot["hand"] = S @ tot["hand"]
+            out.append((f"hand_{sd}", tot["hand"].copy()))
+            report.append(f"hand {math.degrees(q.angle):.0f} deg ({len(mh)} hand vertices)")
+            continue
+        best = err(k, about(q))
+        for step in (12, 6, 3, 1.5, 0.75):
+            for _ in range(12):
+                better = False
+                for ax in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+                    for sg in (1, -1):
+                        qq = Quaternion(Vector(ax), math.radians(step * sg)) @ q
+                        if math.degrees(qq.angle) > ARM_FIT_LIMIT[p]: continue
+                        e = err(k, about(qq))
+                        if e < best - 1e-6:
+                            best, q, better = e, qq, True
+                if not better: break
+        S = about(q)
+        for x in names[k:]: tot[x] = S @ tot[x]
+        out.append((f"{p}_{sd}", tot[p].copy()))
+        report.append(f"{p} {math.degrees(q.angle):.0f} deg")
+    after = err(len(names) - 1, Matrix.Identity(4))
+    if after > ARM_FIT_MAX:
+        # the template's arm doesn't lie on the model's anywhere (stylised or blocky proportions): the tip guess
+        log(f"unrigged: {side} arm: no fit onto the model's surface (hand {after * 100:.1f} cm off); arm turned by "
+            f"its tip only")
+        return None
+    log(f"unrigged: {side} arm fitted onto the model's: " + ", ".join(report) +
+        f"; hand surface distance {before * 100:.1f} -> {after * 100:.1f} cm")
+    return out
+
+
 HAND_BONE_RX = re.compile(r"^(hand|thumb|index|middle|ring|pinky)_")
+
+
+def palm_frame(pts, wrist):
+    """(direction wrist -> hand centre, palm normal = the hand's thinnest PCA axis) of a hand's vertices, or None."""
+    import numpy as np
+    if len(pts) < 30: return None
+    P = np.array([tuple(p) for p in pts])
+    c = P.mean(0)
+    d = Vector(tuple(c)) - wrist
+    if d.length < 1e-4: return None
+    w, V = np.linalg.eigh(np.cov((P - c).T))
+    return d.normalized(), Vector(tuple(V[:, 0])).normalized()
 
 
 def hand_frame(pts, wrist):
@@ -1596,6 +1813,32 @@ def _unpose_chain(tpl, meshes, rules, rot, hands):
         me.update()
     log("weights: copied from the template (posed like the model)")
     log("unrigged: arms moved onto the FP skeleton's joints")
+
+
+def save_rigged(path, arm, meshes):
+    """The unrigged model as the 3P fit rigged it (in the survivor's bind pose, skinned to the survivor skeleton with
+    the template's weights) as a .blend: its first-person arms are then fitted like a rigged model's, every joint
+    exactly on the FP skeleton's (the FP view is tight: arms a few cm off the FP joints never show)."""
+    import bpy as _b
+    rig = arm.copy(); rig.data = arm.data.copy(); rig.name = rig.data.name = "Rig"
+    rig.animation_data_clear()
+    for pb in rig.pose.bones: pb.matrix_basis = Matrix.Identity(4)
+    outs, names = [], []
+    for m in meshes:
+        names.append((m, m.name))
+        nm = m.name; m.name = nm + "__b4b_orig"
+        c = m.copy(); c.data = m.data.copy(); c.name = nm      # the model's own object names (gear, accessories)
+        for md in list(c.modifiers): c.modifiers.remove(md)
+        c.parent = rig; c.matrix_parent_inverse = rig.matrix_world.inverted()
+        md = c.modifiers.new("Armature", "ARMATURE"); md.object = rig
+        outs.append(c)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    _b.data.libraries.write(path, {rig, *outs}, path_remap="ABSOLUTE", fake_user=False)
+    for c in outs:
+        me = c.data; _b.data.objects.remove(c); _b.data.meshes.remove(me)
+    for m, nm in names: m.name = nm
+    ad = rig.data; _b.data.objects.remove(rig); _b.data.armatures.remove(ad)
+    log(f"unrigged: rigged model for the first-person arms -> {path}")
 
 
 def body_segments(tpl):
@@ -1827,14 +2070,27 @@ def material_textures(mat, tex_dirs, user=None, n_materials=1):
             k = "normal"
         res.setdefault(k, p)
     out = res
+    if "basecolor" not in out and role_from_name(out.get("alpha", "")) == "basecolor":
+        # the colour image linked only through its alpha (FBX exports: the colour socket left empty)
+        log(f"  material {base}: {os.path.basename(out['alpha'])} is linked only as the opacity; its name says base "
+            f"colour: used as the colour too")
+        out["basecolor"] = out["alpha"]
     if "basecolor" not in out and mat is not None:
-        # nothing linked: guess by material name
+        # nothing linked: guess by material name; files named exactly after it first (<mat>_BaseColor before
+        # <mat>Inner_BaseColor, another material's set)
         key_name = base.replace(" ", "_")
+        cands = []
         for f in images_in(tex_dirs):
             fl = os.path.basename(f).lower().replace(" ", "_")
-            if key_name and key_name in fl:
-                k = role_from_name(f)
-                if k and k != "skip": out.setdefault(k, f)
+            i = fl.find(key_name) if key_name else -1
+            if i < 0: continue
+            nxt = fl[i + len(key_name):i + len(key_name) + 1]
+            cands.append((0 if not nxt.isalnum() else 1, f))
+        best = min((c for c, f in cands), default=None)
+        for c, f in cands:
+            if c != best: continue
+            k = role_from_name(f)
+            if k and k != "skip": out.setdefault(k, f)
     if "basecolor" not in out and n_materials == 1:
         got = classify_files(list(images_in(tex_dirs)))
         if "basecolor" in got:

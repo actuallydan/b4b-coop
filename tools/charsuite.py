@@ -22,7 +22,8 @@ Steps:
     `modkit/b4bmod.sh survivor <model> --outfit .. --fp .. --as <name>` into --build-dir (default
     ~/.local/share/b4b-coop/charsuite/build, replaced per run); checks exit status, the add-on's outfit= name, size.
     --twice builds again into <build-dir>2 and compares the paks byte for byte (determinism).
- 2. previews (blender/preview.py: 3P front/side/back with the game textures + the face), 4 at a time.
+ 2. previews (blender/preview.py: 3P front/side/back with the game textures, the face, the FP arms in a gun hold
+    seen from the FP camera), 4 at a time.
  3. game (lane from B4B_LANE; takes launch/gamelock.sh as "charsuite" unless --no-lock; --install runs
     launch/install.sh first): the add-ons go into <game>/b4bcoop-addons (the lock's backup restores the player's own on
     release), multi.sh 2 (host + client with the add-ons; --vanilla adds a 3rd instance with addons=0), Fort Hope.
@@ -192,6 +193,11 @@ def previews(rows, a):
         g = os.path.join(wk, "fit3p", "lod0.glb")
         tex = ["--textures", os.path.join(wk, "preview_textures_3p.json")] if os.path.exists(os.path.join(wk, "preview_textures_3p.json")) else []
         jobs.append((r, "prev3p", [g, os.path.join(OUT, "preview", f"{r.name}.png"), "--size", "360"] + tex))
+        gf = os.path.join(wk, "fitfp", "lod0.glb")
+        if os.path.exists(gf):                         # FP arms in a gun hold from the FP camera
+            texf = os.path.join(wk, "preview_textures_fp.json")
+            jobs.append((r, "prevfp", [gf, os.path.join(OUT, "preview", f"{r.name}_fp.png"), "--size", "360",
+                                       "--fp", "hold"] + (["--textures", texf] if os.path.exists(texf) else [])))
         if os.path.exists(os.path.join(wk, "face_preview.json")):
             jobs.append((r, "prevface", [g, os.path.join(OUT, "preview", f"{r.name}_face.png"), "--size", "360", "--views", "front",
                                          "--face", os.path.join(wk, "face_preview.json")] + tex))
@@ -413,7 +419,7 @@ def game(rows, a):
 
 
 # ---------------------------------------------------------------- output
-COLS = [("prev3p", "preview 3P"), ("prevface", "preview face"), ("host_3p", "host 3P"),
+COLS = [("prev3p", "preview 3P"), ("prevface", "preview face"), ("prevfp", "preview FP"), ("host_3p", "host 3P"),
         ("client_face", "client face"), ("client_body", "client body"), ("vanilla_face", "no add-ons"),
         ("m_host_fp", "mission FP"), ("m_host_3p", "mission 3P"), ("m_client", "mission client")]
 
