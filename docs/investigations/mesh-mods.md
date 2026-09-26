@@ -736,7 +736,7 @@ template without a clothing asset can't get cloth (adding the exports/imports ne
 exports); the sim ring closes coats/open-front dresses; long hair can dip into the back when the chain swings
 (`--hair-swing`); both flags default to auto (Dan, 2026-09-26: on when the model/template supports it).
 
-## 15. Models from game rips (models-undertaker, 2026-09-26)
+## 15. Models from game rips (2026-09-26)
 Test: a rigged FBX ripped from another game (two outfits, a Mixamo re-rig), local only. What such files look like and
 what the survivor pipeline now does (all generic, `modkit/`):
 - Materials `Material #25` ...; the FBX image nodes point at `<name>.fbm/head.png` (or DDS next to the FBX): textures
