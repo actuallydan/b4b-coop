@@ -79,7 +79,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     commands:** port every chat command into it; once it has them all, new features get overlay controls (+ ini keys)
     only, not new chat commands. Don't remove existing chat commands (keep `/say`).
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
-    replies as local chat lines; host notices via ClientTeamMessage with our own type. Test: `type <text>` (real key
+    replies as local chat lines; host notices via ClientTeamMessage with our own type (a third type `b4bcoopdata`:
+    silent data lines for the client's agent, `admin_data_to`). Test: `type <text>` (real key
     presses), `click <x> <y>` (mouse click, e.g. post-round Continue), `chat status`, `popup [close]` (dev builds).
     `admin.c` the commands (`/help join host leave players ping kick ban lock bots restart say ready ...`, same verbs
     on the dev CLI) and the host's PreLogin gate (join policy first, then the b4bcoop protocol (`?b4bcoop=` login
@@ -96,8 +97,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     survivor (new-assets.md §8). Dev `mdl ...`. `weaponlooks.c`: add-on weapon looks (addoninfo `weapon=`,
     `b4bmod weapon --as`), made-up skin row `b4bcoop.weapon.<name>` in the weapon's replicated
     `ItemMeshManagementComponent.CustomizationRow`, meshes swapped by every machine with the add-on, others see the
-    default weapon; a dropped weapon keeps its look on the floor (pickup's `3P_<Code>_SM`, paired by dropper/position),
-    the next owner's own choice applies; `~` Models tab; dev `wlook dump|swap|select|drop|row|pickups|use` (new-assets.md §9).
+    default weapon; a dropped weapon keeps its look on the floor (pickup's `3P_<Code>_SM`; the host pairs it by
+    PreviousOwner, add-on or not, and names it to clients and late joiners in `wlook floor|gone|hello` data lines;
+    clients guess by position until then), the next owner's own choice applies; world pickups and the dropped magazine
+    stay retail; `~` Models tab; dev `wlook dump|swap|select|drop|drophero|row|pickups|use|guess` (new-assets.md §9).
     docs/investigations/model-swap.md, player page docs/commands-models.md.
   - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
     /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
