@@ -320,7 +320,7 @@ class Session:
         if self.proc and self.proc.poll() is None:
             self.proc.kill()   # multi.sh only; the games run in their own sessions
         for i in range(1, self.n + 1):
-            if window_id(i): screenshot(i, f"{self.name}-end-{i}.png")
+            if window_id(i) or os.environ.get("B4B_GPU"): screenshot(i, f"{self.name}-end-{i}.png")
         sh([os.path.join(REPO, "launch/multi-stop.sh")], timeout=60, out=os.path.join(OUT, f"{self.name}-multi.out"))
         for i, g in self.logs.items():
             if g.find(): shutil.copy(g.path, os.path.join(OUT, f"{self.name}-{os.path.basename(g.path)}"))
