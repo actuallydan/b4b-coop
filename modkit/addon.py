@@ -103,6 +103,7 @@ COSMETIC = [
 ] + [
     ("/Script/Engine", c, "materials") for c in ("Material", "MaterialInstanceConstant", "MaterialFunction*",
                                                  "SubsurfaceProfile")
+] + [("/Script/Gobi", "DrenchAssetUserData", "materials")   # an MI's wet-look parameter overrides
 ] + [
     ("/Script/Engine", c, "meshes") for c in ("SkeletalMesh", "SkeletalMeshSocket", "MorphTarget",
                                               "SkeletalMeshLODSettings", "StaticMesh", "StaticMeshSocket",

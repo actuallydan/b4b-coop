@@ -50,6 +50,7 @@ static const Rule COSMETIC[] = {
     {"/Script/Engine", "TextureLightProfile", AK_TEXTURES},
     {"/Script/Engine", "Material", AK_MATERIALS}, {"/Script/Engine", "MaterialInstanceConstant", AK_MATERIALS},
     {"/Script/Engine", "MaterialFunction*", AK_MATERIALS}, {"/Script/Engine", "SubsurfaceProfile", AK_MATERIALS},
+    {"/Script/Gobi", "DrenchAssetUserData", AK_MATERIALS},   // a material instance's wet-look parameter overrides
     {"/Script/Engine", "SkeletalMesh", AK_MESHES}, {"/Script/Engine", "SkeletalMeshSocket", AK_MESHES},
     {"/Script/Engine", "MorphTarget", AK_MESHES}, {"/Script/Engine", "SkeletalMeshLODSettings", AK_MESHES},
     {"/Script/Engine", "StaticMesh", AK_MESHES}, {"/Script/Engine", "StaticMeshSocket", AK_MESHES},
