@@ -117,7 +117,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   mirroring the game folder, its `b4bcoop-README.txt` (CRLF, mirrors README's player section: keep in sync) +
   `dist/SHA256SUMS`, reproducible), `run.sh` (Proton, no EAC; `B4B_PREFIX` = alternate compatdata; writes
   `steam_appid.txt`), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test instances, below), `gamelock.sh`,
-  `lane.sh`/`lane-restore.sh` (live-test lanes, below),
+  `lane.sh`/`lane-restore.sh`/`flatpak-steam.sh` (live-test lanes, below),
   `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
 - `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
@@ -194,9 +194,11 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   `/tmp/b4b-game-lane2.lock`, prefixes `prefixes/lane2/test<n>`, game port 7887, agent ports 47140+, windows
   "B4B L2 #n", artifacts `/tmp/b4b-e2e-l2-<time>`. Which Steam client the instances talk to (`B4B_STEAM`, lane.sh):
   `native` (default; both lanes: Dan's account Hergmgurk through the native client) or `flatpak` (lane 2 only, and
-  it picks lane 2): meant to run Proton inside the Flatpak Steam's sandbox (account dreamsofants 76561198994546085).
-  **Not working yet, refused by run.sh**: Flathub's Steam shares the host's SysV IPC namespace and a game started
-  that way registered with the native client (docs/investigations/flatpak-steam.md: cause, next steps).
+  it picks lane 2): Proton runs inside the Flatpak Steam's own sandbox (account dreamsofants 76561198994546085).
+  That Steam must be started with `launch/flatpak-steam.sh start` (own SysV IPC namespace + the lane-2 prefixes in
+  view; `status` checks it); run.sh refuses otherwise, because Flathub's Steam shares the host's IPC namespace and a
+  game could register with the native client. Games join the sandbox with `flatpak enter` (never Steam's
+  LaunchAlongsideSteam D-Bus name: the native Steam owns the same name). docs/investigations/flatpak-steam.md.
   **While Dan plays on his native account, only `B4B_STEAM=flatpak` may run**: the file
   `~/.local/share/b4b-coop/native-steam-in-use` marks that, and run.sh refuses native launches while it exists.
   Each lane's `gamelock.sh`, `multi-stop.sh` (matches only its own prefix root) and instances are independent.
@@ -208,7 +210,8 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   `~/.local/share/b4b-coop/lane<n>-logs/<time>/`), so no reinstall of main's build is needed. Acquire waits while
   the player's own game runs in that folder. Never edit his `b4bcoop.ini`.
   Usage: `export B4B_LANE=2; launch/gamelock.sh acquire <me>; launch/install.sh; launch/multi.sh 2; ...; release`
-  (Flatpak Steam, once it works: `export B4B_STEAM=flatpak B4B_GPU=4090` instead of `B4B_LANE=2`).
+  (Flatpak Steam: `launch/flatpak-steam.sh start` once, then `export B4B_STEAM=flatpak B4B_GPU=4090` instead of
+  `B4B_LANE=2`).
 - **GPU**: `B4B_GPU=4090` (any part of an NVIDIA GPU name) runs test instances on that GPU in a headless gamescope
   (`launch/instance.sh`: `--backend headless --prefer-vk-device`, `VKD3D/DXVK_FILTER_DEVICE_NAME`), so they leave the
   display GPU (5090) to Dan. A GPU with no display attached can't present to the desktop directly (swap chain

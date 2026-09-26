@@ -18,6 +18,15 @@ if [[ -n ${B4B_GPU:-} ]]; then   # render on another GPU (lane.sh): a GPU with n
   [[ -n $id ]] || { echo "B4B_GPU=$B4B_GPU: no such GPU (nvidia-smi)" >&2; exit 1; }
   id=${id,,}   # 0x<device><vendor>, e.g. 0x268410de
   export VKD3D_FILTER_DEVICE_NAME="$B4B_GPU" DXVK_FILTER_DEVICE_NAME="$B4B_GPU"
+  if [[ $B4B_STEAM == flatpak ]]; then
+    # the game runs in the Flatpak Steam's sandbox, which sees only this runtime subdir (launch/flatpak-steam.sh):
+    # gamescope's sockets and limiter file go there; its own Wayland connection keeps the desktop's socket
+    rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    [[ ${WAYLAND_DISPLAY:-} && $WAYLAND_DISPLAY != /* ]] && export WAYLAND_DISPLAY="$rt/$WAYLAND_DISPLAY"
+    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$rt/bus}"   # run.sh reaches Steam through it
+    export B4B_HOST_RUNTIME_DIR="$rt" XDG_RUNTIME_DIR="$rt/b4b-lane2"
+    [[ -d $XDG_RUNTIME_DIR ]] || { echo "no $XDG_RUNTIME_DIR: start the Flatpak Steam with launch/flatpak-steam.sh start" >&2; exit 1; }
+  fi
   exec gamescope --backend headless --prefer-vk-device "${id:6:4}:${id:2:4}" -W 960 -H 540 -w 960 -h 540 -- "$here/run.sh" "$@"
 fi
 exec "$here/run.sh" "$@"
