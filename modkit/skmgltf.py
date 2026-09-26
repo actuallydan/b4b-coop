@@ -658,9 +658,12 @@ def set_bone_positions(s, bones):
     rs["pose"] = pose
 
 
-def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets=None, bones=None, slot_colors=None):
+def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets=None, bones=None, slot_colors=None,
+                bind_bones=None):
     """slot_colors: {slot name: (b, g, r, a)} vertex colour for every vertex of that slot's sections (e.g. hero hair:
-    Master_Hair_M tints vertex-coloured strands with 'Vertex Color Multiplier'; retail strands are mostly black)."""
+    Master_Hair_M tints vertex-coloured strands with 'Vertex Color Multiplier'; retail strands are mostly black).
+    bind_bones: {bone: UE cm} the glTF's own bind skeleton (a model fitted with its own proportions), written before the
+    glTF is read; bones: extra bind positions written after (weapon markers, face bones)."""
     s = skm.SkeletalMesh(template)
     m = s.m
     names = [s.name(x["slot_name"]).lower() for x in m["materials"]]
@@ -671,6 +674,8 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
     matmap = {k.lower(): v for k, v in (matmap or {}).items()}
     tmpl_lod = next(l for l in m["lods"] if "sections" in l)
     tmpl_ntc = tmpl_lod["static_vb"]["num_texcoords"]
+    # the bind skeleton of a model fitted with its own proportions: the glTF's joints are compared to it
+    set_bone_positions(s, bind_bones or {})
     lods = []
     for i, src in enumerate(srcs):
         print(f"LOD{i}: {src}")
