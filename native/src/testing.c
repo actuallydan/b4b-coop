@@ -604,6 +604,8 @@ show:
 //                               DialogueComponent SayLine (or TestLine); the line drives lip-sync on every machine
 // face comm [action] | face ping     the local player's comm wheel action (Thank=10) / a ping: the survivor speaks
 // face look <hero#> [dist] [dz]  stand dist cm (45) in front of that hero's face and look at it (screenshots; host)
+// face walk <hero#> <x> <y> <z>  host: a bot runs there (AIBlueprintHelperLibrary.SimpleMoveToLocation on its controller;
+//                               its behaviour tree takes over again later): hair/cloth tests while moving
 static UObject *face_hero(int idx) {
     static UClass *hc;
     if (!hc) hc = ue_find_class("HeroCharacter");
@@ -690,6 +692,22 @@ static void cmd_face(char *rest, Out *o) {
         p[param_off(f, "Action")] = (uint8_t)(as ? atoi(as) : 10);
         ue_process_event(pw, f, p);
         out_printf(o, "face: ServerSpawnCommWheelPing(action %d)\n", as ? atoi(as) : 10);
+        return;
+    }
+    if (!strcmp(a, "walk")) {
+        char *hs = strtok(NULL, " "), *xs = strtok(NULL, " "), *ys = strtok(NULL, " "), *zs = strtok(NULL, " ");
+        UObject *h = hs ? face_hero(atoi(hs)) : NULL, *ctl = h ? ue_get_ptr(h, "Controller") : NULL;
+        UClass *lc = ue_find_class("AIBlueprintHelperLibrary");
+        UObject *cdo = lc ? UC_CDO(lc) : NULL;
+        UFunction *f = cdo ? ue_find_function(lc, "SimpleMoveToLocation") : NULL;
+        if (!zs || !ctl || !f) { out_printf(o, "usage: face walk <hero#> <x> <y> <z> (%s)\n", !h ? "no hero" : !ctl ? "no controller" : "no function"); return; }
+        static uint8_t p[64];
+        memset(p, 0, sizeof p);
+        *(UObject **)(p + param_off(f, "Controller")) = ctl;
+        float g[3] = {(float)atof(xs), (float)atof(ys), (float)atof(zs)};
+        memcpy(p + param_off(f, "Goal"), g, 12);
+        ue_process_event(cdo, f, p);
+        out_printf(o, "face walk: %s -> (%.0f %.0f %.0f)\n", ue_obj_name(ctl, nm, sizeof nm), g[0], g[1], g[2]);
         return;
     }
     if (!strcmp(a, "look")) {        // face look <hero#> [dist] [dz]: stand in front of that hero's face, looking at it

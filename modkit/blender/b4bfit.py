@@ -6,7 +6,7 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
   blender -b --python blender/b4bfit.py -- character --template T.glb --source model.fbx --out DIR
         [--mode 3p|fp] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05] [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
-        [--drop_mat MATERIAL]... [--face auto|off]
+        [--drop_mat MATERIAL]... [--face auto|off] [--hair_bones a,b,c;d,e [--hair_swing 1]] [--cloth auto|MAT,...]
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
   blender -b --python blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
         [--forward +x] [--up +z] [--scale fit|<factor>] [--anchor trigger|grip|none] [--part REGEX=BONE]...
@@ -794,6 +794,8 @@ def fit_character(o):
         transfer_weights(tpl, smeshes, all_groups=False)
     if face_on and not o.get("probe"):
         rig_face_bones(o, tpl, smeshes, face_src)
+    if mode == "3p" and not o.get("probe"):
+        smeshes = secondary_motion(o, tpl, smeshes)
     if mode == "fp":
         for m in smeshes:
             keep_arms(m)
@@ -833,6 +835,39 @@ def rig_face_bones(o, tpl, meshes, src_bones):
     moved = face_module().rig_face(tpl, meshes, src_bones, log)
     if moved:
         o.setdefault("extras", {})["face_bones_m"] = {b: [p.x, p.y, p.z] for b, p in moved.items()}
+
+
+def dangle_module():
+    """blender/b4bdangle.py (hair on physics bones, skirts as cloth), next to this script."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    if d not in sys.path: sys.path.insert(0, d)
+    import b4bdangle
+    return b4bdangle
+
+
+def secondary_motion(o, tpl, meshes):
+    """3P: --hair_bones "a,b,c;d,e": skin the back hair to the survivor's simulated hair chains (--hair_swing 0..1);
+    --cloth auto|MAT,...: split the skirt off as a cloth section and build its simulation mesh (manifest extras
+    "cloth", written by modkit/cloth.py). Returns the meshes (cloth pieces added)."""
+    if not o.get("hair_bones") and o.get("cloth", "off") in ("off", ""): return meshes
+    dm = dangle_module()
+    if o.get("hair_bones"):
+        slot_of = dict(x.split("=", 1) for x in o.get("slot", []))
+        def is_hair(mat):
+            if not mat or dm.NOT_HAIR_RX.search(mat): return False
+            sl = slot_of.get(mat)
+            return bool(re.search(r"hair", sl, re.I)) if sl else bool(dm.HAIR_RX.search(mat))
+        chains = [c.split(",") for c in o["hair_bones"].split(";") if c]
+        dm.rig_hair(tpl, meshes, chains, is_hair, log, float(o.get("hair_swing", 1.0)))
+    if o.get("cloth", "off") not in ("off", ""):
+        mats = dm.cloth_materials(meshes, tpl, o["cloth"], log)
+        pieces, sim = dm.cloth_region(tpl, meshes, mats, log)
+        if sim:
+            meshes = [m for m in meshes if len(m.data.polygons)] + pieces
+            o.setdefault("extras", {})["cloth"] = [sim]
+        elif o["cloth"] not in ("auto", "on"):
+            log("cloth: nothing to simulate")
+    return meshes
 
 
 def used_materials(m):

@@ -10,6 +10,9 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
         <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
         (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
         Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
+        [--hair-physics auto|off]  auto: long hair swings on the survivor's physics hair bones (templates with a
+                                   hair chain: Holly, Mom, ...; mesh-mods.md §13) [--hair-swing 0..1]
+        [--cloth auto|off|MAT,...]  auto: a skirt/dress becomes cloth (templates with a clothing asset: Holly Elite 00)
         [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
                                 tint = the game's hair shader, one colour root to tip (your texture's average)
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
@@ -581,13 +584,14 @@ def survivor(o):
     d3 = os.path.join(work, "fit3p")
     run_blender(["character", "--template", template_glb(tp, work), "--source", os.path.abspath(model), "--out", d3,
                  "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06")] + fit_args(o.o) + atlas_args +
-                slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")])
+                slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")] + dangle_args(o.o, tp, src))
     man3 = json.load(open(os.path.join(d3, "manifest.json")))
     # the game's hair shader tints vertex-coloured strands (retail: mostly black); the colour-texture material doesn't
     # (the cultist's hair is white, the default)
     hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)} \
         if o.get("hair", "texture") == "tint" else {}
-    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair, bones=face_bone_moves(man3))
+    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair, bones=face_bone_moves(man3),
+                        cloth=man3.get("extras", {}).get("cloth"))
     face_preview(o.o, tp, man3, work)
     mans = [(man3, tp)]
     if fp:
@@ -884,6 +888,30 @@ def retarget_skins(fp_mesh, tt, o):
             log(f"  skin {name}: {r.stderr.strip()[-200:]}"); continue
         n += 1
     log(f"skins: {n} skin material instance(s) of {rel} now use the model's textures")
+
+
+def dangle_args(o, tp, src):
+    """b4bfit flags for secondary motion (blender/b4bdangle.py, cloth.py): --hair-physics auto puts the back hair on
+    the template's simulated hair chain (if its physics asset has one), --cloth auto|MAT,... makes the skirt cloth
+    (if the template has a clothing asset)."""
+    import cloth
+    a = []
+    if o.get("hair_physics", "off") != "off":
+        chains, pa = cloth.hair_chains(tp, src)
+        if chains:
+            a += ["--hair_bones", ";".join(",".join(c) for c in chains)]
+            if o.get("hair_swing"): a += ["--hair_swing", o["hair_swing"]]
+        else:
+            log(f"hair: {os.path.basename(tp)}'s physics asset ({(pa or '?').split('.')[-1]}) has no simulated hair "
+                f"bones: the hair moves with the head (templates with a hair chain: Holly, Holly Elite 06, Walker "
+                f"Elite 03, Doc Elite 03, Mom)")
+    if o.get("cloth", "off") != "off":
+        if cloth.cloth_assets(skm.SkeletalMesh(tp)):
+            a += ["--cloth", o["cloth"]]
+        else:
+            log(f"cloth: {os.path.basename(tp)} has no clothing asset: skirts are skinned (outfits with cloth: Holly "
+                f"Elite 00/04, Karlee Elite 06, Doc Elite 03, Walker Elite 07, Jim Torso 01)")
+    return a
 
 
 def face_bone_moves(man):

@@ -226,7 +226,7 @@ Import rules (skmgltf.py):
 - Sockets: the FP weapon SKM has `SkeletalMeshSocket` exports relative to `gun` (`muzzle`, `holo`, `scope`, `laser`,
   ...); the 3P weapon skeleton has a `muzzle` **bone**. `skmgltf.py import --socket muzzle=x,y,z` / `--bone muzzle=...`
   move them (b4bmodel does it from the model's muzzle marker or barrel tip).
-- Not supported: new clothing simulation (cloth assets are PhysX/NvCloth data), morph targets (heads), new bones
+- Not supported: cloth on a template without a clothing asset (skirts on one that has: §13), morph targets (heads), new bones
   (the mesh's ref skeleton must be a subset of the Skeleton asset), new material masters.
 
 ## 4. In-game results (live, 2026-09-25)
@@ -253,7 +253,8 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
 - Hair: done (§9); in the model's own texture colours since §11.
 - Face animation: the model's face is skinned to `head` (and jaw if the rig has one); B4B's face bones (eyelids, lips)
   don't move it. What following the game's face animation would take: §10.
-- New bones (rebuild the ref skeleton from the Skeleton asset), cloth, new material masters: not supported.
+- New bones (rebuild the ref skeleton from the Skeleton asset), new material masters: not supported. Cloth and swinging
+  hair: §13.
 - Hitboxes follow the template's physics asset; everyone sees their own add-ons (addons.md §7).
 
 ## 6. How the model pipeline works (`b4bmodel.py`, `blender/b4bfit.py`)
@@ -583,3 +584,71 @@ not committed): `~/.local/share/b4b-coop/faces/shots/` (`t_*`, `seq_*` talking w
 Open: the lower lip pouts a lot on 25 deg lip_lower curls (the curl moves a large lower-lip region on MPFB heads);
 models without a mouth interior show a hole; painted anime eyes only half close; no eyelid detection without a blink key
 beyond the template's lid weights. `face say` (SayLine) doesn't find events (naming above).
+
+## 13. Secondary motion: swinging hair, skirts as cloth (models-cloth, 2026-09-26)
+Custom long hair and skirts used to move rigidly with head/pelvis. Code: `modkit/blender/b4bdangle.py` (called from
+`b4bfit.py` 3P, `--hair_bones`, `--cloth`), `modkit/cloth.py` (template inspection, clothing asset writer, render
+mapping), `modkit/uprops.py` (tagged-property tree parse/write, byte-identical on retail cloth/PA exports),
+section tagging in `skmgltf.py` (glTF nodes `B4BCLOTH_*` -> own section). Flags: `b4bmod survivor ... --hair-physics
+auto [--hair-swing 0..1] --cloth auto|off|MAT,...` (opt-in).
+
+**How retail heroes get secondary motion (static):**
+- **RigidBody node**: `3P_Hero_ABP` has 3 `AnimNode_RigidBody` (OverridePhysicsAsset None = the mesh's physics
+  asset, BaseBoneSpace `spine_03`, ComponentLinearAcc/VelScale 0). Bodies with `PhysType_Simulated` in hero PAs:
+  `3P_Holly_PA` hair_00..02 (capsule r 2.8, 1 kg, damping 8/8; constraints to head swing 20/30 deg, hair_01 15/20,
+  twist locked), `3P_Holly_Elite_06_PA`/`3P_Walker_Elite_03_PA` hair_00..02, `3P_Doc_Elite_03_PA` hair_00..01,
+  `3P_Mom_PA` hair_00/02_l/r (pigtails), backpack/gasmask on others. Holly E00's chain: hair_00 (-7, 0.4, 154) behind
+  the head -> hair_02 (-14.7, 0.4, 143) (UE cm, heroes face +X). Live: `face 4 hair_00 hair_01 hair_02` on a bot
+  shows 10-23 deg deltas changing sample to sample (retail Holly E00 and our mesh alike). No AnimDynamics nodes.
+- **Cloth**: 30 retail SKM LODs have cloth (`*_Cloth_PA` physics assets for collision: Holly, Holly E04, Doc, Doc E03,
+  Jim Torso 01, Karlee E06, Walker E07, Dan). Holly Elite 00 (Shino's template): `ClothingAssetCommon` exports
+  `Cloth_Sleeve_L_0` (12 sim verts), `Cloth_Sleeve_R_1` (10), `Cloth_Flannel_3` (76 verts / 116 tris: the flannel
+  tied round the waist, MaxDistance ~300 = free, collision `3P_Holly_Cloth_PA` pelvis/spine_01/thighs) with one
+  `ClothConfigNv` each (flannel: StretchLimit 1.2, LinearDrag 0.8, solver 60 Hz, GravityScale 3). LodMap [0,1,2]
+  (mesh LODs 3-4 no cloth); sections flannel1..3 (Body / Body_2sided MIs) are the render sections, Cloth1..3 hidden.
+- Everything is **tagged properties** (no cooked fabric: NvCloth cooks at load): per clothing LOD a
+  `ClothLODDataCommon` {PhysicalMeshData {Vertices, Normals, Indices (uint32), WeightMaps {1 MaxDistance, 2/3
+  backstop, 4 anim drive}, InverseMasses, BoneData (tagged ClothVertBoneData: NumInfluences, BoneIndices[12] u16
+  into UsedBoneNames, BoneWeights[12]), MaxBoneWeights, NumFixedVerts, SelfCollisionIndices}, CollisionData (empty:
+  collision comes from the PA)} + native tail TransitionUpSkinData, TransitionDownSkinData (FMeshToMeshVertData
+  arrays: LOD k's up/down, empty at the ends). Top: PhysicsAsset, ClothConfigs {name: ClothConfigNv}, LodData, LodMap,
+  UsedBoneNames, UsedBoneIndices (mesh bone indices), AssetGuid (= the sections' ClothingData guid).
+- Render side (skm.py already parsed it): a cloth section has one FMeshToMeshVertData (64 B: 3x float4 bary+dist for
+  position/normal/tangent, u16 SourceMeshVertIndices[4], float Weight 0, pad) per vertex; the LOD's cloth vertex
+  buffer = all cloth sections' records in section order, index mapping per section (u32 offset, u32 base vertex;
+  (0,0) for others). **Formula checked on retail**: position = sum_i b_i (V_i - N_i d) with V/N the stored sim
+  vertices/normals (median error 0.01-0.12 cm on the 3 Holly sections; with +N: 2 cm); stored normals =
+  -cross(B-A, C-A) (all three assets), i.e. the mapping runs on the runtime normals cross(B-A, C-A).
+
+**What a custom mesh can use without blueprints:** (a) its own cloth data in the template's existing clothing asset
+export (same package, so `--as` copies it; keeps the asset's config and collision PA) - built; (b) weights on a
+template's simulated hair chain - built; new physics bodies/bones would need our own physics asset and skeleton
+(not done).
+
+**Built:**
+- Hair (`rig_hair`): hair-slot vertices (not lashes/brows/iris) behind the head centre (full at 3 cm behind, none 3 cm
+  in front) and below the chain root (full 7 cm below) blend onto the chain; along it by height (tent weights per
+  bone, below the last joint = last bone). `cloth.hair_chains` finds chains in the template's PA (simulated bodies
+  named hair under `head`, bodiless bones in between included). Shino: 3859 of 13057 hair vertices.
+- Cloth (`cloth_region` + `cloth.apply`): skirt faces below spine_01+2 cm split into `B4BCLOTH_*` objects (own section
+  on the same slot, moved to the slot's two-sided variant `<x>_2sided_MI` if the template has one); sim mesh =
+  7 rings x 20 sectors from the waist to 1 cm below the hem, radius = outermost skirt vertex per bin + 4 mm; ring 0
+  fixed (MaxDistance 0), others MaxDistance = depth x length x 0.45 (Shino: up to 15 cm); sim vertices skinned with the
+  template body's nearest weights limited to pelvis/spine_01/02/thighs (waist ring: hips only); InverseMasses from
+  vertex areas (mean mass 1). Written into the template's biggest clothing asset (Holly E00: Cloth_Flannel_3), 3
+  identical clothing LODs with identity transitions, LodMap [0,1,2]; render records solved exactly (fixed point on d,
+  bind-pose reconstruction error 0.000 cm), cloth vertex buffer + BuffersSize recomputed. The other clothing assets
+  stay unbound (as before).
+
+**Live (lane 2, Proton, `multi.sh 2`, host + client with the add-on, Evansburgh B saferoom; bots given the outfit with
+`model <#> shinocloth`, made to run with the new dev `face walk <hero#> x y z` = SimpleMoveToLocation on the bot's
+controller):** the skirt sways while turning/walking and flares/trails behind while running, the long hair swings on
+hair_00..02 (deltas 5-23 deg while moving), on host and client; no cloth/skeletal-mesh errors in either log. First
+build (Body MI, one-sided) showed see-through slits between pleats when the cloth moved; on the two-sided MI none seen.
+Screenshots (presented frames, not committed): `~/.local/share/b4b-coop/cloth/shots3/` (`w_best.png` running,
+`w_grid.png` sequence, `cl_grid.png` client view), first build `shots/run3_skirt.png` (slits). `e2e --quick`: 14/14.
+
+Open: only Holly Elite 00 tested (other cloth templates should work: same writer, their asset's PA/config); a
+template without a clothing asset can't get cloth (adding the exports/imports needs a package writer that adds
+exports); the sim ring closes coats/open-front dresses; long hair can dip into the back when the chain swings
+(`--hair-swing`); both flags are opt-in.
