@@ -2,15 +2,18 @@
 Cycles on the CPU (works without a GPU). For checking a model before and after the pipeline steps.
 
   blender -b --python blender/preview.py -- <model> <out.png> [--size 512] [--pose test]
-      [--views front,side,back,top,front3q] [--zoom 1.0] [--focus <object name substring>]
+      [--views front,side,back,top,front3q] [--zoom 1.0] [--focus <object name substring>] [--textures <json>]
   --pose test bends arms, legs, spine and head of a B4B skeleton (skmgltf export or b4bfit output) to check weights.
+  --textures: {"<material / slot name>": "<base colour png>"}, e.g. <work>/preview_textures.json written by
+  `b4bmod survivor` (the fitted model with the textures made for the game). Views follow the model's own facing when
+  it has a B4B skeleton (front = the face).
 """
 import bpy, math, os, sys
 from mathutils import Vector
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out = argv[0], argv[1]
-opts = {"size": "512", "views": "front,side,back", "zoom": "1.0", "focus": "", "pose": ""}
+opts = {"size": "512", "views": "front,side,back", "zoom": "1.0", "focus": "", "pose": "", "textures": ""}
 i = 2
 while i < len(argv):
     opts[argv[i].lstrip("-")] = argv[i + 1]; i += 2
@@ -41,6 +44,37 @@ for o in list(bpy.data.objects):                  # glTF importer bone-shape hel
     if o.type == "MESH" and (o.name.startswith("Icosphere") or not o.users_scene or o.hide_render):
         bpy.data.objects.remove(o)
 meshes = [o for o in bpy.data.objects if o.type == "MESH" and (not opts["focus"] or opts["focus"] in o.name)]
+if opts["textures"]:
+    import json, re
+    tex = {k.lower(): v for k, v in json.load(open(opts["textures"])).items()}
+    for o in meshes:
+        for i, m in enumerate(o.data.materials):
+            if m is None: continue
+            p = tex.get(re.sub(r"\.\d{3}$", "", m.name).lower())
+            if not p or not os.path.exists(p): continue
+            nm = bpy.data.materials.new(m.name + "_prev"); nm.use_nodes = True
+            b = nm.node_tree.nodes["Principled BSDF"]
+            t = nm.node_tree.nodes.new("ShaderNodeTexImage"); t.image = bpy.data.images.load(p)
+            if "hair" in p.lower() and "_mm_" in p.lower():        # hair multimask: A = strands, colour from the json
+                info = p + ".json"
+                col = json.load(open(info))["color_linear"] if os.path.exists(info) else (0.1, 0.07, 0.05)
+                b.inputs["Base Color"].default_value = (*col, 1)
+                nm.node_tree.links.new(t.outputs["Alpha"], b.inputs["Alpha"])
+            else:
+                nm.node_tree.links.new(t.outputs["Color"], b.inputs["Base Color"])
+            b.inputs["Roughness"].default_value = 0.7
+            o.data.materials[i] = nm
+# B4B skeleton: views relative to the model's facing (heroes face +X)
+arm = next((a for a in bpy.data.objects if a.type == "ARMATURE" and all(n in a.data.bones for n in
+                                                                          ("pelvis", "upperarm_l", "upperarm_r", "head"))), None)
+face_rot = None
+if arm is not None:
+    bw = lambda n: arm.matrix_world @ arm.data.bones[n].head_local
+    lat = (bw("upperarm_l") - bw("upperarm_r")).normalized()
+    up = (bw("head") - bw("pelvis")); up = (up - lat * up.dot(lat)).normalized()
+    fwd = lat.cross(up).normalized()
+    # a camera "in front" looks from +fwd; the default "front" direction is -Y
+    face_rot = Vector((0, -1, 0)).rotation_difference(fwd)
 dg = bpy.context.evaluated_depsgraph_get()
 pts = []
 for o in meshes:
@@ -79,6 +113,7 @@ tiles = []
 base = os.path.splitext(out)[0]
 for v in opts["views"].split(","):
     d = dirs[v]
+    if face_rot is not None and v != "top": d = face_rot @ d
     cam.location = c + d * ext_ * 3
     look = (c - cam.location).normalized()
     cam.rotation_euler = look.to_track_quat("-Z", "Y").to_euler()

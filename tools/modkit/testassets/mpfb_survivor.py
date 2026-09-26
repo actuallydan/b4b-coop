@@ -8,7 +8,10 @@ is committed. Needs (outside the repo, see mesh-mods.md §6):
   - the MakeHuman system asset pack (CC0) unpacked into MPFB's user data dir (clothes/, skins/, hair/, eyes/, ...).
 
   BLENDER_USER_RESOURCES=... blender -b --python tools/modkit/testassets/mpfb_survivor.py -- <out dir> \
-      [--rig mixamo|game_engine] [--format fbx|glb] [--skin <mhmat>] [--hair <mhclo>] [--clothes a.mhclo,b.mhclo]
+      [--rig mixamo|game_engine|cmu_mb|default|rigify.human] [--format fbx|glb] [--skin <mhmat>] [--hair <mhclo>]
+      [--clothes a.mhclo,b.mhclo] [--phenotype gender=0,height=1,weight=0.9,muscle=1,...] [--name Survivor]
+  rigify.human: the meta rig is generated with Rigify (bundled with Blender) and exported deform-only (DEF- bones),
+  as a Rigify user exports for a game engine.
 
 Result: <out dir>/survivor.fbx (or .glb) + textures/*.png (diffuse/normal per material, the skin with the eyebrows
 baked in). Materials are plain Principled BSDF nodes with image textures, so FBX/glTF exporters carry them.
@@ -33,10 +36,15 @@ from bl_ext.user_default.mpfb.services.humanservice import HumanService
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 addon_utils.enable("bl_ext.user_default.mpfb", default_set=True)
+if opts["rig"].startswith("rigify"):
+    addon_utils.enable("rigify", default_set=True)
 
 info = HumanService._create_default_human_info_dict()
 info["phenotype"].update(gender=1.0, age=0.62, muscle=0.62, weight=0.55, height=0.55, proportions=0.6)
 info["phenotype"]["race"] = {"asian": 0.0, "caucasian": 1.0, "african": 0.0}
+for kv in opts.get("phenotype", "").split(","):
+    if "=" in kv:
+        k, v = kv.split("="); info["phenotype"][k.strip()] = float(v)
 info["rig"] = opts["rig"]
 info["eyes"] = opts["eyes"]
 info["eyebrows"] = opts["eyebrows"]
@@ -45,11 +53,18 @@ info["clothes"] = [c for c in opts["clothes"].split(",") if c]
 info["skin_mhmat"] = opts["skin"]
 info["skin_material_type"] = "MAKESKIN"
 info["eyes_material_type"] = "MAKESKIN"
-info["name"] = "Survivor"
+info["name"] = opts.get("name", "Survivor")
 settings = HumanService.get_default_deserialization_settings()
 settings["subdiv_levels"] = 0
 basemesh = HumanService.deserialize_from_dict(info, settings)
 arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
+if opts["rig"].startswith("rigify"):
+    from bl_ext.user_default.mpfb.services.rigservice import RigService
+    arm = RigService.generate_rigify_rig(arm, meta_rig_action="delete")
+    print("rigify: generated", arm.name, len(arm.data.bones), "bones,",
+          sum(1 for b in arm.data.bones if b.use_deform), "deform")
+    for o in list(bpy.data.objects):                  # Rigify's bone widget shapes
+        if o.name.startswith("WGT-"): bpy.data.objects.remove(o)
 meshes = [o for o in bpy.data.objects if o.type == "MESH"]
 print("mpfb:", [(o.name, len(o.data.vertices)) for o in meshes], "rig", arm.name, len(arm.data.bones))
 
