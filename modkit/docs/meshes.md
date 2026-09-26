@@ -6,7 +6,8 @@ animations, material slots and physics, and takes your geometry and textures. Se
 Commands are written as `b4bmod ...` (Windows: `b4bmod.cmd`, Linux: `./b4bmod.sh`).
 
 - [Blender](#blender) · [What goes where](#what-goes-where)
-- [Make a survivor model](#make-a-survivor-model) · [Make a weapon model](#make-a-weapon-model)
+- [Make a survivor model](#make-a-survivor-model) · [Survivor troubleshooting](#survivor-troubleshooting) ·
+  [Make a weapon model](#make-a-weapon-model)
 - [Doing the fitting yourself](#doing-the-fitting-yourself-mesh-import) · [Lower level](#lower-level) · [Limits](#limits)
 
 ## Blender
@@ -43,46 +44,54 @@ doesn't use: otherwise the game hides the whole mesh (a weapon becomes invisible
 pipeline does this for you (unused slots get an invisible zero-size triangle).
 
 ## Make a survivor model
-1. **Your model**: one FBX (or glTF/OBJ/.blend) of a human in an **A-pose** (arms ~45° down) or T-pose, with its
-   textures next to it. Best: rigged (Mixamo auto-rigger, a UE4 mannequin rig, 3ds Max Biped); unrigged works if it
-   stands in an A-pose (weights come from the game's mesh). Clothes/hair/eyes may be separate objects and materials.
-   Alpha hair cards work on the outfit's **Hair** slot (`--slot <hair material>=Hair`): the alpha becomes the game's
-   hair mask, the colour the average of your hair texture. Elsewhere only opaque materials look right (bake eyebrows
-   into the skin texture).
+1. **Your model**: one file of a humanoid, as you downloaded it: FBX, glTF/glb, **VRM** (VRoid and other avatar
+   files), OBJ, DAE or .blend, with its textures next to it (or embedded in the file). Tested kinds of rigs:
+   Mixamo, UE4 mannequin names, 3ds Max Biped, VRoid/VRM (`J_Bip_...`), Blender **Rigify** (the `DEF-` bones; the
+   full rig works too), and rigs with other names that say what each bone is (`upper_arm.L`, `Arm_R`,
+   `leg_joint_L_2` ...). Unrigged works too, in an A-pose, T-pose or with the arms hanging down (the weights come
+   from the game's mesh; a model built from named parts like `head`, `torso`, `arm-left` keeps each part on its
+   limb). Any size and proportions: it is scaled to the survivor and its limbs are fitted onto the survivor's
+   skeleton, so the game's animations play right. Clothes/hair/eyes may be separate objects and materials.
 2. **Pick the outfit to replace** (it keeps its skeleton, animations, physics). An Elite outfit is a whole survivor,
    head included:
    ```
    b4bmod find "Heroes/Mom/Meshes/Elite/.*_SKM$"
    ```
-3. **See its slots**: `b4bmod mesh info /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM`
-   (lines like `mat 4 ... Head`, `mat 5 ... Torso`). Skin goes on the head slot (skin shader), clothes on Torso/Legs
-   (outfit shader).
+3. **Slots** (optional): your materials are put on the outfit's slots automatically, and the pipeline prints what
+   went where: skin, face and eyes on the skin (head) slot, hair, alpha cards, lashes and brows on the **Hair** slot
+   (masked, one colour: the average of your hair texture), clothes on the outfit's cloth slots by body zone (tops,
+   trousers/shoes, gear), eye highlights (transparent overlays) left out. To choose yourself: `b4bmod mesh info
+   <outfit>` lists the slots (`mat 4 ... Head`, `mat 5 ... Torso`), then `--slot <your material>=<slot>` or
+   `--slot <your material>=drop`; the rest stays automatic.
 4. **Run the pipeline** (3P + FP arms + textures, then the add-on):
    ```
    b4bmod survivor mymodel.fbx ^
        --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM ^
        --fp     /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM ^
-       --slot body=Head --slot jacket=Torso --slot hair=Hair --slot eyes=Torso --slot boots=Legs ^
        -o mymod --title "My survivor" --author you --version 1.0 --zip
    ```
    (`^` continues a line in the Windows Command Prompt; on Linux use `\`, or write it all on one line.)
    - It extracts the templates and every material and texture they use, fits your model in Blender (~1 minute),
      writes `mymod/Gobi/Content/...` and packs it into `mymod.pak` (+ `mymod.zip` for sharing with `--zip`).
      `--pak name.pak` names it, `--install` also installs it, `--no-pack` stops before packing.
-   - `--slot` names are your model's material names; b4bmod lists them and stops if one has no slot.
-   - Textures are found through the materials' image nodes, else by file name next to the model
-     (`<material>_albedo/_normal/_roughness/...`), or given: `--tex jacket=textures/Jacket_` (a file prefix or a
-     folder). Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are DirectX style.
-   - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios), `--bonemap map.json` (your bone names -> the game's),
-     `--weights transfer` (take the game mesh's weights), `--work DIR` (keep the intermediate glTF/PNGs there).
-     All of them: `b4bmod model help`.
-5. **Check** before the game (optional): render the fitted model with its limbs bent, and look for stretched or stuck
-   vertices:
+   - Textures are found through the materials' image nodes (embedded ones too), else by file name next to the
+     model (`<material>_albedo/_normal/_roughness/...`; a model with one material takes the one texture set in its
+     folder), or given: `--tex jacket=textures/Jacket_` (a file prefix or a folder). File names win over how a
+     texture is wired (a mask map plugged into base colour is used as a mask map). Understood: base colour,
+     normal, roughness, gloss/smoothness, metallic, AO, ORM, Unity mask maps (R metallic, G AO, A smoothness),
+     alpha/opacity. Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are DirectX style.
+   - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole),
+     `--bonemap map.json` (your bone names -> the game's), `--weights transfer` (take the game mesh's weights),
+     `--max-texture 2048` (smaller textures: an add-on about 4x smaller), `--work DIR` (keep the intermediate
+     glTF/PNGs there). All of them: `b4bmod model help`.
+5. **Check** before the game (optional): render the fitted model with the textures made for the game, standing and
+   with its limbs bent; look for stretched or stuck vertices:
    ```
-   blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb out.png --pose test --views side,front3q
+   blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb out.png --textures <work>/preview_textures_3p.json --views front,side,back
+   blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb out.png --textures <work>/preview_textures_3p.json --pose test --views front,front3q
    ```
-   Run it in the kit folder; `blender` is the path `b4bmod status` shows. `<work>` is printed at the end of step 4
-   (or give `--work DIR` there).
+   (the first-person arms: `fitfp/lod0.glb` with `preview_textures_fp.json`). Run it in the kit folder; `blender` is
+   the path `b4bmod status` shows. Step 4 prints the command with `<work>` filled in (or give `--work DIR` there).
 6. **Install and test**: `b4bmod install mymod.pak`, start the game, wear the outfit (customization screen, or chat
    `/model mom_elite_04`). Other players see it only if they have the add-on too.
 
@@ -112,6 +121,29 @@ b4bmod survivor mymodel.fbx ^
   through without having the add-on; a host with `/models off` or `addons_policy=none` refuses it.
 - Weapons: see "Add a weapon look" below.
 - Picking it in the game's customization screen is not supported (only `/model`).
+
+## Survivor troubleshooting
+What the survivor pipeline prints, and what to do about it.
+
+| Message / what you see | Why, and the fix |
+|---|---|
+| `the model's skeleton: no bone found for pelvis, ...` | The bone names didn't say which bone is which. It lists what it recognised and writes `bonemap_template.json` (every bone of your model) into the work folder: fill in the missing ones (`"Bone_023": "upperarm_l"`), delete the rest, pass `--bonemap bonemap.json`. The b4b bones you need: pelvis, spine_01, head, upperarm/lowerarm/hand and thigh/calf/foot with `_l`/`_r` |
+| `--bonemap: 'x' is not a template bone` / `the model has no bone 'x'` | a typo on the right / left side of your bone map |
+| `orient: ... scale 0.01` or `scale 100` with a warning | the file's units are off (centimetres read as metres, or a scaled armature). The fit still works; if the model looks wrong, apply the scale in Blender (Ctrl+A > All Transforms) and export again |
+| `proportions: segments stretched ... calf x1.80` | your model's limbs are longer/shorter than the survivor's: they are stretched onto the survivor's skeleton so the animations fit. Big factors (a chibi, a giant) look stretched; pick a survivor with similar proportions (heroes differ a little) |
+| `torso ... fitted as one piece, stretched x0.6` | the same for the torso and neck (fitted as one piece each, so they don't bulge in bands) |
+| `shape keys ... removed` | face expressions / morphs: survivors have none; the face follows the head (and a jaw bone if your rig has one) |
+| `unrigged: left arm is 50 deg from the template's pose` | an unrigged model not in an A-pose: it is un-posed automatically. If the arms come out bent or stuck to the body, rig the model (Mixamo auto-rigger, Blender Rigify) and try again |
+| `materials -> slots (auto ...)` table | where each material went. Wrong? `--slot <material>=<slot>` or `=drop` |
+| `material x: its basecolor image 'y' is not next to the model` | the file references a texture on its author's disk: copy the images next to the model, or `--tex x=<folder or file prefix>` |
+| `... is linked as base colour but its name says mask` | fine: the file name wins (a mask map is used as one) |
+| `... is shared with other outfits; yours goes to ...` | the survivor's template shares that texture or material with other outfits: your copy is made in the outfit's folder, other outfits stay as they are |
+| Hair is one colour / a bit dark | the game's hair material has no colour texture: root to tip is one colour, the average of your hair texture (root 40 % darker) |
+| Eyes look flat, irises in the hair colour | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in the hair colour; highlights are left out |
+| Skirts, long hair, capes don't swing | no cloth or dangle bones in the game's skeleton: they move stiffly with the hips / head |
+| A low-poly model turns into triangles at a distance | fixed: models under ~1500 triangles keep every LOD whole (older kits: `--lods 1,1,1,1,1`) |
+| The add-on is 150-200 MB | 4096 textures (several materials packed into one texture set): `--max-texture 2048` |
+| The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |
 
 ## Make a weapon model
 1. **Your model**: an FBX with **separate objects per moving part**, named like `Magazine`, `Bolt`, `Trigger` (others
@@ -208,15 +240,19 @@ The scripts next to b4bmod, each with `-h` / a usage header; run them with the s
 ## Limits
 - The skeleton, animations, hitboxes (physics asset) and material slots stay the template's. No new bones.
 - No cloth simulation for your mesh (the template's cloth is left unused), no morph targets (face shapes: templates
-  with morph targets are refused, which excludes most heads). The face is skinned to `head` (and the jaw if your rig
-  has one): it doesn't blink or talk.
+  with morph targets are refused). The face is skinned to `head` (and the jaw if your rig has one): it doesn't blink
+  or talk (the game's faces are animated by face bones: docs/investigations/mesh-mods.md §10).
 - Hair: on the Hair slot, one colour from root to tip (the game's hair material has no colour texture); on any other
   slot alpha cards render as solid cards.
+- Skirts, long hair and other dangling parts move stiffly with the bone they hang from (no physics bones).
 - The weapon's sights stay where the template's are: a model with a different sight height aims slightly off through
   its own sights.
 - Only on your PC and for players who have the add-on: others see the normal model.
 
-Status: verified in game (2026-09-25): a MakeHuman survivor (3P and FP arms, animated, both players' views) and an
+Tested (2026-09-25, in game with others watching): a VRoid anime character (VRM, 17 materials, alpha hair) on Holly,
+a Mixamo-rigged monster (FBX, Unity mask map) on Walker, a UE4-named bulky man (FBX) on Hoffman, a short woman with a
+Blender Rigify rig (glb) on Doc and an unrigged blocky character built from parts (FBX) on Karlee, each with its
+first-person arms. Earlier: a MakeHuman survivor (3P and FP arms, animated, both players' views) and an
 AK on the AR02 (first person with reload moving the model's magazine, other survivors' hands, skins retargeted). Not
 seen in game yet: the muzzle flash position, the dropped magazine. Hair with alpha on the Hair slot: seen in game. Format details and evidence:
 docs/investigations/mesh-mods.md in the b4b-coop repository.

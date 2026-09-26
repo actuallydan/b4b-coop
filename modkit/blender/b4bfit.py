@@ -1,4 +1,4 @@
-"""Fit a modder's model (FBX, glTF, OBJ, .blend) onto a B4B template skeleton, headless in Blender. Writes glTF files
+"""Fit a modder's model (FBX, glTF, VRM, OBJ, .blend) onto a B4B template skeleton, headless in Blender. Writes glTF files
 that `skmgltf.py import` turns into a cooked skeletal mesh, plus a manifest (materials -> template slots, textures,
 atlas rectangles) for the texture step. Driven by b4bmodel.py (`b4bmod survivor|weapon`); usable on its own.
 Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
@@ -6,6 +6,7 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
   blender -b --python blender/b4bfit.py -- character --template T.glb --source model.fbx --out DIR
         [--mode 3p|fp] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05] [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
+        [--drop_mat MATERIAL]...
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
   blender -b --python blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
         [--forward +x] [--up +z] [--scale fit|<factor>] [--anchor trigger|grip|none] [--part REGEX=BONE]...
@@ -15,13 +16,15 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
   blender -b --python blender/b4bfit.py -- compose <jobs.json>          texture sets -> PNGs (b4bmodel)
 
 character: the source's armature is mapped onto the template's bones by name (UE4 mannequin names as is, Mixamo,
-  3ds Max Biped; or --bonemap {"srcbone": "b4bbone"}), turned to face +X like the template, then posed bone by bone
-  so every mapped joint lands on the template's joint (rotation + stretch along the bone); the pose is applied to the
-  meshes, so they sit in the template's bind pose. Weights: the source's, renamed; weights of unmapped source bones go
-  to their nearest mapped ancestor; with --twist template each limb's weight is split among the template's twist
-  bones as the template mesh splits it at the nearest point. An unrigged source (no armature) gets its weights
-  from the template mesh (--weights transfer, nearest surface). fp: the same against an FP_Biped export, then only
-  faces skinned to the arms are kept.
+  3ds Max Biped, VRoid/VRM, Rigify DEF- bones, else a generic reading of the names; or --bonemap {"srcbone": "b4bbone"}),
+  turned to face +X like the template, then posed so every mapped limb joint lands on the template's joint (rotation
+  + stretch along the bone; torso and neck as one piece each); the pose is applied to the meshes, so they sit in the
+  template's bind pose. Weights: the source's, renamed; other bones (twist, helpers, face, hair) give theirs to the
+  mapped bone they follow; with --twist template each limb's weight is split among the template's twist bones as the
+  template mesh splits it at the nearest point. An unrigged source (no armature) is stood up by its bounds, its arms
+  un-posed from a T-pose/arms-down onto the template's A-pose, weights from the template mesh (named parts like
+  arm-left only take that limb's bones). fp: the same against an FP_Biped export, then only faces skinned to the arms
+  are kept.
 weapon: rigid parts. Source objects are bound to weapon bones by name (magazine/mag -> mag, bolt, trigger,
   charging handle, ...; --part overrides; everything else -> the template's main weapon bone), turned so the barrel
   points along the template's +X and scaled to the template's length, and moved so the trigger (object named
@@ -1269,16 +1272,23 @@ def assign_slots(o, tpl, meshes, tex_dirs):
     return {"slots": slots_used, "sets": sets}
 
 
+LOD_MIN_TRIS = 1500      # never decimate below this (a low-poly model's LODs stay whole: boxes collapse otherwise)
+
+
 def make_lods(o, meshes):
     ratios = [float(x) for x in o.get("lods", "1").split(",")]
     lods = []
+    total = sum(len(m.data.polygons) for m in meshes)
     for li, r in enumerate(ratios):
         if li == 0:
             lods.append(meshes); continue
+        r = min(1.0, max(r, LOD_MIN_TRIS / max(1, total)))
         copies = []
         for m in meshes:
             c = m.copy(); c.data = m.data.copy(); c.name = f"{m.name}_LOD{li}"
             bpy.context.scene.collection.objects.link(c)
+            if r >= 0.999:
+                copies.append(c); continue
             d = c.modifiers.new("Decimate", "DECIMATE"); d.ratio = r; d.use_collapse_triangulate = True
             # keep the decimate before the armature modifier
             while c.modifiers[0].name != "Decimate":

@@ -37,6 +37,9 @@ reader/writer, property dump, MI reader), `modkit/skm.py` (SKM render data parse
 - **Static meshes solved**: `sm.py` parses/writes cooked `UStaticMesh` **byte-identically for 2118/2118 retail meshes**
   (§1b); the section's extra TRS bool is `bVisibleInRayTracing`. **Other players see a weapon as a static mesh**
   (`3P_<Code>_SM` on the weapon actor's `BaseStaticMesh_3P`), not `3P_<Code>_SKM`.
+- **Characters found online** (§10): VRM, Rigify, Mixamo, UE-named and unrigged-in-parts models with no hand-made
+  settings (bone maps, slots, shared textures, T-pose all automatic), live on 5 survivors; faces follow head/jaw only
+  (the game animates faces with face bones driven by a PoseAsset, §10).
 - No retail survivor, FP-arms or weapon mesh has morph targets (0 of 320 hero/weapon SKMs): faces are bone-driven, so
   the importer never has to write morphs. Weapon **skins** are material sets for the retail UVs: the pipeline points
   every skin MI of the weapon at the model's textures (a player with a skin equipped sees the model as made).
@@ -249,27 +252,44 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
   off through its own sights (the AK is within ~1.5 cm). Moving those bones per weapon is untested.
 - Hair: done (§9).
 - Face animation: the model's face is skinned to `head` (and jaw if the rig has one); B4B's face bones (eyelids, lips)
-  don't move it. `--weights transfer` copies the template face's weights instead (untested in game).
+  don't move it. What following the game's face animation would take: §10.
 - New bones (rebuild the ref skeleton from the Skeleton asset), cloth, new material masters: not supported.
 - Hitboxes follow the template's physics asset; everyone sees their own add-ons (addons.md §7).
 
 ## 6. How the model pipeline works (`b4bmodel.py`, `blender/b4bfit.py`)
 - **Bone map** (character): source bone names are matched as UE4 mannequin names (as is), Mixamo (`mixamorig:Hips`
-  -> pelvis, `Spine/Spine1/Spine2` -> spine_01..03, `LeftArm` -> upperarm_l, `LeftHandIndex1` -> index_01_l, ...) or
-  3ds Max Biped (`Bip01 L UpperArm`, `L Finger0`...); the table with most hits wins, `--bonemap {"src": "b4b"}` adds or
-  overrides. Required: pelvis, spine_01, head, both arms (upperarm/lowerarm/hand) and legs (thigh/calf/foot).
+  -> pelvis, `Spine/Spine1/Spine2` -> spine_01..03, `LeftArm` -> upperarm_l, `LeftHandIndex1` -> index_01_l, ...),
+  3ds Max Biped (`Bip01 L UpperArm`, `L Finger0`...), VRoid/VRM (`J_Bip_L_UpperArm`, `J_Bip_C_UpperChest`) or Rigify
+  (`DEF-spine`=pelvis ... `DEF-spine.006`=head, `DEF-upper_arm.L`, `DEF-f_index.01.L`), and by a generic reader (side
+  from Left/Right/L_/_l/.L, part from words like upper_arm/forearm/shin/thigh/up_leg/toe, finger numbers; numbered
+  `arm`/`leg` joint chains spread over upperarm..hand / thigh..ball; the spine = the path pelvis -> head spread over
+  spine_01..03, neck_01/02; pelvis = common ancestor of the thighs if unnamed; last neck joint = head if unnamed). Only
+  bones that weight vertices (and their ancestors) are candidates. The option with most required bones wins, its gaps
+  filled from the generic reading; `--bonemap {"src": "b4b"}` adds or overrides. Required: pelvis, spine_01, head,
+  both arms (upperarm/lowerarm/hand) and legs (thigh/calf/foot); missing ones -> error + `bonemap_template.json`.
 - **Orientation/scale**: frames from the mapped joints (lateral = right->left upper arm, up = pelvis->head); B4B heroes
   face +X. Uniform scale = template head-to-feet height / source's.
-- **Pose fit**: every mapped bone, root first, gets a pose that puts its joint on the template joint and aims it at the
-  template's next joint (upperarm -> lowerarm, hand -> middle_01, spine_03 -> neck_01, ...), with a stretch along the
-  bone's own axis (no shear: `inherit_scale NONE`). Result on the MakeHuman test: 0.00 cm joint error. The armature
-  modifier is then applied: the mesh sits in the template's bind pose (A-pose), which is what the game skins against.
+- **Pose fit**: every mapped limb bone gets a transform D that puts its joint on the template joint and aims it at the
+  template's next mapped joint (upperarm -> lowerarm, hand -> middle_01 ...), with a stretch along the segment; the
+  source bone is first re-pointed (edit mode, mesh unchanged) at its aim joint, so the stretch is along its own axis
+  and the pose holds it without shear (`inherit_scale NONE`). Torso (pelvis -> neck) and neck (-> head) get one D per
+  chain: per-segment fitting squashed/stretched torsos in bands on rigs with other spine spacing (VRoid x0.57..x1.83,
+  Mixamo hips x0.43). Every other bone moves with the mapped bone it follows (`own_bones`: mapped ancestor, else the
+  mapped bone of the same name in another layer (Rigify `ORG-`/`MCH-`/`DEF-`), else the nearest mapped segment:
+  MakeHuman's Rigify helpers `DEF-elbow-helper.L`, `DEF-knee-helper.L` hang off ORG bones and stayed behind before:
+  detached upper arms, jagged knees, the mouth left under the chin). Jaw: re-weighted only (joint not moved).
+  Result: 0.00 cm joint error on all test rigs. The armature modifier is then applied: the mesh sits in the template's
+  bind pose (A-pose), which is what the game skins against.
 - **Weights**: source groups renamed to template bones; unmapped source bones (twist, extra face bones) go to the
   nearest mapped ancestor. `--twist template` (default) splits each limb weight among the template's twist bones
   (`upperarm_twist_01`, `lowerarm_twist_01`, `elbow_twist_01`, `wrist_twist_01`, `thigh_twist_01`, `calf_twist_01`,
   ...) in the proportions of the nearest template vertices (so forearm roll twists like retail). No armature:
-  the model is stood up by its bounding box (`--facing`, default -Y = Blender's front) and gets the template's weights
-  from the 4 nearest template vertices (`--weights transfer`); arms must already be in an A-pose. Checked with
+  the model is stood up by its bounding box (`--facing`, default -Y = Blender's front), scaled to the template's
+  stature from its skeleton ((head joint - ground) x 1.115, ground = balls of the feet - 4.5 cm, measured on Walker,
+  Holly, Hoffman 3P meshes; an FP arms mesh has no feet), then `unpose_arms`: arm direction shoulder -> most lateral
+  vertices (named arm parts: top -> far end) against the template's same measure; the template's upperarm is posed
+  like the model's, weights come from the posed template (16 nearest, restricted to the part's bones for objects
+  named like `arm-left`, `head`, `torso`), then the inverse pose is applied to the model. Checked with
   `preview.py --pose test` (bent limbs) on the template, the rigged fit, the unrigged fit and a UE-named rig: all
   deform alike.
 - **FP arms**: the same fit against the `FP_Biped` export (its own bind pose), then only faces whose vertices are >= 50 %
@@ -348,3 +368,80 @@ triggered by emptying the clip and firing wasn't tested.
   strand edges at fringe and sideburns (`hair_face3_crop.png`, `hair_face3_zoom.png`) instead of the opaque helmet.
   Screenshots in `~/.local/share/b4b-coop/fullmodel/shots_next/` (not committed).
 - Limits: one colour gradient per hair (no per-strand texture colour: the master has none); FP arms never show hair.
+
+## 10. Characters found online (models-characters, 2026-09-25)
+Goal: take a humanoid someone published and get it into the game with one command. Test set (licenses in
+`~/.local/share/b4b-coop/characters/LICENSES.txt`, nothing committed): VRoid "Sendagaya Shino" (CC0, VRM 0.x,
+opengameart.org/content/vroid-studio-cc0-models), "Horror Monster" (CC0, Mixamo rig, opengameart.org/content/horror-monster-0),
+Kenney "Blocky Characters" (CC0, unrigged parts), two MPFB/MakeHuman humans (CC0 assets) made with
+`tools/modkit/testassets/mpfb_survivor.py` (new `--phenotype`, `--rig rigify.human`: Rigify-generated, 930 bones, glb),
+Khronos CesiumMan (CC-BY 4.0, numbered joints; mapping test only, its texture is a logo). All with `--as` (added outfits)
+and FP arms, no `--slot` given.
+
+| Model | Source rig | Survivor | Worked | Still off |
+|---|---|---|---|---|
+| Shino (VRoid, 17 materials, alpha hair, 42 shape keys) | VRM `J_Bip_*` + 100 hair/skirt joints | Holly Elite 00 | bones 52/158 mapped (VRoid table), auto slots: skin/face/mouth/eyewhite -> Head atlas, clothes -> Body atlas + Gear, hair + lashes/brows/eyeline + iris -> Hair (masked), highlights dropped; live: 3P (host, others with add-on), FP arms, idle/run | hair one colour (light blue reads silver/dark), skirt and hair rigid, no eyelid/mouth animation |
+| Horror Monster (2.4 m, one material) | Mixamo, 2-chain fingers | Walker Elite 00 | 34/41 mapped; textures: FBX linked the mask map as base colour -> reclassified by name, Unity mask map -> PBR; live: 3P idle/run, FP claws holding a bat | legs stretched x1.7-1.8 (short legs on the survivor skeleton) |
+| "bulky" (MPFB, 2.15 m, afro, overalls) | UE4 mannequin names | Hoffman Elite 00 | 53/53; live as a bot: run, aim, shoot | afro hair renders as one grey-brown colour |
+| "shorty" (MPFB, 1.27 m, ponytail) | Rigify full rig (DEF- + ORG/MCH/face) | Doc Elite 00 | 54 mapped (Rigify table); after `own_bones`: no detached arms/knees/mouth; live: 3P, FP arms | neck squashed (x0.39: Rigify neck starts below the shoulders); thighs x1.5 |
+| Blocky (Kenney, parts: head/torso/arm-left/...) | none, arms hanging down | Karlee Elite 00 | un-posed 53 deg into the A-pose, parts keep their limb; live: 3P after the LOD fix | boxes deform like boxes; arms offset from the survivor's shoulders |
+| CesiumMan | `Skeleton_arm_joint_L__4_`, `leg_joint_R_2` | Walker | 19/19 mapped by the generic reader (numbered chains, neck_2 = head) | not taken into the game (logo texture) |
+
+Live (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host + client 2 with the 5 add-ons via `addons_dir=`, client 3
+without): Fort Hope and Evansburgh B; host/clients `/model <outfit>`, host `/model <bot|player> <outfit>`; every
+machine with the add-ons shows the outfits (`mdl dump`: `CharacterMesh0` = `/Game/b4bcoop/outfits/<name>/3P_...`,
+`FirstPersonArms` = `.../FP_...`), client 3 shows the survivors' base pieces (`3P_Holly_Torso_00` ...). Screenshots
+(presented frames, `launch/shot.sh`): `~/.local/share/b4b-coop/characters/shots/` (not committed). Seen: idle, run and
+aim (bot with `bulky` during a horde), FP arms holding SMG / bat / pistol. Not seen: reload and crouch (no unattended
+trigger), firing. `tools/e2e.py --quick --no-lock`: 14/14.
+
+What broke and was fixed (all in `modkit/`):
+- `.vrm` refused by b4bmod; glb/vrm textures are embedded (no file path): written out from `packed_file` bytes.
+- VRM MToon (unlit) materials have no Principled BSDF links: images taken from the node tree by colour space.
+- Texture roles: `normal` contained `orm` (normal maps read as ORM); FBX had the mask map on Base Color and a bogus
+  metallic 1.0 (characters now ignore constant metallic); `baseMap`, mask maps, gloss understood.
+- Unused material slots (after `--drop` / the FP cut) broke atlases and the FP probe: only materials of faces count.
+- Shape keys made the armature modifier fail: removed with a note (survivors have no morph targets).
+- Holly Elite 00's head colour lives in `Elite_02/Textures`, hero hair masks in `Meshes/Shared`,
+  `Characters/Shared/Textures/Hair`; the old "only textures of the template's folder" rule left the face and hair
+  with retail textures on our UVs. Now shared textures get a copy in `<template folder>/Textures/` and the MI is
+  pointed at it (`b4bmod mi set` adds the override); a shared MI (`Holly_Hair_MI`) is copied to `<folder>/Materials/`
+  and the cooked meshes repointed (`b4bmod rename` in place with `--ref`). `b4bmod mi` no longer extracts its
+  `set` values (new paths aren't in the game).
+- Low-poly LODs: Blender Decimate collapsed Kenney's 12-triangle boxes to single triangles; the test instances show
+  LOD1+ (`r.SkeletalMeshLODBias=1`), so the blocky outfit was one brown triangle in game. LODs keep >= 1500 triangles.
+- Add-ons were 150-200 MB (4096 atlases, 4096 hair masks): hair masks capped at 2048, `--max-texture` option.
+- `preview.py`: `--textures` (the textures made for the game), views follow a B4B skeleton's facing (heroes face +X,
+  so "front" rendered their side).
+
+### Facial animation: bones, and what a custom head would need
+- B4B faces are **bone-driven, no morph targets** (0 of 320 hero/weapon SKMs have morphs, §TL;DR). Per hero
+  `<Hero>FacialAnimationConfig` (class `FacialAnimationData`): `FacePoseAsset` = `FacePoses_<Hero>_PoseAsset`
+  (`PoseAsset`, `bAdditivePose=1`, `RetargetSource=3P_<Hero>_SKM`, skeleton `3P_Biped_SK`), `ExpressionCurves`
+  (Relaxed, Anger, Caring, Concerned, Disgust, Joy, Fear, Interested, Wounded, Playful, Sad, Surprise) and
+  `LipsyncPhonemeVisemeMapping` (phoneme -> viseme pose: AH, OW, EH, E, ER, L, CH, N, MBP, MouthOpen_TEMP ...).
+  Lines come with `Characters/Lipsync/English(US)/LipsyncLines_English_<Hero>_DT` (row struct `LipsyncLineRow`, 15 MB
+  for Holly: per-line phoneme timing). Blinks: additive `BaseAnims3P/Additives/3P_M_Blink_ADD_AS`; faces in
+  `3P_Jim_FacePoses_AS`, `Mom_FacePoses_AS`.
+- The pose asset's tracks (its name map): `jaw`, `tongue`, `upper/lower_teeth`, `lip_upper/lower(_l/_r)`,
+  `lip_corner_upper/lower_l/r`, `chin`, `cheek_upper/lower_l/r`, `nose`, `nostril_l/r`, `brow`, `eyebrow(_01..03)_l/r`,
+  `eyelid_upper/lower(_01..03)_l/r`, `eye_l/r`, `eyeball_l/r`, `eye_inner/outer_l/r`, `ear_l/r` (all in every hero
+  mesh's skeleton, `3P_Biped_SK`).
+- So a custom head follows the game's talking/blinking/expressions if its face vertices are **skinned to those face
+  bones** where they sit. Two ways, neither built:
+  1. *Warp the face to the survivor's*: find the model's facial landmarks (eye corners, lid lines, mouth corners,
+     jaw line; from its own face bones if the rig has them (VRoid `J_Adj_*_FaceEye`, Rigify `DEF-lip.*`, `DEF-lid.*`),
+     else from the geometry around the template's landmarks), deform the model's face so they land on the
+     template's, then copy the template head's face weights (`--weights transfer` limited to the head). Works with
+     the existing importer (template bind pose kept); the face gets the survivor's proportions.
+  2. *Move the face bones to the model's face*: write the mesh's own reference pose with the face bones at the
+     model's landmarks (the importer keeps the template's ref skeleton; `skm.py` can write `FReferenceSkeleton`,
+     the engine computes the inverse bind matrices from it at load). The poses are additive, so they add
+     rotations/offsets around the new positions; needs a live check of the skeleton's per-bone translation
+     retargeting (base animations keying face bones in "Animation" mode would pull them back to Holly's positions).
+  Both need eyelids closed by rotation about the eye centre: the model's eyeballs must sit where `eye_l/r` are (or be
+  moved there), and lids must be real geometry (VRoid/anime faces often draw eyes and lashes as textures and blink with
+  shape keys: those would need the lids modelled, or stay static).
+- Cheapest useful step: jaw. Rigs with a jaw bone (Rigify, many game rigs) already get the jaw re-weighted (bind-only
+  mapping); `lip`/`jaw` weights from the template on a warped mouth region (way 1, mouth only) would make heads talk.
+

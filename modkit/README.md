@@ -80,11 +80,12 @@ b4bmod find "Heroes/Mom/Meshes/Elite/.*_SKM$"                                   
 b4bmod mesh info /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM         2. its slots
 b4bmod survivor mymodel.fbx --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM
     --fp /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM
-    --slot body=Head --slot jacket=Torso --slot boots=Legs -o mymod --title "My survivor" --zip --install    3.
+    -o mymod --title "My survivor" --zip --install                                                          3.
 ```
-(one command on one line.) Step 3 extracts what it needs from the game, fits your model (rigged or not) onto the
-game's skeleton in Blender, makes the LODs and the textures, and writes `mymod.pak` (the add-on), `mymod.zip` (to
-share) and installs it. Start the game and wear the outfit. Weapons: `b4bmod weapon mygun.fbx --fp-mesh ...`.
+(one command on one line.) Step 3 extracts what it needs from the game, fits your model (FBX, glTF, VRM, OBJ ...;
+rigged with Mixamo, Rigify, VRoid, UE4 names ... or not rigged) onto the game's skeleton in Blender, puts your
+materials on the outfit's slots (printed; `--slot <material>=<slot>` to choose), makes the LODs and the textures,
+and writes `mymod.pak` (the add-on), `mymod.zip` (to share) and installs it. Start the game and wear the outfit. Weapons: `b4bmod weapon mygun.fbx --fp-mesh ...`.
 Add `--as <name>` to add an outfit instead of replacing Mom's (players wear it with `/model <name>`).
 
 ## Commands
@@ -126,6 +127,8 @@ Add `--as <name>` to add an outfit instead of replacing Mom's (players wear it w
 - Git Bash turns `/Game/...` into `C:/Program Files/Git/Game/...`; b4bmod undoes that, but the Command Prompt or
   PowerShell avoid it.
 - `can't write ...: close the game first`: the game keeps its add-ons open while it runs.
+- A survivor model comes out wrong (bones not found, stretched, wrong textures): [docs/meshes.md "Survivor
+  troubleshooting"](docs/meshes.md#survivor-troubleshooting) explains each message.
 - Your add-on doesn't show: `/addons` in the game's chat lists it with the reason if it didn't load; `b4bmod check`
   shows the same offline. The b4bcoop mod must be installed.
 

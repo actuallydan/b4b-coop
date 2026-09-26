@@ -4,8 +4,11 @@ ready for `addon.py pack`. Mod makers run it as `b4bmod survivor|weapon ...` (wh
 and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
 
   b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir>
-        [--slot MAT=SLOT]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
-        [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none]
+        [--slot MAT=SLOT|drop]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
+        [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none] [--facing -y]
+        <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
+        (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
+        Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
                                             `outfit=` line in <moddir>/addoninfo.txt (in game: /model <name>)
   b4bmodel.py weapon <model> --fp-mesh <FP weapon SKM> [--3p-mesh <3P weapon SKM>] [--static <SM>]... -o <moddir>
@@ -18,7 +21,8 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
 
   common: --src <extract folder> (where the game's files were extracted: b4bmod extract ...), --work <dir>,
           --normal-dx (the model's normal maps are DirectX style; default: OpenGL/glTF style, green flipped),
-          --quality fast|balanced|best (texture encoder), --keep-work
+          --quality fast|balanced|best (texture encoder), --max-texture 4096|2048|1024 (largest texture made;
+          2048 makes the add-on about 4x smaller), --keep-work
 
 <SKM>/<SM> = a game path (/Game/.../3P_Mom_Elite_04_SKM) or a .uasset file. What it does:
   1. exports the template meshes to glTF (skmgltf.py export),
@@ -204,6 +208,8 @@ class TexTool:
         self.done = set()
         self.hair_mis = []
         self.kind = o.get("kind")
+        self.max_tex = int(o.get("max_texture", 4096))
+        if self.max_tex not in (512, 1024, 2048, 4096): die("--max-texture: 512, 1024, 2048 or 4096")
         self.preview = {}                # texture set -> base colour PNG (preview_textures_*.json)
         self.mi_sets = []                # (MI, texture parameter, new texture) for textures that were shared
         self.adopted = {}                # shared MI package -> its copy in the template's folder
@@ -228,7 +234,8 @@ class TexTool:
             for k in ("basecolor", "normal"):
                 p = t["textures"].get(k)
                 if p and os.path.exists(p): base = max(base, png_size(p))
-        size = min(4096, 1 << math.ceil(math.log2(max(256, base * g))))
+        size = min(self.max_tex, 1 << math.ceil(math.log2(max(256, base * g))))
+        hair_size = min(size, 2048)                  # the strand mask needs less (retail hero hair masks: 2048 or less)
         for param, tex in params.items():
             if tex in self.done: continue
             role = role_of(param)
@@ -250,7 +257,8 @@ class TexTool:
                 self.mi_sets.append((mi, param, path))
                 log(f"  {param} of {mi.split('.')[-1]}: {tex.split('.')[0]} is shared with other outfits; yours goes to {path}")
             out = os.path.join(self.work, os.path.basename(f)[:-7] + ".png")
-            self.jobs.append({"out": out, "size": size if role in ("basecolor", "normal", "pbr", "hairmm") else 256,
+            self.jobs.append({"out": out, "size": hair_size if role == "hairmm" else
+                              size if role in ("basecolor", "normal", "pbr") else 256,
                               "role": role, "tiles": tiles, "mean_from": self.retail_png(f),
                               "normal_dx": self.normal_dx, "asset": asset, "path": path, "kind": self.kind})
             self.done.add(tex)
