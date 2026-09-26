@@ -322,7 +322,8 @@ def motion(S, r, ic):
         look(ic, 70); time.sleep(2)
         e2e.agent(H, "face", "say", me["idx"], "Ping_Affirmative")
         time.sleep(0.5); shot(r, C, "m_talk", "talking (client view)")
-    bots = re.findall(r"^#(\d+) .*\[bot\]", e2e.agent(H, "players"), re.M)
+    # dev `players`: "[k] <class> name=<player> pawn=<class>"; a bot's player state has no name and a hero pawn
+    bots = re.findall(r"^\s*\[(\d+)\] \S+ name= pawn=Hero_", e2e.agent(H, "players"), re.M)
     if not bots:
         log("  motion: no bot to run"); return
     e2e.agent(H, "model", "#" + bots[0], name)
