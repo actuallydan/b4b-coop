@@ -73,8 +73,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `overlay_key`, `overlay_scale`. Panels: `overlay.h` (`overlay_add_panel` from a module's init + C `ov_*` widgets;
     actions `ov_run` = the chat path `admin_slash`, settings `ov_setting` = ini live handler + writer; `ov_begin_perm`
     greys out host/cheat controls). Tabs live next to their module (presence.c Session, admin.c Players,
-    thirdperson.c Camera, flashlight.c Flashlight, cheats.c Cheats, addons.c Add-ons). Dev `overlay open|close|status|tab|press|set|
-    locate|mouse|wheel|log`; e2e has a smoke check. docs/investigations/overlay.md (parity checklist). **It replaces the chat
+    thirdperson.c Camera, flashlight.c Flashlight, cheats.c Cheats, addons.c Add-ons, models.c Models). Dev `overlay
+    open|close|status|tab|press|set|locate|mouse|wheel|log`, `screenshot <path>` (presented frame as PNG,
+    launch/shot.sh); e2e has a smoke check. docs/investigations/overlay.md (parity checklist). **It replaces the chat
     commands:** port every chat command into it; once it has them all, new features get overlay controls (+ ini keys)
     only, not new chat commands. Don't remove existing chat commands (keep `/say`).
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
@@ -236,8 +237,12 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
 - **GPU**: `B4B_GPU=4090` (any part of an NVIDIA GPU name) runs test instances on that GPU in a headless gamescope
   (`launch/instance.sh`: `--backend headless --prefer-vk-device`, `VKD3D/DXVK_FILTER_DEVICE_NAME`), so they leave the
   display GPU (5090) to Dan. A GPU with no display attached can't present to the desktop directly (swap chain
-  `E_INVALIDARG`), hence gamescope. No windows: `launch/shot.sh` takes an engine screenshot (`shot`) through the agent,
-  multi.sh skips window labels, e2e still passes (13/13, both lanes). The ~ overlay isn't in engine screenshots.
+  `E_INVALIDARG`), hence gamescope. No windows: multi.sh skips window labels, e2e still passes (13/13, both lanes).
+  `launch/shot.sh N out.png` (any mode) asks the agent for dev `screenshot <windows path>`: the frame as presented
+  (HUD, menus and the ~ overlay included), copied from the back buffer in the overlay's D3D12 Present hook
+  (overlay.cpp, dev builds only); fallback the engine `shot` (3D scene only: black on UI-only screens such as the
+  pre-round cards, which made e2e's end screenshots empty), then the window grab without `B4B_GPU`. `B4B_SHOT=engine|window`
+  forces one.
   **Default for agents while Dan uses the 5090: `export B4B_GPU=4090`.**
 - 5 players: `B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5` (opt-in `teamsize` in `native/src/teamsize.c`). Verified: a
   full mission and 2 chapter transitions with 5 humans. Without it, a 5th joiner is refused with "Server full."
