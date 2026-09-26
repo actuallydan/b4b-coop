@@ -3,6 +3,7 @@ Cycles on the CPU (works without a GPU). For checking a model before and after t
 
   blender -b --python blender/preview.py -- <model> <out.png> [--size 512] [--pose test]
       [--views front,side,back,top,front3q] [--zoom 1.0] [--focus <object name substring>] [--textures <json>]
+  --sim <work>/fit3p/manifest.json: the cloth simulation meshes (skirts, coats, capes) drawn as red wire.
   --pose test bends arms, legs, spine and head of a B4B skeleton (skmgltf export or b4bfit output) to check weights.
   --textures: {"<material / slot name>": "<base colour png>"}, e.g. <work>/preview_textures.json written by
   `b4bmod survivor` (the fitted model with the textures made for the game). Views follow the model's own facing when
@@ -19,7 +20,7 @@ from mathutils import Vector
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out = argv[0], argv[1]
 opts = {"size": "512", "views": "front,side,back", "zoom": "1.0", "focus": "", "pose": "", "textures": "", "face": "",
-        "face_pose": "", "face_blink": "0", "face_view": "face"}
+        "face_pose": "", "face_blink": "0", "face_view": "face", "sim": ""}
 i = 2
 while i < len(argv):
     opts[argv[i].lstrip("-").replace("-", "_")] = argv[i + 1]; i += 2
@@ -107,6 +108,19 @@ FACE_ARM = face_pose(opts["face"], opts["face_pose"], opts["face_blink"]) if opt
 for o in list(bpy.data.objects):                  # glTF importer bone-shape helpers
     if o.type == "MESH" and (o.name.startswith("Icosphere") or not o.users_scene or o.hide_render):
         bpy.data.objects.remove(o)
+if opts["sim"]:
+    # the cloth simulation meshes (b4bfit manifest extras "cloth", Blender metres) as red wire over the model
+    import json
+    red = bpy.data.materials.new("b4b_sim"); red.use_nodes = True
+    bsdf = red.node_tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value = (1, 0, 0, 1)
+    bsdf.inputs["Emission Color"].default_value = (1, 0, 0, 1); bsdf.inputs["Emission Strength"].default_value = 3
+    for k, sd in enumerate(json.load(open(opts["sim"])).get("extras", {}).get("cloth", [])):
+        me = bpy.data.meshes.new(f"b4b_sim{k}")
+        me.from_pydata([tuple(v) for v in sd["verts"]], [], [tuple(t) for t in sd["tris"]])
+        ob = bpy.data.objects.new(f"b4b_sim{k}", me); bpy.context.scene.collection.objects.link(ob)
+        me.materials.append(red)
+        wf = ob.modifiers.new("wire", "WIREFRAME"); wf.thickness = 0.006
 meshes = [o for o in bpy.data.objects if o.type == "MESH" and (not opts["focus"] or opts["focus"] in o.name)]
 if opts["textures"]:
     import json, re

@@ -19,7 +19,8 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
                                 fit: stretched onto the survivor's joints; a number blends. FP arms always fit
         [--hair-physics auto|off]  auto (default): long hair swings on the survivor's physics hair bones (templates with a
                                    hair chain: Holly, Mom, ...; mesh-mods.md §14) [--hair-swing 0..1]
-        [--cloth auto|off|MAT,...]  auto (default): a skirt/dress becomes cloth (templates with a clothing asset: Holly Elite 00)
+        [--cloth auto|off|MAT[:cape|:lower],...]  auto (default): skirts, dresses, long coats (open front too) and capes
+                                   become cloth on any outfit (one without cloth gets a clothing asset added)
         [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
                                 tint = the game's hair shader, one colour root to tip (your texture's average)
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
@@ -964,7 +965,7 @@ def survivor(o):
         if o.get("hair", "texture") == "tint" else {}
     skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair,
                         bind_bones=bind_bone_moves(man3), bones=face_bone_moves(man3),
-                        cloth=man3.get("extras", {}).get("cloth"))
+                        cloth=man3.get("extras", {}).get("cloth"), cloth_src=src)
     face_preview(o.o, tp, man3, work)
     mans = [(man3, tp)]
     if fp:
@@ -1290,11 +1291,18 @@ def dangle_args(o, tp, src):
                 f"bones: the hair moves with the head (templates with a hair chain: Holly, Holly Elite 06, Walker "
                 f"Elite 03, Doc Elite 03, Mom)")
     if o.get("cloth", "auto") != "off":
-        if cloth.cloth_assets(skm.SkeletalMesh(tp)):
-            a += ["--cloth", o.get("cloth", "auto")]
-        else:
-            log(f"cloth: {os.path.basename(tp)} has no clothing asset: skirts are skinned (outfits with cloth: Holly "
-                f"Elite 00/04, Karlee Elite 06, Doc Elite 03, Walker Elite 07, Jim Torso 01)")
+        a += ["--cloth", o.get("cloth", "auto")]
+        n = len(cloth.cloth_assets(skm.SkeletalMesh(tp)))
+        # outfits without (enough) clothing assets get new ones, copied from a retail coat's: have it extracted
+        missing = [x for x in cloth.NEEDS if not os.path.exists(upkg.game_path_to_file(x, src) or "")]
+        if missing and find_b4bmod():
+            subprocess.run([sys.executable, find_b4bmod(), "extract", *missing, "-o", src], capture_output=True,
+                           text=True)
+            missing = [x for x in cloth.NEEDS if not os.path.exists(upkg.game_path_to_file(x, src) or "")]
+        if missing:
+            log(f"cloth: {', '.join(missing)} not extracted: skirts/coats/capes only on outfits with cloth "
+                f"({os.path.basename(tp)} has {n} clothing asset(s))")
+            if not n: a = a[:-2]
     return a
 
 
