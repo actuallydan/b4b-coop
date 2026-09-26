@@ -64,8 +64,9 @@ for i in $(seq "$n"); do
   setsid "$here/instance.sh" "$i" "${args[@]}" >"$root/test$i.out" 2>&1 </dev/null &
   echo "started test$i (agent port $(( port_base + i - 1 )), B4B_AGENT=$(( i - 1 )))"
   if [[ $i == 1 ]]; then
-    for _ in $(seq 120); do agent 1 ping | grep -q pong && break; sleep 1; done
-    agent 1 ping | grep -q pong || die "host agent never came up (see $root/test1.out)"
+    # no second ping to confirm: during the first loading seconds one can take >25 s (game thread busy)
+    up=0; for _ in $(seq 120); do agent 1 ping | grep -q pong && { up=1; break; }; sleep 1; done
+    [[ $up == 1 ]] || die "host agent never came up (see $root/test1.out)"
   fi
   [[ $i -lt $n ]] && sleep "$stagger"
 done

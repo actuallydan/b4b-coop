@@ -145,7 +145,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   mirroring the game folder, its `b4bcoop-README.txt` (CRLF, mirrors README's player section: keep in sync) +
   `dist/SHA256SUMS`, reproducible), `run.sh` (Proton, no EAC; `B4B_PREFIX` = alternate compatdata; writes
   `steam_appid.txt`), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test instances, below), `gamelock.sh`,
-  `lane.sh`/`lane-restore.sh` (live-test lanes, below),
+  `lane.sh`/`lane-restore.sh`/`flatpak-steam.sh` (live-test lanes, below),
   `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
 - `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `e2e.py` / `charsuite.py` (regression suites), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
@@ -232,7 +232,15 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   Lane 1 = everything above. Lane 2 = the Flatpak Steam copy of the game (same build;
   `~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/Back 4 Blood`), lock
   `/tmp/b4b-game-lane2.lock`, prefixes `prefixes/lane2/test<n>`, game port 7887, agent ports 47140+, windows
-  "B4B L2 #n", artifacts `/tmp/b4b-e2e-l2-<time>`; still run with the native Steam/Proton (one Steam id).
+  "B4B L2 #n", artifacts `/tmp/b4b-e2e-l2-<time>`. Which Steam client the instances talk to (`B4B_STEAM`, lane.sh):
+  `native` (default; both lanes: Dan's account Hergmgurk through the native client) or `flatpak` (lane 2 only, and
+  it picks lane 2): Proton runs inside the Flatpak Steam's own sandbox (account dreamsofants 76561198994546085).
+  That Steam must be started with `launch/flatpak-steam.sh start` (own SysV IPC namespace + the lane-2 prefixes in
+  view; `status` checks it); run.sh refuses otherwise, because Flathub's Steam shares the host's IPC namespace and a
+  game could register with the native client. Games join the sandbox with `flatpak enter` (never Steam's
+  LaunchAlongsideSteam D-Bus name: the native Steam owns the same name). docs/investigations/flatpak-steam.md.
+  **While Dan plays on his native account, only `B4B_STEAM=flatpak` may run**: the file
+  `~/.local/share/b4b-coop/native-steam-in-use` marks that, and run.sh refuses native launches while it exists.
   Each lane's `gamelock.sh`, `multi-stop.sh` (matches only its own prefix root) and instances are independent.
   Both folders hold one of Dan's player installs (lane 1: his own account's; lane 2: his second account's,
   dreamsofants). `gamelock.sh acquire` backs up the lane's player files (`launch/lane-restore.sh`: top-level files of
@@ -241,7 +249,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   restores them sha256-exact and removes what the dev install added (test logs move to a new
   `~/.local/share/b4b-coop/lane<n>-logs/<time>/`), so no reinstall of main's build is needed. Acquire waits while
   the player's own game runs in that folder. Never edit his `b4bcoop.ini`.
-  Usage: `export B4B_LANE=2; launch/gamelock.sh acquire <me>; launch/install.sh; launch/multi.sh 2; ...; release`.
+  Usage: `export B4B_LANE=2; launch/gamelock.sh acquire <me>; launch/install.sh; launch/multi.sh 2; ...; release`
+  (Flatpak Steam: `launch/flatpak-steam.sh start` once, then `export B4B_STEAM=flatpak B4B_GPU=4090` instead of
+  `B4B_LANE=2`).
 - **GPU**: `B4B_GPU=4090` (any part of an NVIDIA GPU name) runs test instances on that GPU in a headless gamescope
   (`launch/instance.sh`: `--backend headless --prefer-vk-device`, `VKD3D/DXVK_FILTER_DEVICE_NAME`), so they leave the
   display GPU (5090) to Dan. A GPU with no display attached can't present to the desktop directly (swap chain
@@ -251,7 +261,8 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
   (overlay.cpp, dev builds only); fallback the engine `shot` (3D scene only: black on UI-only screens such as the
   pre-round cards, which made e2e's end screenshots empty), then the window grab without `B4B_GPU`. `B4B_SHOT=engine|window`
   forces one.
-  **Default for agents while Dan uses the 5090: `export B4B_GPU=4090`.**
+  **Default for agents while Dan uses the 5090: `export B4B_GPU=4090`** (a game in the Flatpak sandbox presents to the
+  host's gamescope through the Flatpak extension `org.freedesktop.Platform.VulkanLayer.gamescope//25.08`).
 - 5 players: `B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5` (opt-in `teamsize` in `native/src/teamsize.c`). Verified: a
   full mission and 2 chapter transitions with 5 humans. Without it, a 5th joiner is refused with "Server full."
   (`slotguard.c`; before that it crashed the host). Results: `docs/investigations/five-players.md` §5,

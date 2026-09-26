@@ -28,7 +28,8 @@ is_game_file() { case "$1" in Back4Blood.exe|start_protected_game.exe|libScePad.
 # files a lane run may add; anything else unknown is left alone and reported
 is_lane_file() { case "$1" in *.dll|steam_appid.txt|b4bcoop*|vkd3d-proton.cache*) return 0 ;; esac; return 1; }
 
-# The player's game: lane 2 = started by Flatpak Steam; lane 1 = a native game that is no test instance (no
+# The player's game: lane 2 = started by Flatpak Steam (a B4B_STEAM=flatpak test instance runs there too, with
+# B4B_PREFIX); lane 1 = a native game that is no test instance (no
 # B4B_PREFIX, which launch/instance.sh exports) and not the Flatpak one.
 # Only the game process itself (comm Back4Blood.exe), not wrappers or shells that mention it; a process that exits
 # while we look is skipped.
@@ -38,7 +39,7 @@ player_game_pids() {
     env=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null) || continue
     [[ -n $env ]] || continue
     if [[ $B4B_LANE == 2 ]]; then
-      grep -qx 'FLATPAK_ID=com.valvesoftware.Steam' <<<"$env" && echo "$p"
+      grep -qx 'FLATPAK_ID=com.valvesoftware.Steam' <<<"$env" && ! grep -q '^B4B_PREFIX=' <<<"$env" && echo "$p"
     else
       grep -q -e '^B4B_PREFIX=' -e '^FLATPAK_ID=' <<<"$env" || echo "$p"
     fi
