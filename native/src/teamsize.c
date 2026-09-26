@@ -156,18 +156,27 @@ int teamsize_cmd(const char *verb, char *rest, Out *o) {
     return 0;
 }
 
-// Clients: Config is not replicated, so their slot manager keeps the class default (4). UI reads it through
-// PartyPlayerBlueprintFunctionLibrary::GetTeamSizeData; keep it in step with the replicated hero team.
+// Clients: Config is not replicated, so their slot manager keeps the class default (4). Its only reader besides
+// InitSlots is PartyPlayerBlueprintFunctionLibrary::GetTeamSizeData (online party / matchmaking screens); the HUD,
+// character select and lineups count the replicated TeamSlots. Keep it in step with the replicated hero team
+// anyway, whatever this machine's own teamsize: only the host's setting sizes the team (issue #24). Only raises.
 void teamsize_tick(float dt) {
     static float acc;
-    if (!team_size || (acc += dt) < 1.f) return;
+    if ((acc += dt) < 1.f) return;
     acc = 0;
     UObject *psm = slot_manager();
-    if (!psm) return;
+    int32_t off = psm ? ue_prop_offset(psm, "TeamSlots") : -1;
+    if (off < 0) return;
     int32_t *cfg = (int32_t *)((char *)psm + OFF_CONFIG);
-    TArray *teams = (TArray *)((char *)psm + ue_prop_offset(psm, "TeamSlots"));
-    if (teams->num > 0) {
-        int n = ((TArray *)((uint8_t *)teams->data + 8))->num;
-        if (n > cfg[1]) cfg[1] = n;
+    TArray *teams = (TArray *)((char *)psm + off);
+    for (int t = 0; t < teams->num; t++) {
+        uint8_t *ts = (uint8_t *)teams->data + t * TEAMSLOTS_SZ;
+        if (ts[0] != 0) continue;   // EGobiTeam 0 = heroes
+        int n = ((TArray *)(ts + 8))->num;
+        if (n > cfg[1] && n <= MAX_TEAM) {
+            LOG("teamsize: hero team has %d slots, local Config.TeamSize %d -> %d", n, cfg[1], n);
+            cfg[1] = n;
+        }
+        break;
     }
 }
