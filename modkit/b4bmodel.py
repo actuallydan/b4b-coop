@@ -13,9 +13,9 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
         [--proportions own|fit|0..1]   own (default): the model keeps its own limb/torso/neck lengths in third
                                 person (the mesh's skeleton gets its joints; the game retargets the animations);
                                 fit: stretched onto the survivor's joints; a number blends. FP arms always fit
-        [--hair-physics auto|off]  auto: long hair swings on the survivor's physics hair bones (templates with a
+        [--hair-physics auto|off]  auto (default): long hair swings on the survivor's physics hair bones (templates with a
                                    hair chain: Holly, Mom, ...; mesh-mods.md §14) [--hair-swing 0..1]
-        [--cloth auto|off|MAT,...]  auto: a skirt/dress becomes cloth (templates with a clothing asset: Holly Elite 00)
+        [--cloth auto|off|MAT,...]  auto (default): a skirt/dress becomes cloth (templates with a clothing asset: Holly Elite 00)
         [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
                                 tint = the game's hair shader, one colour root to tip (your texture's average)
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
@@ -957,7 +957,7 @@ def dangle_args(o, tp, src):
     (if the template has a clothing asset)."""
     import cloth
     a = []
-    if o.get("hair_physics", "off") != "off":
+    if o.get("hair_physics", "auto") != "off":   # default on where the template supports it
         chains, pa = cloth.hair_chains(tp, src)
         if chains:
             a += ["--hair_bones", ";".join(",".join(c) for c in chains)]
@@ -966,7 +966,7 @@ def dangle_args(o, tp, src):
             log(f"hair: {os.path.basename(tp)}'s physics asset ({(pa or '?').split('.')[-1]}) has no simulated hair "
                 f"bones: the hair moves with the head (templates with a hair chain: Holly, Holly Elite 06, Walker "
                 f"Elite 03, Doc Elite 03, Mom)")
-    if o.get("cloth", "off") != "off":
+    if o.get("cloth", "auto") != "off":
         if cloth.cloth_assets(skm.SkeletalMesh(tp)):
             a += ["--cloth", o["cloth"]]
         else:
