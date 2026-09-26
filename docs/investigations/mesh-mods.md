@@ -310,7 +310,7 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
   detail on our UVs). Only textures in the template's own folder are replaced; shared ones never. Encoded by
   `b4bmod texture` (format and sRGB of the original; size since §16: what the tiles' images need, packed, at most
   the retail texture's size).
-- **LODs**: Blender Decimate (collapse) per LOD ratio (`--lods 1,0.5,0.3,0.15,0.06`), weights kept. `skmgltf.py import`
+- **LODs**: the mesh welded by position first (§14c), then Blender Decimate (collapse) per LOD ratio (`--lods 1,0.5,0.3,0.15,0.06`), weights kept. `skmgltf.py import`
   writes them as real LODs, keeps the template's `LODInfo` (screen sizes) for as many LODs as written and sets every
   `LODMaterialMap` entry to -1 (retail LOD3/4 remap sections to `*_LOD` materials by section index, which would
   scramble ours). UV channel count = the template's (extra channels = UV0). Up to 8 influences (retail LOD0 uses 8).
@@ -843,10 +843,57 @@ vaulting onto crates and jumping down (coat bunches during the vault, hangs agai
 skeletal-mesh errors in the three logs (only the retail LogCustomization "Forcing load" lines).
 `e2e.py --quick --no-lock`: 14/14. Screenshots local (`~/.local/share/b4b-coop/characters/`).
 Found on the way: a flat-shaded model reaches the fit as a triangle soup and its LODs come out shredded (decimation
-can't collapse unshared edges); test prefixes render LOD1 (`r.SkeletalMeshLODBias=1`), so it showed at once. The
-garment generator shades smooth now; the pipeline doesn't weld (open).
-Open: not tuned per garment (one NvCloth config, the donor's; max distance shares fixed); no self-collision; the
-panel is a cylinder around the body axis, so a cape spread wide over the arms or a very full skirt is approximated.
+can't collapse unshared edges); test prefixes render LOD1 (`r.SkeletalMeshLODBias=1`), so it showed at once. Fixed
+in §14c (weld before decimation). Per-garment tuning and self-collision: §14c.
+Open: the panel is a cylinder around the body axis, so a cape spread wide over the arms or a very full skirt is
+approximated.
+
+### 14c. Watertight LODs, per-garment cloth tuning (models-lodcloth, 2026-09-26)
+**LOD tearing.** Not only flat-shaded models: glTF/VRM imports arrive split along UV seams and hard edges too
+(Blender's glTF importer does not merge), FBX rips partly. Metric (scratch `lodcheck.py`: per LOD glb, weld by
+position at 0.01 mm, open-edge length): before, VRoid Shino LOD0 7.9 m -> LOD1 122 m / LOD3 174 m, CesiumMan 0 -> 13 /
+38 m, the cape test 21 -> 145 / 185 m, game rips 132 -> 167 / 178 m (only FBX meshes with shared vertices, e.g. the
+monster, were clean). `b4bfit.weld_for_decimation` (once per mesh, the base for every LOD; LOD0 stays the source):
+bmesh `weld_verts` on corners with the same position (0.01 mm) and skin weights (quantised 1/20; a magazine touching
+the receiver in one object stays loose); faces that exist twice with opposite winding (double-sided rips) weld as
+two layers (a plain weld deleted the second face: tested, 2 -> 1). Corners keep their own UVs (loop data), so the
+glTF export splits again at UV/material seams. Normals: faces whose three corner normals were within 1 deg of the
+face normal stay flat (`sharp_face`), edges where two faces' corner normals differed > 5 deg at a shared point become
+sharp, custom normals cleared (Blender recomputes on the decimated surface). The one-sided garment's reversed inside
+copy (§14b) is offset along the per-position normal (it came apart on a flat coat). After: every LOD1-3 within
++-10 % of LOD0's open length on all 12 test builds (Shino 9.9 / 10.7 / 11.0 m, cape 20.7 / 21.4 / 21.5, flat coat
+63.2 / 63.7 / 43.7, rips 141 / 142 / 138, monster/cesium/blocky 0). Previews LOD1-3 of all: no holes, flat faces flat.
+Tried and dropped: a Decimate vertex group protecting UV seams/boundaries (inverted, factor 0.02-0.2): boundaries
+exact but fans of long triangles over the garments and 13 % over the triangle budget.
+**Cloth tuning.** Retail references (tagged `ClothConfigNv` values differ little from the UE 4.25 class defaults:
+Walker E07 coat Damping 0.5, SelfCollisionStiffness 0.1 (radius 0 = off), CollisionThickness 1.1; Doc E03 jackets
+Damping 0.5, TetherStiffness 1.1; Holly E00 flannel GravityScale 3, LinearDrag 0.8, StretchLimit 1.2, 60/30 Hz;
+Karlee E06, Holly E04 all defaults; no retail asset has SelfCollisionIndices). What sets them apart is the max
+distance map, per fifth of height from the top: Walker E07 coat (64 cm) 0.6 / 17 / 57 / 93 / 100 cm, Doc E03 lower
+jacket (58 cm) 0 / 11 / 31 / 60 / 75, Karlee E06 (47 cm) 0 / 0 / 1.4 / 4.3 / 5, Holly E04 (29 cm) 0 / 1 / 2.6 / 6 / 7;
+inverse masses area-based (hem ~1.5). `cloth.garment_profile` picks the garment from b4bdangle's facts (kind, closed
+tube or open panel, `hem_leg` = hem on the legs, 0 hips / 0.5 knees / 1 ankles): skirt (tube, hem above the knee),
+long skirt (below), jacket tails -> long coat blended by hem (0.2..0.7), cape. Table `GARMENTS` (on top of
+`NV_DEFAULTS`): max distance at the hem x length with an exponent (coat 1.0 ^1.6 like Walker's ramp, tails 0.35 capped
+8 cm like Karlee/Holly E04, skirt 0.45 ^1, cape 1.0 ^1), heavier hem (inverse masses / (1 + (k-1) depth^2): coat
+x2.5, cape x2, long skirt x1.5), damping (skirt 0.4, coat 0.6, tails 0.7, cape 0.25), gravity (coat 1.5), drag and
+inertia (coat drag 0.35 / inertia 0.7: follows the body, flings less; cape drag 0.05 / inertia 1: trails and lifts off
+the back; cape friction 0, bend stiffness 0.6). `write_config` writes every value explicitly into the asset's config
+export (found through `ClothConfigs`), also into a template's own (Holly E00's flannel config no longer gives Shino's
+skirt gravity x3). Self-collision for long coats and capes: radius 0.4 x the 10th-percentile free edge (<= 3 cm),
+stiffness 0.5, indices by the engine's BuildSelfCollisionData rule (free vertices >= radius apart): coat 2.6 cm on
+152 vertices, cape 3.0 cm on 99. Package: UAssetAPI re-writes it byte-identically, rebuild-check 0 differ.
+`B4B_CLOTH_TUNE='{json}'` overrides (experiments).
+**Live** (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host + client 2 with 12 test add-ons via `addons_dir=`,
+client 3 `addons=0`; flat-shaded variants of the CC0 coat and cape tests built for this): Fort Hope, host in the flat
+cape seen from its 3P camera at rest and running, the flat coat on client 2 (LOD1, intact); Evansburgh B saferoom,
+the bot in the floor-length open coat running and turning (hem swings out and trails, hangs again after), then in the
+flat cape + skirt (cape trails off the back while running, skirt flares on the turn, both settle); host view with
+`r.SkeletalMeshLODBias` 1/2/3: the flat cape model whole at every LOD; client 2 sees the bot's cape, client 3 retail
+meshes. No cloth/skeletal-mesh errors in the three logs (only the retail map's QADashBoundary streaming errors).
+`e2e.py --quick --no-lock`: 14/14. Screenshots local: `~/.local/share/b4b-coop/lodcloth/shots/`.
+Not measured: the exact NvCloth effect of each value (only visual); the ClothConfigNv defaults are UE 4.25's, not read
+from the game's class default object (all values are written, so they don't matter).
 
 ## 15. Models from game rips (2026-09-26)
 Test: a rigged FBX ripped from another game (two outfits, a Mixamo re-rig), local only. What such files look like and
@@ -889,7 +936,6 @@ base pieces; host FP (gloved hands, SMG) and client FP (coat sleeve, bat); the h
 client; a bot in the outfit (`/model 4 <name>`) holding a rifle and running (`face walk`). Talking: the jaw bone moves
 during a voice line (up to 1.1 deg measured on one line; under the hat brim nothing visible). No Fatal/skeletal-mesh
 errors. `e2e.py --quick --no-lock`: 14/14. Screenshots stay local (`~/.local/share/b4b-coop/characters/`).
-<<<<<<< HEAD
 Open: the coat has no cloth (open front: `--cloth` would close it; the Walker template has no clothing asset anyway); auto slots can't know that an unnamed image is
 skin.
 
@@ -949,7 +995,5 @@ the rip's LOD0: JOINTS_0/1 swapped -> a different pak). `run_blender` now passes
 Open: the pipeline's extraction isn't safe for several builds at once on one extract folder (two parallel runs
 rewrote the same package: "being used by another process" / an empty read); one build at a time is fine. A game rip
 whose skin image is 4096x2048 now gets at most the template's 2048 arms texture (`--max-texture 4096` keeps more).
-=======
 Open: auto slots can't know that an unnamed image is skin. (The coat's cloth: done in §14b, open panel on a new
 clothing asset.)
->>>>>>> origin/models

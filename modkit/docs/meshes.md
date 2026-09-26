@@ -93,7 +93,9 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
      `head_rough.png`), also when the material links only the colour. PNG, JPEG, TGA, BMP, WebP and **DDS**
      (BC1-BC7, as game files use) are read. Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are
      DirectX style (two-channel BC5 and DXT5nm normal maps are understood).
-   - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole),
+   - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole; the
+     distance LODs are made from the model welded by position, so flat-shaded models and UV seams stay closed; flat
+     faces stay flat),
      `--bonemap map.json` (your bone names -> the game's), `--weights transfer` (take the game mesh's weights),
      `--max-texture 2048|4096` (largest texture made, see [Texture sizes](#texture-sizes)), `--proportions fit|0.5` (third person:
      stretch onto the survivor's skeleton instead of keeping the model's proportions), `--hair tint` (the game's hair shader, one
@@ -195,14 +197,26 @@ b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel 
 - Works on **any outfit**: one that has cloth in the game (Holly Elite 00/04, Karlee Elite 06, Doc Elite 03, Walker
   Elite 07) lends its own; others get a clothing asset added to your mesh (copied from Walker Elite 07's coat, which
   `b4bmod` extracts for you). Several garments (a skirt and a cape) get one each.
+- Each garment is tuned for what it is, from its shape and where its hem ends on the legs (the log says
+  `cloth: tuned as long coat (hem at 0.70 of the leg, 74 cm): damping 0.60, gravity x1.50, ...`):
+  | Garment | Found as | Moves |
+  |---|---|---|
+  | skirt | closed all round, hem above the knee | light and lively: sways, flares when turning |
+  | long skirt / dress | closed, hem below the knee | a heavier hem, swings slower |
+  | jacket tails | open front, hem at the upper thigh | held close (a few cm), settles fast |
+  | coat / long coat | open front, hem at the knee or lower (blended by length) | heavy: tails swing out and settle, a weighted hem, no fluttering; upper part stays on the body |
+  | cape | hangs from the shoulder blades, chest bare | trails and lifts off the back when running, slides over the back instead of sticking |
+
+  Long coats and capes also collide with themselves (a fold doesn't pass through the rest of the garment).
+  `B4B_CLOTH_TUNE='{"damping": 0.5, "gravity": 1.2}'` overrides values for experiments (keys: `damping`, `gravity`,
+  `linear_drag`, `linear_inertia`, `angular_inertia`, `bend`, `friction`, `hem_mass`, `maxd` (max distance at the hem,
+  share of the length), `maxd_exp`, `self_radius` (cm) ...; `modkit/cloth.py` `NV_DEFAULTS`/`GARMENTS`).
 - The cloth bumps into the character's legs and body: capsules fitted to your model's own legs, hips and back, plus
   the game's leg capsules for skirts and coats.
 - A garment made of single faces (no lining) gets its inside drawn when it swings open; skirts use the outfit's
   two-sided material variant when there is one.
 - Check the cloth before the game: `blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb preview.png --sim
   <work>/fit3p/manifest.json` draws the simulation meshes as red wire over the model.
-- Model with **flat shading** (every face its own vertices)? Shade it smooth before exporting: the distance LODs of
-  a flat-shaded mesh come out torn.
 - Both are shown to everyone who has the add-on (each machine simulates its own copy). Far away (the last two
   LODs) the garment is skinned, not simulated.
 
@@ -286,6 +300,8 @@ What the survivor pipeline prints, and what to do about it.
 | Eyes look flat | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in its own colours (`--hair tint`: in the hair colour); highlights are left out |
 | Skirts, coats or capes don't swing | the log's `cloth:` lines say what was found; name the materials yourself with `--cloth MAT,...` (`MAT:cape` for a cape) ([Swinging hair and skirts](#swinging-hair-and-skirts)); long hair: a survivor with ponytail bones |
 | A low-poly model turns into triangles at a distance | fixed: models under ~1500 triangles keep every LOD whole (older kits: `--lods 1,1,1,1,1`) |
+| Holes, slits or loose triangles at a distance (flat-shaded models, VRM/glTF models along their UV seams) | fixed: the LODs are made from the model welded by position (older kits: shade smooth / merge by distance in Blender before exporting) |
+| A coat flutters like a skirt, or a cape clings to the back | each garment is tuned from its shape and length (`cloth: tuned as ...` in the log); if the guess is wrong, `--cloth MAT:cape` / `MAT:lower`, or try values with `B4B_CLOTH_TUNE` ([Swinging hair and skirts](#swinging-hair-and-skirts)) |
 | `texture set Head: atlas 2048x2048: body 1024x1024, ...` | how the materials sharing one texture were packed and how big each one's part is ([Texture sizes](#texture-sizes)) |
 | The add-on is big | textures are as big as your images (at most the survivor's own texture sizes); `--max-texture 2048` or `1024` for a smaller add-on, smaller images in your model do the same |
 | The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |

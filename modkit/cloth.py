@@ -188,14 +188,128 @@ def _bone_data(template_el, infl):
     return uprops.Tagged(el)
 
 
-def inverse_masses(V, T, fixed):
+def inverse_masses(V, T, fixed, depth=None, hem_mass=1.0):
+    """Per-vertex inverse masses from the vertex areas (mean mass 1); hem_mass > 1 makes the lower part heavier
+    (x hem_mass at the hem, easing in from the top: depth^2), so a coat's hem swings slow and settles."""
     m = [0.0] * len(V)
     for a, b, c in T:
         cr = cross(sub(V[b], V[a]), sub(V[c], V[a]))
         ar = math.sqrt(dot(cr, cr)) / 2.0
         for x in (a, b, c): m[x] += ar / 3.0
     mean = sum(m) / max(1, len(m)) or 1.0
+    if depth is not None and hem_mass != 1.0:
+        m = [x * (1.0 + (hem_mass - 1.0) * depth[i] ** 2) for i, x in enumerate(m)]
     return [0.0 if fixed[i] or m[i] <= 0 else mean / m[i] for i in range(len(V))]
+
+
+# ---- per-garment tuning --------------------------------------------------------------------------------------------
+# UE 4.25 UClothConfigNv defaults (the class default object; retail configs only store what differs: Walker Elite 07's
+# coat Damping 0.5, SelfCollisionStiffness 0.1, CollisionThickness 1.1; Doc Elite 03's jacket Damping 0.5,
+# TetherStiffness 1.1; Holly Elite 00's free flannel GravityScale 3, LinearDrag 0.8, StretchLimit 1.2, 60/30 Hz;
+# Karlee Elite 06 and Holly Elite 04 all defaults). Retail sets the garment apart mostly by its max distances: long
+# coats nearly free at the hem (Walker E07 ~0 / 17 / 57 / 93 / 100 cm over five height bands of a 64 cm coat, Doc E03
+# 0 / 11 / 31 / 60 / 75 over 58 cm), short pieces held close (Karlee E06 0-5 cm, Holly E04 0-7 cm).
+NV_DEFAULTS = {"stiffness": 1.0, "stiffness_mult": 1.0, "stretch": 1.0, "compress": 1.0, "bend": 1.0,
+               "self_radius": 0.0, "self_stiffness": 0.0, "self_cull": 1.0, "damping": 0.4, "friction": 0.1,
+               "linear_drag": 0.2, "angular_drag": 0.2, "linear_inertia": 1.0, "angular_inertia": 1.0,
+               "centrifugal": 1.0, "solver_hz": 120.0, "stiffness_hz": 100.0, "gravity": 1.0, "tether_stiffness": 1.0,
+               "tether_limit": 1.0, "thickness": 1.0}
+# What each garment gets (on top of NV_DEFAULTS). maxd: max distance at the hem as a share of the garment's length,
+# maxd_exp: how it grows from the fixed top row (depth ** maxd_exp: > 1 keeps the upper part close and frees the
+# tails), maxd_cap: cm; hem_mass: see inverse_masses; self: self-collision (radius from the mesh spacing).
+# Drag = how much of the body's own motion the cloth is carried along with, inertia = how much of the body's
+# acceleration it feels (NvCloth local-space simulation): a heavy coat follows the body more and flings out less;
+# a cape feels all of it and is barely carried, so it lifts off the back and trails when running.
+GARMENTS = {
+    "skirt":        dict(maxd=0.45, maxd_exp=1.0, hem_mass=1.0, damping=0.4, linear_drag=0.2, angular_drag=0.2),
+    "long skirt":   dict(maxd=0.55, maxd_exp=1.1, hem_mass=1.5, damping=0.45, gravity=1.2, linear_drag=0.25,
+                         angular_drag=0.25, linear_inertia=0.9, angular_inertia=0.9),
+    "jacket tails": dict(maxd=0.35, maxd_exp=1.2, maxd_cap=8.0, hem_mass=1.5, damping=0.7, gravity=1.2,
+                         linear_drag=0.5, angular_drag=0.5, linear_inertia=0.5, angular_inertia=0.5, centrifugal=0.5),
+    "long coat":    dict(maxd=1.0, maxd_exp=1.6, hem_mass=2.5, damping=0.6, gravity=1.5, linear_drag=0.35,
+                         angular_drag=0.35, linear_inertia=0.7, angular_inertia=0.6, centrifugal=0.6, self=True),
+    "cape":         dict(maxd=1.0, maxd_exp=1.0, hem_mass=2.0, damping=0.25, friction=0.0, bend=0.6,
+                         linear_drag=0.05, angular_drag=0.1, linear_inertia=1.0, angular_inertia=0.8, self=True),
+}
+NUMERIC = [k for k in NV_DEFAULTS] + ["maxd", "maxd_exp", "maxd_cap", "hem_mass"]
+
+
+def garment_profile(sd):
+    """(garment name, tuning dict) for a simulation mesh from blender/b4bdangle.py: kind (lower / cape), closed (tube)
+    or open panel, hem_leg (0 hips, 0.5 knees, 1 ankles). Coats between jacket tails and a long coat are blended by
+    where the hem ends. B4B_CLOTH_TUNE='{"damping": 0.5, ...}' overrides values (experiments)."""
+    import json
+    hem = sd.get("hem_leg", 0.5)
+    if sd.get("kind") == "cape":
+        name, t = "cape", dict(GARMENTS["cape"])
+    elif sd.get("closed", True):
+        name = "long skirt" if hem > 0.55 else "skirt"
+        t = dict(GARMENTS[name])
+    else:
+        w = max(0.0, min(1.0, (hem - 0.2) / 0.5))              # hem at the upper thigh -> 0, below the knee -> 1
+        a, b = GARMENTS["jacket tails"], GARMENTS["long coat"]
+        t = {}
+        for k in set(a) | set(b):
+            if k == "maxd_cap":                                 # only real jacket tails are held close
+                if w <= 0.2: t[k] = a[k]
+                continue
+            if k == "self": t[k] = w >= 0.5; continue
+            x, y = a.get(k, NV_DEFAULTS.get(k)), b.get(k, NV_DEFAULTS.get(k))
+            t[k] = x + (y - x) * w
+        name = "long coat" if w >= 0.8 else ("jacket tails" if w <= 0.2 else "coat")
+    env = os.environ.get("B4B_CLOTH_TUNE")
+    if env:
+        t.update(json.loads(env))
+    return name, t
+
+
+def self_collision_indices(V, fixed, radius):
+    """The engine's FClothPhysicalMeshData::BuildSelfCollisionData: free vertices at least `radius` apart."""
+    out, r2 = [], radius * radius
+    for i, v in enumerate(V):
+        if fixed[i]: continue
+        if all(dot(sub(v, V[j]), sub(v, V[j])) >= r2 for j in out): out.append(i)
+    return out
+
+
+def write_config(pkg, ce, t):
+    """Every ClothConfigNv value of the tuning t (NV_DEFAULTS where t has none) into the config export ce, written
+    out explicitly: the config may be the donor's or the template's own (Holly Elite 00's flannel: gravity x3)."""
+    v = dict(NV_DEFAULTS); v.update({k: x for k, x in t.items() if k in NV_DEFAULTS})
+    for n in ("FloatProperty", "StructProperty", "Vector", "ClothConstraintSetupNv", "None"): pkg.add_name(n)
+    f = lambda name, x: uprops.Prop(name, "FloatProperty", 0, None, None, float(x), pkg.fname_of(name))
+
+    def cons(name, stiff):
+        kids = [f("Stiffness", stiff), f("StiffnessMultiplier", v["stiffness_mult"]), f("StretchLimit", v["stretch"]),
+                f("CompressionLimit", v["compress"])]
+        return uprops.Prop(name, "StructProperty", 0, (pkg.fname_of("ClothConstraintSetupNv"), b"\0" * 16), None,
+                           kids, pkg.fname_of(name))
+    vec = lambda name, x: _vec_prop(pkg, name, (float(x),) * 3)
+    new = [cons("VerticalConstraint", v["stiffness"]), cons("HorizontalConstraint", v["stiffness"]),
+           cons("BendConstraint", v["bend"]), cons("ShearConstraint", v["stiffness"]),
+           f("SelfCollisionRadius", v["self_radius"]), f("SelfCollisionStiffness", v["self_stiffness"]),
+           f("SelfCollisionCullScale", v["self_cull"]), vec("Damping", v["damping"]), f("Friction", v["friction"]),
+           vec("LinearDrag", v["linear_drag"]), vec("AngularDrag", v["angular_drag"]),
+           vec("LinearInertiaScale", v["linear_inertia"]), vec("AngularInertiaScale", v["angular_inertia"]),
+           vec("CentrifugalInertiaScale", v["centrifugal"]), f("SolverFrequency", v["solver_hz"]),
+           f("StiffnessFrequency", v["stiffness_hz"]), f("GravityScale", v["gravity"]),
+           f("TetherStiffness", v["tether_stiffness"]), f("TetherLimit", v["tether_limit"]),
+           f("CollisionThickness", v["thickness"])]
+    old = bytes(pkg.export_data(ce))
+    tree, end = uprops.parse(pkg, old)
+    names = {p.name for p in new}
+    tree = [p for p in tree if p.name not in names] + new       # anything else the config had stays
+    pkg.set_export_data(ce, uprops.write(pkg, tree) + old[end:])
+
+
+def config_export(pkg, tree):
+    """The ClothConfigNv export a clothing asset's ClothConfigs map points at, or None."""
+    cm = uprops.find(tree, "ClothConfigs")
+    if cm is None: return None
+    for _, idx in cm.value["items"]:
+        if isinstance(idx, int) and 0 < idx <= len(pkg.exports) and pkg.class_name(pkg.exports[idx - 1]) == "ClothConfigNv":
+            return pkg.exports[idx - 1]
+    return None
 
 
 def _transitions(sim, n):
@@ -427,9 +541,17 @@ def write_asset(s, k, sd, ai, ae, bone_names, G, mode, src, log, cloth_lods):
     if out < 0:
         T = [(a, c, b) for a, b, c in T]; sim = Sim(V, T)
     L = sd["length_m"] * 100.0
-    share = sd.get("maxd", 0.45)
-    maxd = [0.0 if d <= 1e-6 else max(2.0, d * L * share) for d in sd["depth"]]
+    garment, tune = garment_profile(sd)
+    share, ex, capd = tune["maxd"], tune.get("maxd_exp", 1.0), tune.get("maxd_cap", 1e9)
+    maxd = [0.0 if d <= 1e-6 else max(2.0, min(capd, d ** ex * L * share)) for d in sd["depth"]]
     fixed = [x == 0.0 for x in maxd]
+    if tune.get("self"):
+        # self-collision: spheres a little under half the closest free spacing, so neighbours never fight at rest
+        el = sorted(math.dist(V[a], V[b]) for t in T for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0]))
+                    if not (fixed[a] and fixed[b]))
+        tune.setdefault("self_radius", round(min(3.0, 0.4 * el[len(el) // 10]), 2))
+        tune.setdefault("self_stiffness", 0.5)
+    sci = self_collision_indices(V, fixed, tune["self_radius"]) if tune.get("self_radius") else []
     used = []
     for w in sd["weights"]:
         for b in w:
@@ -463,11 +585,11 @@ def write_asset(s, k, sd, ai, ae, bone_names, G, mode, src, log, cloth_lods):
         wm = uprops.find(pm, "WeightMaps").value["items"]
         for kk, v in wm:
             uprops.find(v, "Values").value = list(maxd) if kk == 1 else []
-        _pm_set(pm, "InverseMasses", inverse_masses(V, T, fixed))
+        _pm_set(pm, "InverseMasses", inverse_masses(V, T, fixed, sd["depth"], tune.get("hem_mass", 1.0)))
         _pm_set(pm, "BoneData", bone_data)
         _pm_set(pm, "MaxBoneWeights", max(len(w) for w in sd["weights"]))
         _pm_set(pm, "NumFixedVerts", sum(fixed))
-        _pm_set(pm, "SelfCollisionIndices", [])
+        _pm_set(pm, "SelfCollisionIndices", list(sci))
         cd = uprops.find(el, "CollisionData")
         if cd is not None and isinstance(cd.value, list):
             sp, sc = uprops.find(cd.value, "Spheres"), uprops.find(cd.value, "SphereConnections")
@@ -484,6 +606,17 @@ def write_asset(s, k, sd, ai, ae, bone_names, G, mode, src, log, cloth_lods):
     guid = uprops.find(tree, "AssetGuid").value
     old = bytes(pkg.export_data(ae))
     pkg.set_export_data(ae, uprops.write(pkg, tree) + old[tend:])
+    ce = config_export(pkg, tree)
+    if ce is not None:
+        write_config(pkg, ce, tune)
+    else:
+        log(f"cloth: {aname} has no ClothConfigNv export: its config is left as it is")
+    log(f"cloth: tuned as {garment} (hem at {sd.get('hem_leg', 0.5):.2f} of the leg, {L:.0f} cm): damping "
+        f"{tune.get('damping', NV_DEFAULTS['damping']):.2f}, gravity x{tune.get('gravity', 1.0):.2f}, drag "
+        f"{tune.get('linear_drag', NV_DEFAULTS['linear_drag']):.2f}, inertia {tune.get('linear_inertia', 1.0):.2f}, "
+        f"hem mass x{tune.get('hem_mass', 1.0):.1f}, max distance {share:.2f} x length ^{ex:.1f}"
+        f"{f' (cap {capd:.0f} cm)' if capd < 1e8 else ''}"
+        f"{f', self-collision r {tune['self_radius']:.1f} cm on {len(sci)} vertices' if sci else ''}")
     log(f"cloth: {sd.get('shape', 'tube')} {len(V)} vertices / {len(T)} triangles -> {aname} ({cloth_lods} LODs, max "
         f"distance up to {max(maxd):.0f} cm, {sum(fixed)} fixed, bones {used}"
         f"{f', {len(conns)} collision capsules' if conns else ''}"

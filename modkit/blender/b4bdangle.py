@@ -249,7 +249,13 @@ def add_back_faces(pieces, log=print, inset=0.0015):
         nf, nl = len(me.polygons), len(me.loops)
         bm = bmesh.new(); bm.from_mesh(me)
         orig = list(bm.faces)
-        vn = {v: v.normal.copy() for v in bm.verts}
+        # the inset direction per point, not per vertex: a flat-shaded garment is split at every corner, and copies
+        # moved along each face's own normal came apart (a torn inside, and LODs that can't weld it)
+        key = {v: (round(v.co.x * 1e5), round(v.co.y * 1e5), round(v.co.z * 1e5)) for v in bm.verts}
+        acc = {}
+        for v in bm.verts:
+            acc[key[v]] = acc.get(key[v], Vector()) + v.normal
+        vn = {v: (acc[key[v]].normalized() if acc[key[v]].length > 1e-9 else v.normal.copy()) for v in bm.verts}
         dup = bmesh.ops.duplicate(bm, geom=orig)
         new_faces = [g for g in dup["geom"] if isinstance(g, bmesh.types.BMFace)]
         for v_old, v_new in dup["vert_map"].items():
@@ -443,14 +449,21 @@ def body_capsules(tpl, meshes, log=print, skip_mats=()):
     return caps
 
 
-MAXD = {"tube": 0.45, "open": 0.8, "cape": 0.8}     # max distance from the skinned pose at the hem: share of length
+def hem_on_leg(tpl, hem_z):
+    """Where a hem ends on the model's legs: 0 at the hips, ~0.5 at the knees, 1 at the ankles (can go past both).
+    cloth.py picks the garment's tuning from it (jacket tails vs a long coat, a mini skirt vs a long one)."""
+    hip = [tpl.pos[b].z for b in ("thigh_l", "thigh_r") if b in tpl.pos]
+    ank = [tpl.pos[b].z for b in ("foot_l", "foot_r") if b in tpl.pos]
+    if not hip or not ank: return 0.5
+    h, a = sum(hip) / len(hip), sum(ank) / len(ank)
+    return (h - hem_z) / max(1e-6, h - a)
 
 
 def cloth_regions(tpl, meshes, mats, log=print):
     """mats: {material: kind} from cloth_materials. Splits each garment kind's faces off into objects named
     B4BCLOTH_... (the first garment) / B4BCLOTH_R<k>_... and builds its simulation mesh. Returns (new objects, [sim dict]). sim (Blender
     metres): verts, tris, depth (0 at the fixed top row .. 1 at the hem), weights ({bone: w} per sim vertex), kind,
-    closed, maxd (max distance share), collision capsules."""
+    closed, length_m, hem_leg (hem_on_leg), collision capsules. cloth.py tunes each garment from these."""
     if not mats: return [], []
     kinds = {}
     for n, k in mats.items(): kinds.setdefault(k, set()).add(n)
@@ -483,7 +496,7 @@ def cloth_regions(tpl, meshes, mats, log=print):
             add_back_faces(pieces, log)
         sim["weights"] = sim_weights(tpl, sim["verts"], kind, sim["segments"])
         sim["kind"] = kind
-        sim["maxd"] = MAXD["cape" if kind == "cape" else ("tube" if sim["closed"] else "open")]
+        sim["hem_leg"] = hem_on_leg(tpl, top - sim["length_m"])
         if caps is None: caps = body_capsules(tpl, meshes, log, set(mats))
         sim["collision"] = caps
         log(f"cloth: {sorted(ms)} -> {sum(len(c.data.polygons) for c in pieces)} cloth faces ({kind}), simulation mesh "
