@@ -1506,6 +1506,30 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
         call_go(&c);
         out_printf(o, "damage: health %.0f -> %.0f (damage disabled %d)\n", before, call_float(hc, "GetHealth"),
                    call_bool(hc, "IsDamageDisabled"));
+    } else if (what && !strcmp(what, "killas") && arg) {   // killas <#n> [count]: lethal damage to ridden, credited
+        // to player #n (Instigator = its controller, SourcePawn = its hero), so the game's own kill/damage stat
+        // trackers count it for that player (post-round stats tests)
+        char *cnt_s = strtok(NULL, " ");
+        int want = cnt_s ? atoi(cnt_s) : 5, n = 0;
+        UObject *ps = admin_find_player(arg, o), *ctrl = ps_controller(ps), *pawn = ps_pawn(ps);
+        UClass *gc = cls("GobiCharacter"), *hcc = cls("HeroCharacter"), *pcc = cls("PlayerController");
+        if (!ctrl || !pawn || !gc) { out_printf(o, "killas: no controller/hero\n"); return 1; }
+        for (UObject *z = next_live(gc, NULL); z && n < want; z = next_live(gc, z)) {
+            if (hcc && ue_is_a(z, hcc)) continue;
+            UObject *zc = ue_get_ptr(z, "Controller");
+            if (zc && pcc && ue_is_a(zc, pcc)) continue;
+            UObject *ls = life_of(z), *hc = health_of(z);
+            Call c;
+            if (!ls || !hc || call_bool(ls, "IsAlive") != 1 || !call_prep(&c, hc, "Damage")) continue;
+            SET(&c, "InDamage", float, 100000.f);
+            SET(&c, "DamageTypeClass", UObject *, cls("GobiDamageType"));
+            SET(&c, "Instigator", UObject *, ctrl);
+            SET(&c, "SourcePawn", UObject *, pawn);
+            SET(&c, "SourceActor", UObject *, pawn);
+            call_go(&c);
+            if (call_bool(ls, "IsAlive") != 1) n++;
+        }
+        out_printf(o, "killas: %d ridden killed as %s\n", n, arg);
     } else if (what && !strcmp(what, "ammo")) {   // the host hero's weapons: clip / reserve / infinite flag
         UClass *c = cls("ClipAmmoComponent");
         UObject *me = ps_pawn(host_ps());
@@ -1581,7 +1605,7 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
                        ls ? call_bool(ls, "IsAlive") : -1, ls ? call_bool(ls, "IsIncapped") : -1, mm >= 0 ? *((uint8_t *)cmc + mm) : -1,
                        col >= 0 ? *((uint8_t *)pawn + col) : -1, v[0], v[1], v[2]);
         }
-    } else out_printf(o, "usage: cheatprobe classes <Base> | live <Class> | cm | state\n");
+    } else out_printf(o, "usage: cheatprobe classes <Base> | live <Class> | cm | state | killas <#n> [count]\n");
     return 1;
 }
 #endif
