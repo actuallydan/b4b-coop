@@ -7,6 +7,9 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
         [--slot MAT=SLOT|drop]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
         [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none] [--facing -y]
         [--face auto|off]    auto: the face is skinned to the survivor's face bones (talks, blinks; mesh-mods.md §12)
+        [--mouth auto|on|off]  auto: a model without a mouth interior gets a dark mouth cavity (on: always)
+        [--face-eyes x,y,z;x,y,z]  the eyes' positions (Blender coordinates of each pupil, metres) when the log says
+                             no eyes were found
         <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
         (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
         Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
@@ -431,7 +434,7 @@ def textures_for(manifest, mesh_file, tt, static=False):
 
 # ---- survivor -------------------------------------------------------------------------------------------------------
 
-def fit_args(o, keys=("bonemap", "drop", "weights", "twist", "facing", "face")):
+def fit_args(o, keys=("bonemap", "drop", "weights", "twist", "facing", "face", "mouth", "face_eyes")):
     a = []
     for k in keys:
         if o.get(k): a += ["--" + k, o[k]]

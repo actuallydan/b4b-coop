@@ -111,15 +111,17 @@ def capture_shape_keys(meshes, names=None):
             role = next((r for r, rx in SK_RULES if rx.search(kname)), None)
             if role is None: continue
             dv = [kb.data[i].co - basis.data[i].co for i in range(len(kb.data))]
-            # blink: signed (down = upper lid, up = lower lid; models are Z-up after import); jaw: how far
-            d = [x.length * (-1.0 if x.z < 0 else 1.0) for x in dv] if role == "blink" else [x.length for x in dv]
+            # blink: signed (down = upper lid, up = lower lid; models are Z-up after import); jaw: how far, negative
+            # where it lifts (a mouth-open key also raises the upper lip a little: that is not the jaw side)
+            d = [x.length * (-1.0 if x.z < 0 else 1.0) for x in dv] if role == "blink" else \
+                [x.length * (-1.0 if x.z > 0.3 * x.length else 1.0) for x in dv]
             tot = sum(abs(x) for x in d)
             if tot <= 1e-9: continue
             # blink: both-eye keys or one per side (summed); jaw: the key that moves the most
             if role == "blink" and side_of(kname):
-                best.setdefault(("blink", side_of(kname)), (tot, kname, d))
+                best.setdefault(("blink", side_of(kname)), (tot, kname, d, ki))
             elif tot > best.get((role, None), (0,))[0] or (role == "jaw" and re.fullmatch(r"a|aa", kname, re.I)):
-                best[(role, None)] = (tot, kname, d)
+                best[(role, None)] = (tot, kname, d, ki)
         for role in ("jaw", "blink"):
             parts = [best[k] for k in best if k[0] == role]
             if role == "blink" and (role, None) in best: parts = [best[(role, None)]]
@@ -128,7 +130,77 @@ def capture_shape_keys(meshes, names=None):
             a = m.data.attributes.get(f"b4b_face_{role}") or m.data.attributes.new(f"b4b_face_{role}", "FLOAT", "POINT")
             a.data.foreach_set("value", vals)
             found.setdefault(role, []).extend(p[1] for p in parts)
+            if role == "blink":
+                # the whole move (world space) and where it starts: fit_blink() maps it through the fit and places the
+                # eyelid pivots so the game's lid rotation reproduces it
+                R3 = m.matrix_world.to_3x3()
+                vec = [Vector() for _ in m.data.vertices]
+                for p in parts:
+                    kb = sk.key_blocks[p[3]]
+                    for i in range(len(vec)): vec[i] += R3 @ (kb.data[i].co - basis.data[i].co)
+                for nm, vals3 in (("b4b_face_blinkv", vec),
+                                  ("b4b_face_src", [m.matrix_world @ basis.data[i].co for i in range(len(vec))])):
+                    a = m.data.attributes.get(nm) or m.data.attributes.new(nm, "FLOAT_VECTOR", "POINT")
+                    a.data.foreach_set("vector", [x for v in vals3 for x in v])
     return found
+
+
+EYES_GIVEN = {}             # --face_eyes: {index: source point}, picked vertices carry b4b_face_eyepick = index + 1
+
+
+def capture_eye_points(meshes, spec, log=print):
+    """--face_eyes "x,y,z;x,y,z": the eyes' positions on the model as Blender imports the file (metres, Z up; e.g.
+    the 3D cursor snapped onto each pupil). The nearest vertices are tagged so the points follow the fit."""
+    import numpy as np
+    pts = []
+    for part in spec.replace(" ", "").split(";"):
+        try:
+            x, y, z = (float(t) for t in part.split(","))
+        except ValueError:
+            raise SystemExit(f"--face-eyes {spec!r}: write two points as x,y,z;x,y,z (Blender coordinates, metres)")
+        pts.append(Vector((x, y, z)))
+    if len(pts) != 2: raise SystemExit(f"--face-eyes {spec!r}: give both eyes (x,y,z;x,y,z)")
+    allv = [(m, i, m.matrix_world @ v.co) for m in meshes for i, v in enumerate(m.data.vertices)]
+    if not allv: return
+    P = np.array([tuple(q) for _, _, q in allv])
+    for k, pt in enumerate(pts):
+        d = np.linalg.norm(P - np.array(tuple(pt)), axis=1)
+        near = np.argsort(d)[:40]
+        if d[near[0]] > 0.05 * max(1e-6, np.ptp(P[:, 2])):
+            log(f"face: --face-eyes point {k + 1} ({pt.x:.3f}, {pt.y:.3f}, {pt.z:.3f}) is far from the model's surface "
+                f"({d[near[0]]:.3f}): check the coordinates (Blender, metres, as the file imports)")
+        EYES_GIVEN[k] = pt
+        for j in near:
+            m, i, q = allv[j]
+            for nm, typ in (("b4b_face_eyepick", "FLOAT"), ("b4b_face_eyesrc", "FLOAT_VECTOR")):
+                if m.data.attributes.get(nm) is None: m.data.attributes.new(nm, typ, "POINT")
+            m.data.attributes["b4b_face_eyepick"].data[i].value = k + 1
+            m.data.attributes["b4b_face_eyesrc"].data[i].vector = q
+
+
+def given_eyes(meshes, F):
+    """The --face_eyes points after the fit (face frame): {side: point}."""
+    out = {}
+    for k, pt in EYES_GIVEN.items():
+        src, dst = [], []
+        for m in meshes:
+            a = m.data.attributes.get("b4b_face_eyepick")
+            if a is None: continue
+            b = m.data.attributes["b4b_face_eyesrc"]
+            for i in range(len(a.data)):
+                if round(a.data[i].value) == k + 1:
+                    src.append(Vector(b.data[i].vector)); dst.append(m.matrix_world @ m.data.vertices[i].co)
+        if not src: continue
+        # rotation + uniform scale + offset from the tagged vertices (Kabsch), the point mapped with it
+        import numpy as np
+        S = np.array([tuple(v) for v in src]); D_ = np.array([tuple(v) for v in dst])
+        cs, cd = S.mean(0), D_.mean(0)
+        U, sv, Vt = np.linalg.svd((S - cs).T @ (D_ - cd))
+        R = (U @ np.diag([1, 1, np.sign(np.linalg.det(U @ Vt))]) @ Vt).T
+        k_ = np.linalg.norm(D_ - cd) / max(1e-9, np.linalg.norm(S - cs))
+        q = F.loc(Vector(tuple(cd + k_ * R @ (np.array(tuple(pt)) - cs))))
+        out["l" if q.y > 0 else "r"] = q
+    return out
 
 
 def capture_source_bones(arm, fit_of):
@@ -254,6 +326,9 @@ def descendants(arm, name):
     return out
 
 
+TEMPLATE_RATIO = [None]     # the template's crease position between nose tip and chin bottom (profile_landmarks)
+
+
 def template_face(tpl, F):
     """Template head: face bones, landmarks (face frame) and the vertices that carry face weights, by class."""
     arm = tpl.arm
@@ -266,6 +341,7 @@ def template_face(tpl, F):
           "mouth_r": (bl("lip_corner_upper_r") + bl("lip_corner_lower_r")) / 2,
           "lip_up": bl("lip_upper"), "lip_lo": bl("lip_lower"), "chin": bl("chin"), "nose": bl("nose")}
     verts = []          # (face-frame pos, weights, class, jaw-chain weight)
+    sec = []
     for tm in tpl.meshes:
         W = weights_of(tm)
         mats = vertex_materials(tm)
@@ -274,15 +350,19 @@ def template_face(tpl, F):
             c = per_mat.setdefault(mt, [0, 0]); c[1] += 1
             if any(b in face for b in w): c[0] += 1
         use = {mt for mt, (a, n) in per_mat.items() if n and a / n > 0.03 and not HAIR_RX.search(mt)}
+        skin_idx = set()
         for v, w, mt in zip(tm.data.vertices, W, mats):
             if mt not in use: continue
             if not any(b in face or b == "head" for b in w): continue
             cls = "eye" if EYE_RX.search(mt) else "mouth" if MOUTH_RX.search(mt) else "skin"
             jw = sum(x for b, x in w.items() if b in jaw_chain)
             verts.append((F.loc(tm.matrix_world @ v.co), w, cls, jw))
-    prof = profile_landmarks([p for p, w, c, j in verts if c == "skin"], lm, 1.0)
+            if cls == "skin": skin_idx.add(v.index)
+        sec += mid_section(tm, skin_idx, F)
+    prof = profile_landmarks(sec or [p for p, w, c, j in verts if c == "skin"], lm, 1.0)
     lm["crease"] = prof["crease"] if "crease" in prof and lm["lip_lo"].z < prof["crease"].z < lm["lip_up"].z \
         else (lm["lip_up"] + lm["lip_lo"]) / 2
+    TEMPLATE_RATIO[0] = prof.get("ratio")
     return face, jaw_chain, lm, verts
 
 
@@ -308,6 +388,21 @@ def model_head(meshes, face, F, tl):
     return out
 
 
+def mid_section(m, idx, F):
+    """Where the mesh's edges among the vertices idx cross the face's middle plane (face frame): a dense profile even
+    on low-poly heads, whose vertices seldom sit exactly on the middle."""
+    P = {i: F.loc(m.matrix_world @ m.data.vertices[i].co) for i in idx}
+    out = [p for p in P.values() if abs(p.y) < 1e-4]
+    for e in m.data.edges:
+        a, b = e.vertices
+        if a in P and b in P:
+            pa, pb = P[a], P[b]
+            if (pa.y < 0) != (pb.y < 0) and abs(pa.y - pb.y) > 1e-9:
+                t = pa.y / (pa.y - pb.y)
+                out.append(pa + (pb - pa) * t)
+    return out
+
+
 def bbox(ps):
     lo = Vector([min(p[k] for p in ps) for k in range(3)]); hi = Vector([max(p[k] for p in ps) for k in range(3)])
     return lo, hi
@@ -315,7 +410,10 @@ def bbox(ps):
 
 def seed_warp(tl, tverts, head):
     """Template -> model, first guess: per-axis scale/offset from the two heads' skin bounding boxes (front half)."""
-    ts = [p for p, w, c, j in tverts if c == "skin" and p.x > 0]
+    # both cut at the same height as model_head (the template's neck can reach far lower, e.g. stretched onto a model's
+    # long neck by its own proportions)
+    zmin = min(tl["chin"].z, tl["mouth_l"].z) - 0.06
+    ts = [p for p, w, c, j in tverts if c == "skin" and p.x > 0 and p.z >= zmin]
     ms = [p for (m, i, p, mt, c) in head if c == "skin" and p.x > 0]
     if len(ms) < 20:
         ms = [p for (m, i, p, mt, c) in head]
@@ -336,42 +434,63 @@ def front_profile(pts, zlo, zhi, half_width, step=0.002):
         if abs(p.y) > half_width or p.z < zlo or p.z > zhi: continue
         b = round(p.z / step) * step
         if p.x > prof.get(b, -1e9): prof[b] = p.x
+    # sparse meshes leave bins with only the back of the head in them: those aren't dents, drop them
+    if prof:
+        xs = sorted(prof.values()); med = xs[len(xs) // 2]
+        prof = {b: x for b, x in prof.items() if x > med - 0.03}
     return dict(sorted(prof.items()))
 
 
-def profile_landmarks(pts, seed, scale, lips=None):
+def profile_landmarks(pts, seed, scale, lips=None, ratio=None):
     """Nose tip, lip crease, upper/lower lip, chin from the middle profile, searched around the seeds (lips: the
-    upper and lower lip already known: only nose and chin)."""
-    zs = [seed["nose"].z + 0.03 * scale, seed["chin"].z - 0.03 * scale] if lips is None else \
+    upper and lower lip already known: only nose and chin). The crease is the dent between the lips; the fold under the
+    lower lip can be deeper, so among the dents the one where the survivor has its crease wins: `ratio` = (nose tip -
+    crease) / (nose tip - bottom of the chin) of the template (out["ratio"] when it is None)."""
+    zs = [seed["nose"].z + 0.03 * scale, seed["chin"].z - 0.05 * scale] if lips is None else \
         [lips[0].z + 0.06 * scale, lips[1].z - 0.045 * scale]
     prof = front_profile(pts, zs[1], zs[0], 0.004 * scale)
+    if DEBUG: print("b4bface: profile " + " ".join(f"{z * 100:.1f}:{x * 100:.1f}" for z, x in prof.items()))
     if len(prof) < 10: return {}
     ks = list(prof)
     # smooth over 3 bins
     sm = {k: sum(prof[x] for x in ks[max(0, i - 1):i + 2]) / len(ks[max(0, i - 1):i + 2]) for i, k in enumerate(ks)}
-    def near(z, r):
-        return [k for k in ks if abs(k - z) <= r]
     out = {}
     if lips is not None:
         ku = min(ks, key=lambda x: abs(x - lips[0].z)); kl = min(ks, key=lambda x: abs(x - lips[1].z))
         return chin_nose(out, ks, sm, ku, kl, scale)
     lm = (seed["lip_up"].z + seed["lip_lo"].z) / 2
-    # crease: the deepest dent (x below the maxima on both sides) near the seed's mouth line
-    cand = near(lm, 0.015 * scale)
-    best, bd = None, 0.0
-    for k in cand:
+    # nose tip near its seed, bottom of the chin: the lowest point still near the front of the chin
+    kn = max([k for k in ks if abs(k - seed["nose"].z) <= 0.02 * scale] or ks, key=lambda x: sm[x])
+    chin_front = max([sm[k] for k in ks if k < lm - 0.01 * scale] or [sm[kn]])
+    low = [k for k in ks if k < lm and sm[k] > chin_front - 0.015 * scale]
+    km = min(low) if low else None
+    # dents: x below the maxima on both sides within 1.2 cm
+    dents = []
+    for k in ks:
+        if not (km is not None and km < k < kn - 0.008 * scale) and abs(k - lm) > 0.015 * scale: continue
         above = [sm[x] for x in ks if k < x <= k + 0.012 * scale]
         below = [sm[x] for x in ks if k - 0.012 * scale <= x < k]
         if not above or not below: continue
         d = min(max(above), max(below)) - sm[k]
-        if d > bd: best, bd = k, d
-    # a gap in the profile (open mouth / slit between the lips) also marks it
-    if best is None or bd < 0.001 * scale:
-        return {}
-    out["crease"] = Vector((sm[best], 0.0, best))
+        if d >= 0.001 * scale: dents.append((k, d))
+    if not dents: return {}
+    if km is not None and kn - km > 0.03 * scale:
+        if ratio is None:                         # the template: its crease is known (the seed)
+            best = min(dents, key=lambda t: abs(t[0] - lm))[0]
+            out["ratio"] = (kn - best) / (kn - km)
+        else:                                     # the model: the dent where the survivor has its crease
+            want = kn - ratio * (kn - km)
+            deep = max(d for k, d in dents); unit = 0.1 * (kn - km)
+            best = min(dents, key=lambda t: abs(t[0] - want) / unit - t[1] / deep)[0]
+            if DEBUG: print(f"b4bface: crease: nose {kn * 100:.1f}, chin bottom {km * 100:.1f}, expected {want * 100:.1f}, "
+                            f"dents {[(round(k * 100, 1), round(d * 100, 2)) for k, d in dents]}")
+    else:
+        best = max([t for t in dents if abs(t[0] - lm) <= 0.015 * scale] or dents, key=lambda t: t[1])[0]
     up = [x for x in ks if best < x <= best + 0.012 * scale]
     lo = [x for x in ks if best - 0.012 * scale <= x < best]
     ku = max(up, key=lambda x: sm[x]); kl = max(lo, key=lambda x: sm[x])
+    # a slit between the lips can run deep into the head: the crease stays near the lips' front
+    out["crease"] = Vector((max(sm[best], min(sm[ku], sm[kl]) - 0.006 * scale), 0.0, best))
     out["lip_up"] = Vector((sm[ku], 0.0, ku)); out["lip_lo"] = Vector((sm[kl], 0.0, kl))
     return chin_nose(out, ks, sm, ku, kl, scale)
 
@@ -409,14 +528,19 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
     kd.balance()
     # 1. eyes: source eye bones, else eyeball-like islands (eye materials first)
     eyes = {}
+    if DEBUG: print(f"b4bface: seed scale {s}, seed eye_l {fmt(seed['eye_l'])} chin {fmt(seed['chin'])}")
     if src_bones:
         for n, (h, t) in src_bones.items():
             if SRC_BONE_RULES[0][1].search(n) and not re.search(r"lid|lash|brow|target|socket|set$|master|handle", n, re.I):
                 sd = side_of(n)
                 if sd:
                     p = F.loc(h)
+                    if DEBUG: print(f"b4bface: eye bone {n} at {fmt(p)}")
                     if (p - seed[f"eye_{sd}"]).length < 0.05 * scale and sd not in eyes: eyes[sd] = (p, None, f"bone {n}")
     t_r = (tl["eye_out_l"] - tl["eye_in_l"]).length / 2
+    for sd, q in given_eyes({m for (m, i, p, mt, c) in head}, F).items():
+        # a point on the eye's surface: the eye turns about a centre behind it (the template's depth, scaled)
+        eyes[sd] = (q - Vector((1.1 * t_r * scale, 0.0, 0.0)), t_r * scale, "--face-eyes")
     def eye_groups(sd, centre, reach):
         """Eye-material islands, or ball-shaped eye-sized islands, near `centre` on side sd."""
         out, mats = [], []
@@ -435,13 +559,15 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
         return mats or out                           # eye materials (iris, eye white ...) win over ball shapes
     for sd in ("l", "r"):
         near = eye_groups(sd, eyes[sd][0] if sd in eyes else seed[f"eye_{sd}"],
-                          0.5 * t_r * scale if sd in eyes else 0.045 * scale)
+                          (1.5 if sd in eyes and eyes[sd][2] == "--face-eyes" else 0.5) * t_r * scale if sd in eyes
+                          else 0.045 * scale)
         if not near: continue
         ps = [p for g in near for p in g[2]]
         lo, hi = bbox(ps); c = (lo + hi) / 2; ext = hi - lo
         eyeball_verts.update((m, i) for m, comp, _ in near for i in comp)
         if sd in eyes:
-            eyes[sd] = (eyes[sd][0], max(ext.y, ext.z) / 2, eyes[sd][2]); continue
+            ctr = c if eyes[sd][2] == "--face-eyes" and ext.x >= 0.5 * max(ext.y, ext.z) else eyes[sd][0]
+            eyes[sd] = (ctr, max(ext.y, ext.z) / 2, eyes[sd][2]); continue     # a given point: an eyeball's centre wins
         if ext.x < 0.5 * max(ext.y, ext.z):          # a patch (painted/anime eye), not a ball: centre behind it
             c = c - Vector((0.45 * max(ext.y, ext.z), 0, 0))
         eyes[sd] = (c, max(ext.y, ext.z) / 2, f"eye mesh ({len(ps)} vertices)")
@@ -459,6 +585,15 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
         o = "r" if sd == "l" else "l"
         for k in ("eye_{}", "eye_in_{}", "eye_out_{}"):
             q = lm[k.format(sd)]; lm[k.format(o)] = Vector((q.x, -q.y, q.z)); src[k.format(o)] = how + " (mirrored)"
+    if eyes:
+        # the head's bounding box is a rough guess (hair, necks, horns): the eyes found say where the face is, so the
+        # mouth, nose and chin are searched around the template's, shifted by as much as the eyes are
+        d = sum((lm[f"eye_{sd}"] - seed[f"eye_{sd}"] for sd in eyes), Vector()) / len(eyes)
+        d.y = 0.0
+        for k in ("mouth_l", "mouth_r", "lip_up", "lip_lo", "chin", "nose", "crease"):
+            if k in seed:
+                seed[k] = seed[k] + d; lm[k] = seed[k]
+        if DEBUG: print(f"b4bface: seeds shifted by the eyes found: {fmt(d)}")
     # 2. mouth: source lip/jaw bones, else the mouth-open shape key, else the middle profile
     got_mouth = False
     if src_bones:
@@ -486,7 +621,13 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
         if mk:
             lm.update(mk); got_mouth = True
             for k in mk: src[k] = "mouth-open shape key"
-    prof = profile_landmarks(skin, seed, scale, (lm["lip_up"], lm["lip_lo"]) if got_mouth else None)
+    sec = []
+    by_m = {}
+    for (m, i, p, mt, c) in head:
+        if c in ("skin", "overlay"): by_m.setdefault(m, set()).add(i)
+    for m, idx in by_m.items(): sec += mid_section(m, idx, F)
+    prof = profile_landmarks(sec or skin, seed, scale, (lm["lip_up"], lm["lip_lo"]) if got_mouth else None,
+                             ratio=TEMPLATE_RATIO[0] or 0.4)
     if not got_mouth and "crease" in prof:
         lm["lip_up"], lm["lip_lo"] = prof["lip_up"], prof["lip_lo"]
         src["lip_up"] = src["lip_lo"] = "face profile"
@@ -496,8 +637,10 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
         for sd in ("l", "r"):
             y = tl[f"mouth_{sd}"].y * ew_m / ew_t
             z = prof["crease"].z + dz * scale
-            p = surface_near(kd, skin, y, z, prof["crease"].x, 0.01 * scale)
-            lm[f"mouth_{sd}"] = p if p is not None else Vector((prof["crease"].x - (tl["lip_up"].x - tl[f"mouth_{sd}"].x), y, z))
+            # the crease itself can lie deep inside a mouth slit: the corners are searched behind the lips' front
+            xh = (lm["lip_up"].x + lm["lip_lo"].x) / 2 - (tl["lip_up"].x - tl[f"mouth_{sd}"].x) * scale
+            p = surface_near(kd, skin, y, z, xh, 0.012 * scale)
+            lm[f"mouth_{sd}"] = p if p is not None else Vector((xh, y, z))
             src[f"mouth_{sd}"] = "face profile + eye distance"
         got_mouth = True
     if "crease" in prof and lm["lip_lo"].z < prof["crease"].z < lm["lip_up"].z and src["crease"] != "mouth-open shape key":
@@ -509,6 +652,8 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
             if k in prof and src[k].startswith("scaled"):
                 lm[k] = prof[k]; src[k] = "face profile"
     for k, v in src.items(): notes.setdefault(v, []).append(k)
+    if DEBUG:
+        for k in lm: print(f"b4bface: landmark {k:10s} {fmt(lm[k])} seed {fmt(seed[k])} ({src[k]})")
     return lm, scale, {k for k, v in src.items() if not v.startswith("scaled")}
 
 
@@ -519,7 +664,7 @@ def mouth_from_shape_key(head, seed, scale):
     for (m, i, p, mt, c) in head:
         a = m.data.attributes.get("b4b_face_jaw")
         if a is None or c not in ("skin", "overlay"): continue
-        pts.append((p, a.data[i].value))
+        pts.append((p, abs(a.data[i].value)))
     if not pts: return None
     mx = max(v for p, v in pts)
     if mx <= 0: return None
@@ -606,6 +751,11 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
     to_tpl = Warp([ml[k] for k in keys], [tl[k] for k in keys], sigma=0.35 * ew)
     to_mdl = Warp([tl[k] for k in keys], [ml[k] for k in keys], sigma=0.35 * ew * scale)
     for how, ks in notes.items(): log(f"face: {', '.join(ks)} from {how}")
+    no_eyes = not ({"eye_l", "eye_r"} & found)
+    if no_eyes:
+        log("face: WARNING: no eyes found (no eye bones, eye mesh/material or eyeball-shaped parts): the face won't "
+            "blink (eyelids left on the head). Give their positions with --face-eyes x,y,z;x,y,z (Blender "
+            "coordinates of each pupil, metres, as the file imports) to rig them")
     side_t = MouthLine(tl)                     # upper/lower lip: template vertices by the template's lip line,
     side_m = MouthLine(ml, scale)              # model vertices by the model's own (not through the warp)
     def tside(p, j):                           # template: its own jaw weights say which lip
@@ -647,6 +797,17 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
                 nz = (F.R @ (m.matrix_world.to_3x3() @ m.data.vertices[i].normal)).normalized().z
                 if near and abs(nz) > 0.3: sd = 1 if nz < 0 else -1
                 elif v is not None: sd = -1 if v > 0.6 else 1 if v < 0.05 else sd     # the rig's jaw weights
+        F_ = lookup(q, cls, sd)
+        u = abs(p.y) / side_m.cy
+        if sd != 0 and u > 0.8:
+            # at the mouth corners upper and lower lip meet: blend into the template's corner weights (both lips)
+            # instead of a hard split, which left spiky triangles at the corners of an opening mouth
+            t = min(1.0, (u - 0.8) / 0.3)
+            G_ = lookup(q, cls, 0)
+            F_ = {b: F_.get(b, 0.0) * (1 - t) + G_.get(b, 0.0) * t for b in set(F_) | set(G_)}
+        return F_
+
+    def lookup(q, cls, sd):
         kd, idx = trees.get((cls, sd)) or trees.get((cls, 0)) or trees[("skin", 0)]
         hits = kd.find_n(q, 4)
         if not hits: return {}
@@ -660,8 +821,7 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
         tw = {b: x / tot for b, x in acc.items()}
         share = sum(x for b, x in tw.items() if b in face or b == "head")
         if share <= 1e-6: return {}
-        F_ = {b: x / share * fade for b, x in tw.items() if b in face}
-        return F_
+        return {b: x / share * fade for b, x in tw.items() if b in face}
 
     for (m, i, p, mt, c) in head:
         w = Wm[m][i]
@@ -673,6 +833,7 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
             F_ = {f"eyeball_{eye_side[(m, i)]}": 1.0}; stats["eyes"] += 1
         else:
             F_ = transfer(m, i, p, c)
+            if no_eyes: F_ = {b: x for b, x in F_.items() if not b.startswith(("eyelid", "eyeball"))}
             ba = blink_attr[m]
             if ba is not None and bmax > 0:
                 v = ba.data[i].value / bmax
@@ -692,20 +853,335 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
         for b, x in F_.items(): nw[b] = nw.get(b, 0.0) + hw * x
         Wm[m][i] = nw
         stats["verts"] += 1
+    smooth_corners(head, Wm, side_m, scale, face, jaw_chain)
+    welded = weld_seams(head, Wm, meshes, F)
+    if welded: log(f"face: {welded} vertices where the head's meshes meet share their weights (no seams opening)")
+    # new bind positions: every face bone mapped onto the model's face (face frame)
+    tpos = {b: F.loc(arm.matrix_world @ arm.data.bones[b].head_local) for b in face}
+    mpos = {b: to_mdl(tpos[b]) for b in face}
+    for sd, (P, how) in fit_blink(head, Wm, F, scale, face).items():
+        if f"eyelid_upper_{sd}" in mpos:
+            mpos[f"eyelid_upper_{sd}"] = P; log(f"face: blink ({sd}): {how}")
+    k_mouth = (ml["mouth_l"] - ml["mouth_r"]).length / max(1e-4, (tl["mouth_l"] - tl["mouth_r"]).length)
+    lipfix = fit_lip_bones(arm, tverts, tpos, head, Wm, mpos, k_mouth, jaw_chain)
     for m in meshes: set_weights(m, Wm[m])
-    # new bind positions: every face bone mapped onto the model's face
+    if MOUTH_INTERIOR[0] != "off" and {"lip_up", "lip_lo"} <= found:
+        note = mouth_interior(head, ml, side_m, scale, F, force=MOUTH_INTERIOR[0] == "on")
+        if note: log(f"face: mouth: {note}")
     moved = {}
     worst = 0.0
     for b in sorted(face):
-        pt = F.loc(arm.matrix_world @ arm.data.bones[b].head_local)
-        pm = to_mdl(pt)
-        worst = max(worst, (pm - pt).length)
-        moved[b] = F.world(pm)
+        worst = max(worst, (mpos[b] - tpos[b]).length)
+        moved[b] = F.world(mpos[b])
     for k in ("eye_l", "mouth_l", "lip_up"):
         log(f"face: {k} template {fmt(tl[k])} -> model {fmt(ml[k])} cm (face frame: forward, left, up)")
     log(f"face: {stats['verts']} vertices skinned to face bones ({stats['jaw']} jaw/lower lip, {stats['lids']} eyelids, "
         f"{stats['eyes']} eyeballs); {len(moved)} face bones moved onto the model's face (up to {worst * 100:.1f} cm)")
+    if lipfix: log(f"face: lips: {lipfix}")
     return moved
+
+
+MOUTH_INTERIOR = ["auto"]   # auto: only when the model has none; on; off (b4bfit --mouth)
+
+
+def base_image(mat):
+    """The image a material's base colour comes from (followed upstream through mix/multiply nodes), or None."""
+    if mat is None or not mat.use_nodes: return None
+    bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    st = [l.from_node for l in bsdf.inputs["Base Color"].links] if bsdf else []
+    seen = set()
+    while st:
+        n = st.pop()
+        if n in seen: continue
+        seen.add(n)
+        if n.type == "TEX_IMAGE" and n.image is not None: return n.image
+        st.extend(l.from_node for i in n.inputs for l in i.links)
+    imgs = [n.image for n in mat.node_tree.nodes if n.type == "TEX_IMAGE" and n.image is not None]
+    return next((i for i in imgs if not re.search(r"norm|_n\b|rough|metal|_ao|occl|spec|emis|mask|shade", i.name, re.I)),
+                None)
+
+
+def mouth_interior(head, ml, line, scale, F, force=False):
+    """A mouth without an inside shows a hole when the jaw opens. When the model has no mouth interior (no teeth /
+    tongue / mouth material, nothing behind the lips facing into the mouth), add a dark mouth cavity: a closed bag
+    behind the lips, faces turned inwards (so it can't show from outside even where it pokes through a thin face),
+    upper half on the head, lower half on the jaw, textured with the darkest texel of the lip's own texture."""
+    import numpy as np
+    mid, cy = line.mid, line.cy
+    C_in = Vector((mid.x - 0.02 * scale, 0.0, mid.z))
+    inner, lip = 0, None
+    for (m, i, p, mt, c) in head:
+        if abs(p.y) > 1.3 * cy or abs(p.z - mid.z) > 0.025 * scale: continue
+        if c == "mouth" and not force: return ""
+        if p.x < mid.x - 0.004 * scale:
+            n = F.R @ (m.matrix_world.to_3x3() @ m.data.vertices[i].normal)
+            if n.dot(C_in - p) > 0: inner += 1
+        elif c == "skin" and (lip is None or (p - mid).length < (lip[2] - mid).length): lip = (m, i, p)
+    if inner >= 12 and not force: return ""
+    if lip is None: return "no lip vertex found: no mouth interior added"
+    m, li, _ = lip
+    # the lip's material and the darkest texel its UVs reach
+    poly = next(pl for pl in m.data.polygons if li in pl.vertices)
+    mat_i = poly.material_index
+    mat = m.data.materials[mat_i] if mat_i < len(m.data.materials) else None
+    uvl = m.data.uv_layers.active
+    uv_dark, how = None, "skin coloured"
+    if uvl is not None:
+        uvs = [uvl.data[k].uv[:] for pl in m.data.polygons if pl.material_index == mat_i for k in pl.loop_indices]
+        img = base_image(mat)
+        if img is not None and img.size[0] and uvs:
+            w, h = img.size
+            px = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, img.channels)
+            U = np.array(uvs, dtype=np.float32)
+            xs = np.clip((U[:, 0] % 1.0) * w, 0, w - 1).astype(int); ys = np.clip((U[:, 1] % 1.0) * h, 0, h - 1).astype(int)
+            lum = px[ys, xs, :3] @ np.array([0.3, 0.59, 0.11], np.float32)
+            k = int(np.argmin(lum)); uv_dark = uvs[k]; how = f"darkest texel of {img.name} ({lum[k]:.2f})"
+        elif uvs:
+            uv_dark = uvs[0]
+    # the bag: a narrow opening just behind the lips (the lips' own depth), widening inside like a mouth, closed at
+    # the back; rings in the face frame
+    a_rim, a_max = 0.9 * cy, 1.1 * cy
+    b_rim, b_max = 0.005 * scale, 0.016 * scale
+    x0, D = mid.x - 0.006 * scale, 0.04 * scale
+    NU, NT = 16, 8
+    def g(t):             # 0 at the opening .. 1 at the widest (t = 0.4) .. 0 at the back
+        return math.sin(math.pi / 2 * t / 0.4) if t <= 0.4 else math.sqrt(max(0.0, 1 - ((t - 0.4) / 0.6) ** 2))
+    rings = []
+    for k in range(NT + 1):
+        t = k / NT
+        if k == NT:
+            rings.append([Vector((x0 - D, 0.0, mid.z))]); continue
+        gt = g(t)
+        if t > 0.4: aw, bh = a_max * gt, b_max * gt
+        else: aw, bh = a_rim + (a_max - a_rim) * gt, b_rim + (b_max - b_rim) * gt
+        rings.append([Vector((x0 - D * t, aw * math.cos(2 * math.pi * j / NU), mid.z + bh * math.sin(2 * math.pi * j / NU)))
+                      for j in range(NU)])
+    Minv = m.matrix_world.inverted()
+    bm = bmesh.new(); bm.from_mesh(m.data)
+    dl = bm.verts.layers.deform.verify()
+    uvlay = bm.loops.layers.uv.active
+    gi = {g.name: g.index for g in m.vertex_groups}
+    for g in ("head", "jaw"):
+        if g not in gi: gi[g] = m.vertex_groups.new(name=g).index
+    V = []
+    for ring in rings:
+        vr = []
+        for q in ring:
+            v = bm.verts.new(Minv @ F.world(q))
+            dz = (q.z - mid.z) / (0.004 * scale)
+            jaw = min(1.0, max(0.0, 0.5 - 0.5 * dz))          # below the lip line: jaw; blend over 8 mm
+            if jaw > 0: v[dl][gi["jaw"]] = jaw
+            if jaw < 1: v[dl][gi["head"]] = 1.0 - jaw
+            vr.append(v)
+        V.append(vr)
+    faces = []
+    for k in range(NT - 1):
+        for j in range(NU):
+            a, b, c, d = V[k][j], V[k][(j + 1) % NU], V[k + 1][(j + 1) % NU], V[k + 1][j]
+            faces.append(bm.faces.new((a, d, c, b)))      # wound to face into the bag
+    for j in range(NU):
+        faces.append(bm.faces.new((V[NT - 1][j], V[NT][0], V[NT - 1][(j + 1) % NU])))
+    for f in faces:
+        f.material_index = mat_i; f.smooth = True
+        if uvlay is not None and uv_dark is not None:
+            for l in f.loops: l[uvlay].uv = uv_dark
+    bm.normal_update()
+    # faces must look into the bag (towards its axis): flip any that don't
+    for f in faces:
+        cen = F.loc(m.matrix_world @ f.calc_center_median())
+        n = F.R @ (m.matrix_world.to_3x3() @ f.normal)
+        if n.dot(Vector((max(cen.x, x0 - 0.4 * D), 0.0, mid.z)) - cen) < 0: f.normal_flip()
+    bm.to_mesh(m.data); bm.free()
+    return f"no mouth interior on the model: added a mouth cavity ({len(faces)} faces on {m.name}, {how})"
+
+
+def weld_seams(head, Wm, meshes, F):
+    """A head split into meshes (VRoid: the face ends at the jaw line, the neck is the body mesh) tears open where they
+    meet when the jaw turns, unless both sides move alike: vertices on an open edge that sit on another mesh's vertex
+    (within 1 mm) get the same weights (the average), inside the head region and with the neighbouring mesh."""
+    heads = {}
+    for (m, i, p, mt, c) in head: heads.setdefault(m, set()).add(i)
+    allv = [(m, i, m.matrix_world @ v.co) for m in meshes for i, v in enumerate(m.data.vertices)]
+    kd = KDTree(len(allv))
+    for k, (m, i, q) in enumerate(allv): kd.insert(q, k)
+    kd.balance()
+    n = 0
+    for m, idx in heads.items():
+        cnt = {}
+        for pl in m.data.polygons:
+            for e in pl.edge_keys: cnt[e] = cnt.get(e, 0) + 1
+        seam = {v for (a, b), k in cnt.items() if k == 1 for v in (a, b) if v in idx}
+        for i in seam:
+            q = m.matrix_world @ m.data.vertices[i].co
+            grp = [(mm, ii) for co, k, d in kd.find_range(q, 0.001) for mm, ii, _ in [allv[k]] if mm is not m]
+            if not grp: continue
+            grp.append((m, i))
+            avg = {}
+            for mm, ii in grp:
+                for bn, x in Wm[mm][ii].items(): avg[bn] = avg.get(bn, 0.0) + x / len(grp)
+            for mm, ii in grp: Wm[mm][ii] = dict(avg)
+            n += 1
+    return n
+
+
+def smooth_corners(head, Wm, line, scale, face, jaw_chain, iters=6):
+    """Around the mouth corners, even out how much of each vertex follows the jaw (neighbours averaged a few times):
+    single vertices on the wrong side there stretch into spikes when the mouth opens."""
+    region = {}
+    for (m, i, p, mt, c) in head:
+        u = abs(p.y) / line.cy
+        if 0.5 < u < 1.5 and abs(p.z - line.z(p.y)) < 0.015 * scale and p.x > line.mid.x - 0.05 * scale:
+            region.setdefault(m, set()).add(i)
+    n = 0
+    for m, idx in region.items():
+        W = Wm[m]
+        def jf(i):
+            w = W[i]; hw = sum(x for b, x in w.items() if b == "head" or b in face)
+            return sum(x for b, x in w.items() if b in jaw_chain) / hw if hw > 0 else 0.0
+        nb = {i: [] for i in idx}
+        for e in m.data.edges:
+            a, b = e.vertices
+            if a in nb: nb[a].append(b)
+            if b in nb: nb[b].append(a)
+        val = {i: jf(i) for i in set(idx) | {j for l in nb.values() for j in l}}
+        for _ in range(iters):
+            val.update({i: (val[i] + sum(val[j] for j in nb[i])) / (1 + len(nb[i])) for i in idx if nb[i]})
+        for i in idx:
+            w = W[i]; hw = sum(x for b, x in w.items() if b == "head" or b in face)
+            if hw <= 0: continue
+            old = jf(i); new = val[i]
+            if abs(new - old) < 0.02: continue
+            ja = {b: x for b, x in w.items() if b in jaw_chain}
+            ot = {b: x for b, x in w.items() if (b == "head" or b in face) and b not in jaw_chain}
+            nw = {b: x for b, x in w.items() if b != "head" and b not in face}
+            sj, so = sum(ja.values()), sum(ot.values())
+            for b, x in (ja.items() if sj > 0 else [("jaw", 1.0)]): nw[b] = x / (sj or 1.0) * hw * new
+            for b, x in (ot.items() if so > 0 else [("head", 1.0)]): nw[b] = nw.get(b, 0.0) + x / (so or 1.0) * hw * (1 - new)
+            W[i] = nw; n += 1
+    return n
+
+
+BLINK_DEG = 28.0        # the game's blink turns the upper lids about this far (live, every hero; mesh-mods.md §12)
+
+
+def fit_blink(head, Wm, F, scale, face):
+    """The model's own blink shape key (captured as vectors before the fit) closes the eyes; the game closes them by
+    turning eyelid_upper_<side> about BLINK_DEG. Big (anime, painted) eyes need a longer lever than the eye's centre
+    gives: the pivot goes where one BLINK_DEG turn moves the lid edge onto its keyed place (behind the eye, level with
+    the lid), and each lid vertex takes the share of that turn its key moves it. Returns {side: (pivot, note)}."""
+    import numpy as np
+    per_mesh = {}
+    for (m, i, p, mt, c) in head:
+        if m.data.attributes.get("b4b_face_blinkv") is not None: per_mesh.setdefault(m, []).append((i, p))
+    lids = {"l": [], "r": []}
+    for m, items in per_mesh.items():
+        av, asrc = m.data.attributes["b4b_face_blinkv"], m.data.attributes["b4b_face_src"]
+        src = np.array([tuple(asrc.data[i].vector) for i, p in items])
+        dst = np.array([tuple(m.matrix_world @ m.data.vertices[i].co) for i, p in items])
+        if len(items) < 8: continue
+        # the fit moved the head as a whole (rotation, scale, offset): least-squares affine map source -> fitted
+        X = np.hstack([src, np.ones((len(src), 1))])
+        A = np.linalg.lstsq(X, dst, rcond=None)[0][:3].T
+        A3 = Matrix(A.tolist())
+        for i, p in items:
+            d = F.R @ (A3 @ Vector(av.data[i].vector))
+            if d.length > 1e-6: lids["l" if p.y > 0 else "r"].append((m, i, p, d))
+    out = {}
+    a = math.radians(BLINK_DEG); c_, s_ = math.cos(a), math.sin(a)
+    def turn(u):          # (M - I) u in the (forward, up) plane; M turns the front of the lid down
+        return Vector(((c_ - 1) * u.x + s_ * u.z, 0.0, -s_ * u.x + (c_ - 1) * u.z))
+    det = (c_ - 1) ** 2 + s_ * s_
+    def unturn(d):        # (M - I)^-1 d
+        return Vector((((c_ - 1) * d.x - s_ * d.z) / det, 0.0, (s_ * d.x + (c_ - 1) * d.z) / det))
+    for sd, L in lids.items():
+        up = [x for x in L if x[3].z < 0]
+        if len(up) < 6: continue
+        mx = max(x[3].length for x in up)
+        # the key also lifts the lower lid, which the game's blink leaves where it is: the upper lid goes that much
+        # further (and a little extra: blinks peak near BLINK_DEG, not always at it)
+        lo_mx = max([x[3].length for x in L if x[3].z > 0] or [0.0])
+        more = 1.08 + min(0.35, lo_mx / mx)
+        up = [(m, i, p, d * more) for m, i, p, d in up]
+        mx *= more
+        up = [x for x in up if x[3].length > 0.05 * mx]
+        edge = [x for x in up if x[3].length > 0.7 * mx]
+        wsum, P = 0.0, Vector()
+        for m, i, p, d in edge:
+            q = p - unturn(Vector((d.x, 0.0, d.z)))
+            P += q * d.length; wsum += d.length
+        P /= wsum
+        P.y = sum(x[2].y for x in edge) / len(edge)
+        front = sum(x[2].x for x in edge) / len(edge)
+        if not (P.x < front - 0.003 * scale and (Vector((front, P.y, P.z)) - P).length < 0.15 * scale):
+            continue
+        n_full = 0
+        for m, i, p, d in up:
+            r = turn(Vector((p.x - P.x, 0.0, p.z - P.z))).length
+            w = min(1.0, d.length / max(r, 1e-6))
+            if w > 0.97: n_full += 1
+            wd = Wm[m][i]
+            hw = sum(x for b, x in wd.items() if b == "head" or b in face)
+            if hw <= 0: continue
+            nw = {b: x for b, x in wd.items() if b != "head" and b not in face}
+            others = {b: x for b, x in wd.items() if (b == "head" or b in face) and not b.startswith("eyelid")}
+            so = sum(others.values())
+            for b, x in (others.items() if so > 0 else [("head", 1.0)]):
+                nw[b] = x / (so if so > 0 else 1.0) * hw * (1.0 - w)
+            nw[f"eyelid_upper_{sd}"] = hw * w
+            Wm[m][i] = nw
+        out[sd] = (P, f"{len(up)} lid vertices from the blink shape key, pivot {(Vector((front, P.y, P.z)) - P).length * 100:.1f} cm "
+                      f"behind the lid for a {BLINK_DEG:.0f} deg turn ({n_full} close fully)")
+    return out
+
+
+LIP_BONES = ("lip_lower", "lip_lower_l", "lip_lower_r", "lip_upper", "lip_upper_l", "lip_upper_r",
+             "lip_corner_lower_l", "lip_corner_lower_r", "lip_corner_upper_l", "lip_corner_upper_r")
+
+
+def fit_lip_bones(arm, tverts, tpos, head, Wm, mpos, k, jaw_chain):
+    """Lips curl like the survivor's (lip_lower turns up to 26 deg in speech, 46 in MBP): each lip bone's weights stay
+    within the reach the survivor's own lip bone has (its 85th percentile / farthest weighted vertex, scaled by mouth
+    width), fading out beyond (the rest goes to the jaw for the lower lip, the head for the upper lip; a curl that
+    reached the chin made the lower lip pout and dented the chin), then the bone sits in the middle of what it moves
+    as on the survivor (the bone turns the lip in place instead of swinging it around a pivot above it)."""
+    out = []
+    for b in LIP_BONES:
+        if b not in tpos or b not in mpos: continue
+        # the survivor's reach and centre for this bone
+        ds, cen, wt = [], Vector(), 0.0
+        for p, w, c, j in tverts:
+            x = w.get(b, 0.0)
+            if x > 0.01:
+                cen += (p - tpos[b]) * x; wt += x
+                if x > 0.1: ds.append((p - tpos[b]).length)
+        if not ds or wt <= 0: continue
+        ds.sort()
+        r0 = ds[int(0.85 * (len(ds) - 1))] * k
+        r1 = max(r0 * 1.2, ds[-1] * k * 1.1)
+        off_t = cen / wt * k
+        parent = arm.data.bones[b].parent.name if arm.data.bones[b].parent else "head"
+        to = parent if parent in jaw_chain else "head"
+        cut, mw, mc = 0.0, 0.0, Vector()
+        for (m, i, p, mt, c) in head:
+            w = Wm[m][i]
+            x = w.get(b, 0.0)
+            if x <= 0: continue
+            d = (p - mpos[b]).length
+            f = 1.0 if d <= r0 else 0.0 if d >= r1 else 0.5 + 0.5 * math.cos(math.pi * (d - r0) / (r1 - r0))
+            if f < 1.0:
+                w[b] = x * f
+                w[to] = w.get(to, 0.0) + x * (1.0 - f)
+                cut += x * (1.0 - f)
+            mw += w[b]; mc += p * w[b]
+        if mw <= 0: continue
+        want = mc / mw - off_t
+        dv = want - mpos[b]
+        lim = 0.008 * k
+        if dv.length > lim: dv = dv * (lim / dv.length)
+        mpos[b] = mpos[b] + dv
+        if cut > 0.5 or dv.length > 0.001:
+            out.append(f"{b} {cut:.0f} weight moved to {to}, bone {dv.length * 100:.1f} cm")
+    return "; ".join(out)
 
 
 def fmt(v): return "(" + ", ".join(f"{x * 100:.1f}" for x in v) + ")"

@@ -10,7 +10,8 @@ Cycles on the CPU (works without a GPU). For checking a model before and after t
   --face <work>/face_preview.json [--face-pose AH|Joy|...] [--face-blink DEG]: close-up of the head with the face bones
   where the game will have them (moved onto the model's face) and one of the survivor's face poses applied the way the
   game adds it (lip-sync visemes AH, E, OW, MBP ...; expressions Joy, Anger, Surprise ...), and/or the upper eyelids
-  rotated shut by DEG degrees (a blink). Without a pose: the face at rest.
+  rotated shut by DEG degrees (a blink). Without a pose: the face at rest. --face-view mouth|eyes: a closer look at
+  the mouth or the eyes (with --zoom). Back faces of one-sided materials are left out (as in the game).
 """
 import bpy, math, os, sys
 from mathutils import Vector
@@ -18,7 +19,7 @@ from mathutils import Vector
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out = argv[0], argv[1]
 opts = {"size": "512", "views": "front,side,back", "zoom": "1.0", "focus": "", "pose": "", "textures": "", "face": "",
-        "face_pose": "", "face_blink": "0"}
+        "face_pose": "", "face_blink": "0", "face_view": "face"}
 i = 2
 while i < len(argv):
     opts[argv[i].lstrip("-").replace("-", "_")] = argv[i + 1]; i += 2
@@ -128,7 +129,21 @@ if opts["textures"]:
                 if "haircolor_bc" in p.lower():                     # hair colour texture: A = strands (masked)
                     nm.node_tree.links.new(t.outputs["Alpha"], b.inputs["Alpha"])
             b.inputs["Roughness"].default_value = 0.7
+            nm.use_backface_culling = m.use_backface_culling
             o.data.materials[i] = nm
+if FACE_ARM is not None:
+    # one-sided materials as in the game (glTF doubleSided off): back faces transparent, so a mouth without an
+    # inside shows the hole the game shows instead of the head's inner walls
+    for m in {m for o in meshes for m in o.data.materials if m is not None and m.use_backface_culling and m.use_nodes}:
+        nt = m.node_tree
+        out_ = next((n for n in nt.nodes if n.type == "OUTPUT_MATERIAL"), None)
+        if out_ is None or not out_.inputs["Surface"].links: continue
+        src_sock = out_.inputs["Surface"].links[0].from_socket
+        geo = nt.nodes.new("ShaderNodeNewGeometry"); tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+        mix = nt.nodes.new("ShaderNodeMixShader")
+        nt.links.new(geo.outputs["Backfacing"], mix.inputs[0])
+        nt.links.new(src_sock, mix.inputs[1]); nt.links.new(tr.outputs[0], mix.inputs[2])
+        nt.links.new(mix.outputs[0], out_.inputs["Surface"])
 # B4B skeleton: views relative to the model's facing (heroes face +X)
 arm = next((a for a in bpy.data.objects if a.type == "ARMATURE" and all(n in a.data.bones for n in
                                                                           ("pelvis", "upperarm_l", "upperarm_r", "head"))), None)
@@ -154,6 +169,10 @@ ext_ = max(hi - lo) / float(opts["zoom"])
 if FACE_ARM is not None:                          # close-up of the face
     hb = FACE_ARM.matrix_world @ FACE_ARM.data.bones["head"].head_local
     c = hb + (face_rot @ Vector((0, -0.09, 0.015)) if face_rot is not None else Vector((0, 0, 0.015)))
+    look = {"mouth": ("lip_upper", "lip_lower"), "eyes": ("eye_l", "eye_r")}.get(opts["face_view"])
+    fb = {b.name.lower(): b for b in FACE_ARM.data.bones}
+    if look and all(n in fb for n in look):              # centred on those face bones (moved onto the face)
+        c = sum((FACE_ARM.matrix_world @ fb[n].head_local for n in look), Vector()) / 2
     ext_ = 0.26 / float(opts["zoom"])
 print("bounds", tuple(round(x, 3) for x in lo), tuple(round(x, 3) for x in hi))
 

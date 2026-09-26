@@ -124,9 +124,15 @@ can't find is guessed from the survivor's face scaled to yours (`scaled from the
   ```
   blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb face.png --face <work>/face_preview.json --face-pose AH --textures <work>/preview_textures_3p.json
   ```
-- A mouth without an inside (no teeth, tongue or mouth cavity in your model) shows a hole when it opens.
-- Painted anime eyes blink as far as the lid rotation reaches (the game turns the lids about 28 degrees): big eyes
-  close about halfway. Lashes/eyeliner meshes that the blink shape key moves follow the lids.
+  `--face-view mouth` or `--face-view eyes` (with `--zoom 2`) looks closer.
+- A mouth without an inside (no teeth, tongue or mouth material and nothing behind the lips) gets a dark mouth cavity,
+  so an open mouth doesn't show a hole (`face: mouth: ... added a mouth cavity` in the log; `--mouth off` leaves it out,
+  `--mouth on` adds it anyway).
+- With a blink shape key (VRoid and most avatars) the eyes close like the key closes them, big anime eyes included; lashes
+  and eyeliner that the key moves follow the lids. Without one, the lids take the survivor's lid weights.
+- `face: WARNING: no eyes found`: the face won't blink. Give the eyes' positions: open the model in Blender, snap the 3D
+  cursor onto each pupil (Shift+right-click), read its location (N panel, View tab) and add
+  `--face-eyes 0.032,-0.105,1.62;-0.032,-0.105,1.62` (both eyes, metres, as the file imports into Blender).
 - `--face off` leaves the face on the head bone (no talking or blinking), as before.
 
 ## Swinging hair and skirts
