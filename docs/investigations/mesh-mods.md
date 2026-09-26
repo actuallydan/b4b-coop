@@ -250,7 +250,7 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
   drops can't be triggered unattended; `giveitem` replaces without dropping).
 - ADS: the sight line follows the template's `ironsights` bones; a model with a different sight height aims slightly
   off through its own sights (the AK is within ~1.5 cm). Moving those bones per weapon is untested.
-- Hair: done (§9).
+- Hair: done (§9); in the model's own texture colours since §11.
 - Face animation: the model's face is skinned to `head` (and jaw if the rig has one); B4B's face bones (eyelids, lips)
   don't move it. What following the game's face animation would take: §10.
 - New bones (rebuild the ref skeleton from the Skeleton asset), cloth, new material masters: not supported.
@@ -368,6 +368,7 @@ triggered by emptying the clip and firing wasn't tested.
   strand edges at fringe and sideburns (`hair_face3_crop.png`, `hair_face3_zoom.png`) instead of the opaque helmet.
   Screenshots in `~/.local/share/b4b-coop/fullmodel/shots_next/` (not committed).
 - Limits: one colour gradient per hair (no per-strand texture colour: the master has none); FP arms never show hair.
+  Superseded as the default by §11 (`--hair texture`); this is `--hair tint`.
 
 ## 10. Characters found online (models-characters, 2026-09-25)
 Goal: take a humanoid someone published and get it into the game with one command. Test set (licenses in
@@ -380,7 +381,7 @@ and FP arms, no `--slot` given.
 
 | Model | Source rig | Survivor | Worked | Still off |
 |---|---|---|---|---|
-| Shino (VRoid, 17 materials, alpha hair, 42 shape keys) | VRM `J_Bip_*` + 100 hair/skirt joints | Holly Elite 00 | bones 52/158 mapped (VRoid table), auto slots: skin/face/mouth/eyewhite -> Head atlas, clothes -> Body atlas + Gear, hair + lashes/brows/eyeline + iris -> Hair (masked), highlights dropped; live: 3P (host, others with add-on), FP arms, idle/run | hair one colour (light blue reads silver/dark), skirt and hair rigid, no eyelid/mouth animation |
+| Shino (VRoid, 17 materials, alpha hair, 42 shape keys) | VRM `J_Bip_*` + 100 hair/skirt joints | Holly Elite 00 | bones 52/158 mapped (VRoid table), auto slots: skin/face/mouth/eyewhite -> Head atlas, clothes -> Body atlas + Gear, hair + lashes/brows/eyeline + iris -> Hair (masked), highlights dropped; live: 3P (host, others with add-on), FP arms, idle/run | hair one colour (fixed in §11: the "light blue" was a grey texture without its MToon colour), skirt and hair rigid, no eyelid/mouth animation |
 | Horror Monster (2.4 m, one material) | Mixamo, 2-chain fingers | Walker Elite 00 | 34/41 mapped; textures: FBX linked the mask map as base colour -> reclassified by name, Unity mask map -> PBR; live: 3P idle/run, FP claws holding a bat | legs stretched x1.7-1.8 (short legs on the survivor skeleton) |
 | "bulky" (MPFB, 2.15 m, afro, overalls) | UE4 mannequin names | Hoffman Elite 00 | 53/53; live as a bot: run, aim, shoot | afro hair renders as one grey-brown colour |
 | "shorty" (MPFB, 1.27 m, ponytail) | Rigify full rig (DEF- + ORG/MCH/face) | Doc Elite 00 | 54 mapped (Rigify table); after `own_bones`: no detached arms/knees/mouth; live: 3P, FP arms | neck squashed (x0.39: Rigify neck starts below the shoulders); thighs x1.5 |
@@ -445,3 +446,74 @@ What broke and was fixed (all in `modkit/`):
 - Cheapest useful step: jaw. Rigs with a jaw bone (Rigify, many game rigs) already get the jaw re-weighted (bind-only
   mapping); `lip`/`jaw` weights from the template on a warped mouth region (way 1, mouth only) would make heads talk.
 
+
+## 11. Hair in the model's own colours (models-hair, 2026-09-25)
+Goal: VRoid/anime hair with gradients, highlights, dyed tips, and the iris/lash layers on the hair slot, in their real
+colours instead of one averaged root-to-tip colour (§9).
+
+**The hero hair material can't draw a colour texture.** `Master_Hair_M` (cached expression data, 42 scalar, 17 vector,
+10 texture parameters): textures `Hair MultiMask`, `Root`, `Alpha`, `Depth`, `Unique_Hair_Value` (= the hero's
+`*_Hair_ID_T`: per-strand random value for `RandomHueVariation`/`RandomValueVariation` through the `HueShift`
+function), `FlowMapTexture`, `AO_2ndUV`, drench/blood; colour only from `RootColor`/`TipColor`/`Vertex Color
+Multiplier`. Static switches seen over all 80 retail `Master_Hair_M` MIs (heroes, NPCs, specials): Enable MultiMask,
+EnableHighQuality, SubtractTipFromDepth, Use AO, Use PDO, UsesVertexColors, Variation, useFacingAO,
+useFlowMapTexture: none selects a colour map. A new switch combination would need shaders the cooked game doesn't
+have, so every option below reuses a retail material instance's cooked permutation.
+
+**Vertex colours do carry colour** (live test, lane 1: MPFB "bulky" on Hoffman, whose `Hoffman_Hair_MI` has
+UsesVertexColors; hair vertices banded by height R/G/B/W/K, `RootColor = TipColor = 0.8 grey`, multiplier white,
+random variation 0; `fh_vc_zoom.png`): blue and green bands showed as blue and green strands, the black band showed the
+MI's grey. So colour = the vertex colour where it isn't black, Root/Tip where it is (retail: mostly black strands,
+white ones tinted by the multiplier, §9). Usable for per-vertex colour (a dense hair mesh with the texture baked
+into its vertices, black avoided), but only at vertex resolution: texture highlights, drawn strands and the colour
+of alpha layers (iris) are lost. Not built.
+
+**Other hero-usable masked masters with a colour texture** (all 2125 character MIs scanned: parent, base property
+overrides, static switches): `Master_Zombie_Outfit_M` (BLEND_Masked, **two-sided**, DitherOpacityMask, MSM_Cloth,
+bUsedWithSkeletalMesh) with static switch **`Enable BC.A Opacity Mask`**: opacity = the base colour's alpha. Retail
+MIs with it: `CultistMelee_Hair_MI` (the Cultist Melee's hair; Wounds off, Microtile (R) on), `CultistArcher/
+Grenadier_Fringe_MI`, `Armored_Swat_01_Helmet_MI`, zombie pants. Others: `Master_Alphatest_M`
+(`Evangelo_Head_01_HairPaint_MI`, one-sided, default lit), `Master_Hero_Outfit_M` (`Sharice_Elite_02_Hair_MI`, no
+BC-alpha switch). Chosen: **a copy of `CultistMelee_Hair_MI`**: two-sided + dithered mask like hero hair, wounds off,
+white vertex colours on the cultist's hair (so none needed), textures BC7 sRGB RGBA (A = coverage) / BC5 normal /
+BC7 PBR (R AO, G roughness, B metallic, like hero PBR). Its master's vector defaults are neutral (Skin/Cloth Color
+white, wound ellipsoids at 999). Overrides: the microtile detail intensities 0 (`Detail BC/Roughness/NRM Intensity
+(R)`, `Detail Height Scale (R)`: a fabric pattern otherwise), `Fuzz Spread 0`, `Fuzz Brightness 0.1` (the cloth sheen
+of Sharice Elite 02's hair). Copying an MI keeps its cooked static permutation (the native tail); the copy renders.
+
+Pipeline (`b4bmodel.py --hair texture`, the default; `--hair tint` = §9):
+- `TexTool.hair_texture_set`: for a slot whose master is `Master_Hair_M`, the cultist MI and its 3 textures are copied
+  into the template's folder as `<HairMI>Color_MI` / `<HairMI>Color_BC_T|N_T|PBR_T` (`b4bmod rename`, texture refs
+  rewritten), the textures composed from the hair set's tiles, the scalars set, and the meshes' hair slot repointed
+  to the copy (same code as adopting a shared MI). The template's hair MI is left alone; `--as` copies the new MI and
+  textures into the outfit folder like any written package. Hair vertex colours stay white.
+- `b4bfit.py compose` role `hairbc`: RGB = each tile's base colour (sRGB), A = its alpha (alpha map, else base colour
+  alpha); see-through texels get the colour of the nearest strands (pull-push over a mip pyramid) so mips and
+  filtering don't pull black/white fringes into the strand edges. Colour at the set's size (up to `--max-texture`),
+  normal/PBR at 256 unless the model has such maps.
+- **Base colour factors** were ignored for every material (a texture x colour material came out as the bare
+  texture): now read from the Multiply node Blender's glTF importer builds (`basecolor_factor`) and applied in linear
+  space in `basecolor`, `hairbc` and `hairmm`. VRoid hair and brows are grey textures x the MToon `_Color`: Shino's
+  hair is a dark navy (`_Color` 0.098, 0.141, 0.22), not light blue. VRM 0.x `_Color` is an sRGB value that VRoid also
+  copies unconverted into glTF's linear `baseColorFactor`; MToon renderers (UniVRM, three-vrm) read it as sRGB, so
+  `vrm0_colors` (b4bfit import and preview.py) sets the Multiply node to its linear value.
+- `preview.py`: `*HairColor_BC*` textures drive alpha; `.vrm` opens directly (with the MToon colours).
+
+Live (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host and client 2 with 4 add-ons via `addons_dir=`, client 3
+`addons=0`; add-ons `shino` (texture), `shinotint` (tint), `bulky` (texture), `bulkytint` (the vertex colour test)):
+- Fort Hope, dusk: client 2 as `shino`, brought in front of the host (`fh_host_sees_shino_front.png`,
+  `fh_shino_face_zoom.png`): dark navy hair, cut bangs with see-through edges, **amber irises and brown lashes** (on the
+  hair slot, own colours); the same shot with `shinotint` (`before_after_fh.png`, left): one teal-grey colour, irises
+  and lashes in the hair colour (empty black eyes). `bulky` (`fh_bulky_pair.png`, left): the afro's curls with their
+  texture and see-through edges against the sky, not one grey-brown blob.
+- Evansburgh B saferoom: `shino` from client 2 (add-on; `m_c2_sees_shino.png`): hair, hair clip in its own cyan, FP
+  arms holding a bat; client 3 (no add-on; `m_c3_noaddon.png`, `fh_noaddon_sees_vanilla.png`) sees the survivor's
+  retail pieces (`mdl dump`: `3P_Doc_Torso_00`, `3P_Holly_...` base meshes).
+- No sorting artefacts (masked: drawn in the opaque pass); no `LogMaterial`/default-material/Fatal lines in the three
+  logs. Side-by-side with Blender: `prev/shinoh_cmp.png` (source VRM / texture / tint), `prev/bulky_cmp.png`.
+- `tools/e2e.py --quick --no-lock`: 14/14.
+Screenshots and previews: `~/.local/share/b4b-coop/hairwork/{shots,prev}/` (not committed).
+
+Limits: cloth shading instead of the hair shader (no anisotropic hair highlight, no pixel depth offset); the mask is
+the texture's alpha at the 0.333 clip, dithered (soft alpha falls into a dither pattern that TAA smooths); hair
+strands still move rigidly with the head (no dangle bones).

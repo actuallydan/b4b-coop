@@ -6,7 +6,7 @@ animations, material slots and physics, and takes your geometry and textures. Se
 Commands are written as `b4bmod ...` (Windows: `b4bmod.cmd`, Linux: `./b4bmod.sh`).
 
 - [Blender](#blender) · [What goes where](#what-goes-where)
-- [Make a survivor model](#make-a-survivor-model) · [Survivor troubleshooting](#survivor-troubleshooting) ·
+- [Make a survivor model](#make-a-survivor-model) · [Hair](#hair) · [Survivor troubleshooting](#survivor-troubleshooting) ·
   [Make a weapon model](#make-a-weapon-model)
 - [Doing the fitting yourself](#doing-the-fitting-yourself-mesh-import) · [Lower level](#lower-level) · [Limits](#limits)
 
@@ -59,7 +59,7 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    ```
 3. **Slots** (optional): your materials are put on the outfit's slots automatically, and the pipeline prints what
    went where: skin, face and eyes on the skin (head) slot, hair, alpha cards, lashes and brows on the **Hair** slot
-   (masked, one colour: the average of your hair texture), clothes on the outfit's cloth slots by body zone (tops,
+   (masked by the texture's alpha, in your texture's own colours: see [Hair](#hair)), clothes on the outfit's cloth slots by body zone (tops,
    trousers/shoes, gear), eye highlights (transparent overlays) left out. To choose yourself: `b4bmod mesh info
    <outfit>` lists the slots (`mat 4 ... Head`, `mat 5 ... Torso`), then `--slot <your material>=<slot>` or
    `--slot <your material>=drop`; the rest stays automatic.
@@ -82,7 +82,8 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
      alpha/opacity. Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are DirectX style.
    - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole),
      `--bonemap map.json` (your bone names -> the game's), `--weights transfer` (take the game mesh's weights),
-     `--max-texture 2048` (smaller textures: an add-on about 4x smaller), `--work DIR` (keep the intermediate
+     `--max-texture 2048` (smaller textures: an add-on about 4x smaller), `--hair tint` (the game's hair shader, one
+     colour: [Hair](#hair)), `--work DIR` (keep the intermediate
      glTF/PNGs there). All of them: `b4bmod model help`.
 5. **Check** before the game (optional): render the fitted model with the textures made for the game, standing and
    with its limbs bent; look for stretched or stuck vertices:
@@ -122,6 +123,18 @@ b4bmod survivor mymodel.fbx ^
 - Weapons: see "Add a weapon look" below.
 - Picking it in the game's customization screen is not supported (only `/model`).
 
+## Hair
+Materials placed on the outfit's **Hair** slot (hair, alpha cards, lashes, brows, a transparent iris layer) are drawn
+with your texture's own colours: gradients, highlights, dyed tips, a hair clip in the hair texture all stay. The
+texture's alpha is the mask (below about 1/3 is see-through; soft edges are dithered, the game smooths them), both
+sides of each card render. A colour the material multiplies the texture by (glTF base colour factor, VRoid/MToon
+hair colour) is applied, so a grey VRoid hair texture comes out in the hair colour VRoid shows.
+
+The game's own hair shader can't draw a colour texture, so the pipeline gives the slot a copy of a game material that
+can (two-sided, masked like the game's hair, lit like cloth). `--hair tint` uses the game's hair shader instead: one
+colour from root to tip (your texture's average), with its hair shine. Use it for hair of one colour if you prefer
+that look.
+
 ## Survivor troubleshooting
 What the survivor pipeline prints, and what to do about it.
 
@@ -138,8 +151,9 @@ What the survivor pipeline prints, and what to do about it.
 | `material x: its basecolor image 'y' is not next to the model` | the file references a texture on its author's disk: copy the images next to the model, or `--tex x=<folder or file prefix>` |
 | `... is linked as base colour but its name says mask` | fine: the file name wins (a mask map is used as one) |
 | `... is shared with other outfits; yours goes to ...` | the survivor's template shares that texture or material with other outfits: your copy is made in the outfit's folder, other outfits stay as they are |
-| Hair is one colour / a bit dark | the game's hair material has no colour texture: root to tip is one colour, the average of your hair texture (root 40 % darker) |
-| Eyes look flat, irises in the hair colour | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in the hair colour; highlights are left out |
+| Hair is one colour / a bit dark | only with `--hair tint` (the game's hair shader: one colour root to tip, your texture's average, root 40 % darker). The default `--hair texture` keeps your texture's colours |
+| Hair much darker / another colour than the texture file | the material multiplies the texture by a colour (glTF base colour factor, VRoid/MToon hair colour): that is applied, as in Blender / VRoid. VRM 0.x colours are read as sRGB, like VRoid does |
+| Eyes look flat | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in its own colours (`--hair tint`: in the hair colour); highlights are left out |
 | Skirts, long hair, capes don't swing | no cloth or dangle bones in the game's skeleton: they move stiffly with the hips / head |
 | A low-poly model turns into triangles at a distance | fixed: models under ~1500 triangles keep every LOD whole (older kits: `--lods 1,1,1,1,1`) |
 | The add-on is 150-200 MB | 4096 textures (several materials packed into one texture set): `--max-texture 2048` |
@@ -242,8 +256,8 @@ The scripts next to b4bmod, each with `-h` / a usage header; run them with the s
 - No cloth simulation for your mesh (the template's cloth is left unused), no morph targets (face shapes: templates
   with morph targets are refused). The face is skinned to `head` (and the jaw if your rig has one): it doesn't blink
   or talk (the game's faces are animated by face bones: docs/investigations/mesh-mods.md §10).
-- Hair: on the Hair slot, one colour from root to tip (the game's hair material has no colour texture); on any other
-  slot alpha cards render as solid cards.
+- Hair: on the Hair slot, masked by the texture's alpha, lit like cloth (no anisotropic hair shine); on any other slot
+  alpha cards render as solid cards.
 - Skirts, long hair and other dangling parts move stiffly with the bone they hang from (no physics bones).
 - The weapon's sights stay where the template's are: a model with a different sight height aims slightly off through
   its own sights.
@@ -254,5 +268,6 @@ a Mixamo-rigged monster (FBX, Unity mask map) on Walker, a UE4-named bulky man (
 Blender Rigify rig (glb) on Doc and an unrigged blocky character built from parts (FBX) on Karlee, each with its
 first-person arms. Earlier: a MakeHuman survivor (3P and FP arms, animated, both players' views) and an
 AK on the AR02 (first person with reload moving the model's magazine, other survivors' hands, skins retargeted). Not
-seen in game yet: the muzzle flash position, the dropped magazine. Hair with alpha on the Hair slot: seen in game. Format details and evidence:
+seen in game yet: the muzzle flash position, the dropped magazine. Hair in its texture colours with alpha (VRoid,
+MakeHuman afro), in Fort Hope and a mission: seen in game. Format details and evidence:
 docs/investigations/mesh-mods.md in the b4b-coop repository.
