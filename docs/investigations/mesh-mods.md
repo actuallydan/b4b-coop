@@ -586,9 +586,58 @@ on host and client; blinks 17-28 deg on the custom heads. Screenshots (presented
 not committed): `~/.local/share/b4b-coop/faces/shots/` (`t_*`, `seq_*` talking with subtitles, `b_1` open /
 `b_24` blinking, `faces_live_summary.png`).
 
-Open: the lower lip pouts a lot on 25 deg lip_lower curls (the curl moves a large lower-lip region on MPFB heads);
-models without a mouth interior show a hole; painted anime eyes only half close; no eyelid detection without a blink key
-beyond the template's lid weights. `face say` (SayLine) doesn't find events (naming above).
+Open then (fixed in §12b): the lower lip pouted on 25 deg lip_lower curls; models without a mouth interior showed a
+hole; painted anime eyes only half closed; eyes guessed without eye mesh/blink key. `face say` (SayLine) doesn't find
+events (naming above).
+
+### 12b. Face polish (models-facepolish, 2026-09-26)
+Test heads: shorty (MPFB Rigify) on Doc, Shino (VRoid) on Holly, Shino without her `FaceMouth` material (no mouth
+interior), bulky (MPFB game engine, fused lips, no key, no face bones) on Hoffman, the Mixamo monster on Walker.
+Offline check: `preview.py --face ... --face-view mouth|eyes` (close-ups centred on the moved lip/eye bones; back faces
+of one-sided materials are now left out, so a missing mouth interior shows as the hole the game shows), retail
+comparison = the template glb with its own ref skeleton and the same pose asset frames.
+- **Regression found:** since own proportions (§13) the template head's skin reaches down the stretched neck, so the
+  bounding-box seed put shorty's eyes 4.6 cm too high and its Rigify eye bones were no longer accepted (eyes "scaled
+  from the template", 0 eyeballs). Seed now cuts the template at the model's cut height; the mouth/nose/chin seeds are
+  then shifted by the offset of the eyes found.
+- **Lip curls** (CH/ER/N/OW lip_lower 26 deg, MBP 46): weighted mean offset of the lower-lip weights from their bone was
+  (-0.35, 0.1, -0.5) cm, reach 3.5-4.4 cm; retail (0.0, -0.1, -0.1) cm, reach 2.1-2.4 cm. So the curl swung a region
+  reaching the chin around a pivot above it (the pout, the dented chin in MBP). `fit_lip_bones`: each lip bone keeps
+  weight only within the survivor's own reach for that bone (85th percentile .. max, scaled by mouth width; the rest to
+  the jaw / head), then the bone moves to the centre of what it moves, offset like the survivor's (<= 0.8 cm). After:
+  offsets (0.0, -0.2, -0.1) cm, reach 1.9-2.2 cm, i.e. retail's; the lips curl in place.
+- **Lip line on low-poly heads:** the middle profile now comes from the mesh's cut with the middle plane, bins holding
+  only the back of the head are dropped, and among the dents the one where the survivor has its crease (ratio nose tip ->
+  crease -> chin bottom, measured on the template) wins over the deeper fold under the lower lip (bulky: crease was
+  found at the mentolabial fold 1.6 cm too low, so the jaw dropped the chin and both lips stayed shut). Corners are
+  searched at the lips' front, not in a deep mouth slit. At the corners the upper/lower split blends into the template's
+  corner weights and the jaw share is averaged over neighbours (spiky triangles when the mouth opened).
+- **Mouth-open key sign:** VRoid's `A` also lifts the upper lip; only what the key moves down counts as the jaw side
+  now (Shino's upper lip edge had gone down with the jaw, stretching the philtrum).
+- **Seams:** open-edge vertices of head meshes that sit on another mesh's vertex (VRoid face/neck) get the same
+  weights (average), so the jaw line doesn't open.
+- **Mouth interior:** none found (no mouth/teeth/tongue material, < 12 vertices behind the lips facing into the mouth)
+  -> a cavity is added to the lip's mesh: narrow opening 6 mm behind the crease, widening inside, closed 4 cm back,
+  128 faces facing inwards, upper half on the head, lower half on the jaw, UVs on the darkest texel of the lip material's
+  base colour (Shino: the lip line, reddish). `--mouth on|off` forces it. Shino without FaceMouth: AH shows a red mouth
+  instead of the hole; models with an interior (Shino, MakeHuman heads) are left alone.
+- **Blink with the model's key:** the blink key is captured as vectors (world, through the fit by a least-squares affine
+  map of the head), and the pivot of `eyelid_upper_<side>` goes where one 28 deg turn moves the lid edge onto the keyed
+  place (+8 % and the lower lid's lift, which the game's blink leaves alone); each lid vertex takes the share of the turn
+  its key moves it. Shino: pivot 7.2 cm behind the lid, closed at 26-28 deg (before: a third closed at 28, half at 60).
+  Expressions turn the lids too (3-16 deg): with the long lever big eyes squint more in Anger.
+- **Eyes not found** (monster: no eye bones/mesh/key): warning in the log, eyelid/eyeball weights left off (no blinking
+  skin patch); `--face-eyes x,y,z;x,y,z` (each pupil, Blender coordinates of the file as imported) tags the nearest 40
+  vertices before the fit and maps the points through it (Kabsch); an eyeball mesh near the point gives the centre.
+  Check on shorty: given pupils -> eye centre (7.5, 3.4, 4.3) cm vs its ORG-eye bone (7.5, 3.4, 4.4).
+Live (lane 2, Proton, `B4B_GPU=4090`, `multi.sh 2`, both with the shorty/shino/shinonm add-ons via `addons_dir=`, Fort
+Hope, no native change): shorty (client) talking seen by the host: lips curl in place, blinks close; Shino (host) seen by
+the client, game slowed with `/slomo 0.15`: `eyelid_upper_l` peaks at 29.3 deg (q.y 0.253), its ref pose now 5.8 cm
+behind `eye_l`, the frame at the blink shows both big eyes shut; shinonm (no interior) speaking, jaw 4.8 deg: the mouth
+opens onto the red cavity, no hole. Screenshots (not committed): `~/.local/share/b4b-coop/facepolish/shots/`
+(`sblink_*`, `nm_t*`, `talk_*`), previews and `facepolish_live_summary.png` in `.../facepolish/prev/`.
+Left: bulky's upper-lip corners still stretch into thin spikes at the widest AH (MakeHuman inner-mouth geometry on the
+skin material); the monster's tentacle face gives no usable profile (mouth landmarks are guesses).
 
 ## 13. Characters keep their own proportions (models-proportions, 2026-09-26)
 Goal: a model with other proportions than the survivor (short legs, long neck, a giant torso) looks like itself in
