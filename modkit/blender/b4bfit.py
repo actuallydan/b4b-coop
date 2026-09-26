@@ -1,4 +1,4 @@
-"""Fit a modder's model (FBX, glTF, OBJ, .blend) onto a B4B template skeleton, headless in Blender. Writes glTF files
+"""Fit a modder's model (FBX, glTF, VRM, OBJ, .blend) onto a B4B template skeleton, headless in Blender. Writes glTF files
 that `skmgltf.py import` turns into a cooked skeletal mesh, plus a manifest (materials -> template slots, textures,
 atlas rectangles) for the texture step. Driven by b4bmodel.py (`b4bmod survivor|weapon`); usable on its own.
 Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
@@ -6,6 +6,7 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
   blender -b --python blender/b4bfit.py -- character --template T.glb --source model.fbx --out DIR
         [--mode 3p|fp] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05] [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
+        [--drop_mat MATERIAL]...
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
   blender -b --python blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
         [--forward +x] [--up +z] [--scale fit|<factor>] [--anchor trigger|grip|none] [--part REGEX=BONE]...
@@ -15,13 +16,15 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
   blender -b --python blender/b4bfit.py -- compose <jobs.json>          texture sets -> PNGs (b4bmodel)
 
 character: the source's armature is mapped onto the template's bones by name (UE4 mannequin names as is, Mixamo,
-  3ds Max Biped; or --bonemap {"srcbone": "b4bbone"}), turned to face +X like the template, then posed bone by bone
-  so every mapped joint lands on the template's joint (rotation + stretch along the bone); the pose is applied to the
-  meshes, so they sit in the template's bind pose. Weights: the source's, renamed; weights of unmapped source bones go
-  to their nearest mapped ancestor; with --twist template each limb's weight is split among the template's twist
-  bones as the template mesh splits it at the nearest point. An unrigged source (no armature) gets its weights
-  from the template mesh (--weights transfer, nearest surface). fp: the same against an FP_Biped export, then only
-  faces skinned to the arms are kept.
+  3ds Max Biped, VRoid/VRM, Rigify DEF- bones, else a generic reading of the names; or --bonemap {"srcbone": "b4bbone"}),
+  turned to face +X like the template, then posed so every mapped limb joint lands on the template's joint (rotation
+  + stretch along the bone; torso and neck as one piece each); the pose is applied to the meshes, so they sit in the
+  template's bind pose. Weights: the source's, renamed; other bones (twist, helpers, face, hair) give theirs to the
+  mapped bone they follow; with --twist template each limb's weight is split among the template's twist bones as the
+  template mesh splits it at the nearest point. An unrigged source (no armature) is stood up by its bounds, its arms
+  un-posed from a T-pose/arms-down onto the template's A-pose, weights from the template mesh (named parts like
+  arm-left only take that limb's bones). fp: the same against an FP_Biped export, then only faces skinned to the arms
+  are kept.
 weapon: rigid parts. Source objects are bound to weapon bones by name (magazine/mag -> mag, bolt, trigger,
   charging handle, ...; --part overrides; everything else -> the template's main weapon bone), turned so the barrel
   points along the template's +X and scaled to the template's length, and moved so the trigger (object named
@@ -41,7 +44,7 @@ def log(*a):
     print("b4bfit:", *a, flush=True)
 
 
-def parse(argv, multi=("slot", "part", "tex", "atlas", "slotset")):
+def parse(argv, multi=("slot", "part", "tex", "atlas", "slotset", "drop_mat")):
     pos, opts = [], {k: [] for k in multi}
     i = 0
     while i < len(argv):
@@ -68,7 +71,7 @@ def import_any(path):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".fbx":
         bpy.ops.import_scene.fbx(filepath=path, use_anim=False, ignore_leaf_bones=False, automatic_bone_orientation=False)
-    elif ext in (".glb", ".gltf"):
+    elif ext in (".glb", ".gltf", ".vrm"):                # VRM 0.x/1.0 = glTF 2.0 with extensions (ignored)
         bpy.ops.import_scene.gltf(filepath=path)
     elif ext == ".obj":
         bpy.ops.wm.obj_import(filepath=path)
@@ -80,7 +83,8 @@ def import_any(path):
         for o in dst.objects:
             if o is not None: bpy.context.scene.collection.objects.link(o)
     else:
-        raise SystemExit(f"unsupported model type {ext} (fbx, glb, gltf, obj, dae, blend)")
+        raise SystemExit(f"unsupported model type {ext} (fbx, glb, gltf, vrm, obj, dae, blend; others: open it in "
+                         f"Blender and export FBX or glTF)")
     new = [o for o in bpy.data.objects if o not in before]
     shapes = {pb.custom_shape for a in new if a.type == "ARMATURE" for pb in a.pose.bones if pb.custom_shape}
     for o in list(new):                             # bone display shapes (the glTF importer's "Icosphere")
@@ -127,6 +131,10 @@ def mesh_children(arm, objs):
 
 
 # ---- bone maps ------------------------------------------------------------------------------------------------------
+# A source rig is mapped onto the template's bones by name. Known naming schemes first (UE4 mannequin as is, Mixamo,
+# 3ds Max Biped, VRoid/VRM, Blender Rigify DEF- bones), then a generic reader of bone names (side + body part + finger
+# number, e.g. "upper_arm.L", "Arm_L", "LeftForeArm", "R_Thigh", "thumb.02.R") for everything else. Only bones that
+# weight vertices (and their ancestors) are candidates, so control/helper bones of animation rigs are ignored.
 
 B4B_MAIN = ["pelvis", "spine_01", "spine_02", "spine_03", "neck_01", "neck_02", "head",
             "clavicle_l", "upperarm_l", "lowerarm_l", "hand_l", "clavicle_r", "upperarm_r", "lowerarm_r", "hand_r",
@@ -135,58 +143,305 @@ FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 for s in ("l", "r"):
     for f in FINGERS:
         B4B_MAIN += [f"{f}_0{k}_{s}" for k in (1, 2, 3)]
+REQUIRED = ["pelvis", "spine_01", "head", "upperarm_l", "lowerarm_l", "hand_l", "upperarm_r", "lowerarm_r", "hand_r",
+            "thigh_l", "calf_l", "foot_l", "thigh_r", "calf_r", "foot_r"]
+# bones only re-weighted (joint not moved onto the template's): moving them would shift the model's own face
+BIND_ONLY = {"jaw"}
+SPINE_CHAIN = {"pelvis", "spine_01", "spine_02", "spine_03"}
+NECK_CHAIN = {"neck_01", "neck_02"}
 
 MIXAMO = {"hips": "pelvis", "spine": "spine_01", "spine1": "spine_02", "spine2": "spine_03", "neck": "neck_01",
           "head": "head"}
 BIPED = {"pelvis": "pelvis", "spine": "spine_01", "spine1": "spine_02", "spine2": "spine_03", "neck": "neck_01",
          "head": "head"}
+VROID = {"c_hips": "pelvis", "c_spine": "spine_01", "c_chest": "spine_02", "c_upperchest": "spine_03",
+         "c_neck": "neck_01", "c_head": "head"}
+RIGIFY = {"spine": "pelvis", "spine.001": "spine_01", "spine.002": "spine_02", "spine.003": "spine_03",
+          "spine.004": "neck_01", "spine.005": "neck_02", "spine.006": "head", "jaw": "jaw"}
 for side, s in (("Left", "l"), ("Right", "r")):
     MIXAMO.update({f"{side}Shoulder": f"clavicle_{s}", f"{side}Arm": f"upperarm_{s}",
                    f"{side}ForeArm": f"lowerarm_{s}", f"{side}Hand": f"hand_{s}", f"{side}UpLeg": f"thigh_{s}",
                    f"{side}Leg": f"calf_{s}", f"{side}Foot": f"foot_{s}", f"{side}ToeBase": f"ball_{s}"})
-    for f, m in (("Thumb", "thumb"), ("Index", "index"), ("Middle", "middle"), ("Ring", "ring"), ("Pinky", "pinky")):
-        for k in (1, 2, 3):
-            MIXAMO[f"{side}Hand{f}{k}"] = f"{m}_0{k}_{s}"
     L = side[0]
+    VROID.update({f"{L}_Shoulder": f"clavicle_{s}", f"{L}_UpperArm": f"upperarm_{s}", f"{L}_LowerArm": f"lowerarm_{s}",
+                  f"{L}_Hand": f"hand_{s}", f"{L}_UpperLeg": f"thigh_{s}", f"{L}_LowerLeg": f"calf_{s}",
+                  f"{L}_Foot": f"foot_{s}", f"{L}_ToeBase": f"ball_{s}"})
+    RIGIFY.update({f"shoulder.{L}": f"clavicle_{s}", f"upper_arm.{L}": f"upperarm_{s}", f"forearm.{L}": f"lowerarm_{s}",
+                   f"hand.{L}": f"hand_{s}", f"thigh.{L}": f"thigh_{s}", f"shin.{L}": f"calf_{s}",
+                   f"foot.{L}": f"foot_{s}", f"toe.{L}": f"ball_{s}"})
     BIPED.update({f"{L} Clavicle": f"clavicle_{s}", f"{L} UpperArm": f"upperarm_{s}", f"{L} Forearm": f"lowerarm_{s}",
                   f"{L} Hand": f"hand_{s}", f"{L} Thigh": f"thigh_{s}", f"{L} Calf": f"calf_{s}",
                   f"{L} Foot": f"foot_{s}", f"{L} Toe0": f"ball_{s}"})
-    for fi, m in enumerate(FINGERS):
-        for k in range(3):
-            BIPED[f"{L} Finger{fi}{'' if k == 0 else k}"] = f"{m}_0{k + 1}_{s}"
-MIXAMO = {k.lower(): v for k, v in MIXAMO.items()}
-BIPED = {k.lower(): v for k, v in BIPED.items()}
+    for fi, (f, m) in enumerate((("Thumb", "thumb"), ("Index", "index"), ("Middle", "middle"), ("Ring", "ring"),
+                                 ("Pinky", "pinky"))):
+        for k in (1, 2, 3):
+            MIXAMO[f"{side}Hand{f}{k}"] = f"{m}_0{k}_{s}"
+            VROID[f"{L}_{'Little' if f == 'Pinky' else f}{k}"] = f"{m}_0{k}_{s}"
+            RIGIFY[f"{'thumb' if m == 'thumb' else 'f_' + m}.0{k}.{L}"] = f"{m}_0{k}_{s}"
+            BIPED[f"{L} Finger{fi}{'' if k == 1 else k - 1}"] = f"{m}_0{k}_{s}"
+TABLES = {"Mixamo": MIXAMO, "3ds Max Biped": BIPED, "VRoid/VRM": VROID, "Rigify": RIGIFY}
+TABLES = {n: {k.lower(): v for k, v in t.items()} for n, t in TABLES.items()}
 
 
 def norm_name(n):
-    n = n.split("|")[-1]
-    n = re.sub(r"^(mixamorig\d*[:_]|bip0?1[ _]|def[-_]|armature[:_])", "", n, flags=re.I)
+    n = n.split("|")[-1].split(":")[-1]
+    n = re.sub(r"^(mixamorig\d*[:_]|bip0?0?1[ _]|def[-_]|j_bip_|armature[:_]|bone[_ ]|b_)", "", n, flags=re.I)
     return n.strip().lower()
 
 
-def build_bonemap(arm, targets, user_map=None):
-    """source bone name -> template bone name. targets = set of template bone names."""
+# generic reader: tokens of a bone name
+_SKIP_RX = re.compile(r"(^|[^a-z])(end|nub|tip|top_?end|twist|roll|helper|ik|pole|target|mch|org|wgt|vis|ctrl|ctl|"
+                      r"tweak|fk|socket|null|dummy|adj|sec|bust|breast|hair|skirt|tail|prop|weapon|attach)([^a-z]|$)"
+                      r"|headtop|_end$|\.end$|end$", re.I)
+_PARTS = [  # (regex on the side-stripped name, part); first match wins, order matters
+    (r"thumb", "thumb"), (r"index|pointer|fore_?finger", "index"), (r"middle|mid_?finger", "middle"),
+    (r"ring", "ring"), (r"pinky|little|small_?finger", "pinky"),
+    (r"toe|ball", "ball"), (r"foot|ankle", "foot"),
+    (r"shin|calf|lower_?leg|knee|leg_?lower|leg2|lowleg", "calf"), (r"thigh|up_?leg|upper_?leg|leg_?upper|leg1|upleg", "thigh"),
+    (r"hand|wrist|palm", "hand"), (r"fore_?arm|lower_?arm|arm_?lower|elbow|arm2|lowarm", "lowerarm"),
+    (r"upper_?arm|arm_?upper|up_?arm|arm1|uparm", "upperarm"), (r"clavicle|shoulder|collar", "clavicle"),
+    (r"(^|_)arm(_|$)", "arm"), (r"(^|_)leg(_|$)", "calf_or_thigh"),
+    (r"pelvis|hips?$|^hip|root_?hips", "pelvis"), (r"neck", "neck"), (r"(^|_)head(_?\d+)?$|skull", "head"),
+    (r"upper_?chest|chest|spine|torso|back|abdomen|waist|belly|ribs", "spine"), (r"jaw", "jaw"),
+]
+_PARTS = [(re.compile(a), b) for a, b in _PARTS]
+
+
+def side_of(raw):
+    """('l'|'r'|None, name with the side marker removed), from Left/Right, L_/_L/.L/ L, l_/_l (lower case too)."""
+    n = raw.split("|")[-1].split(":")[-1]
+    n = re.sub(r"^(mixamorig\d*[:_]|bip0?0?1[ _]|def[-_]|j_bip_|armature[:_]|bone[_ ]|b_)", "", n, flags=re.I)
+    for rx, sd in ((r"left", "l"), (r"right", "r")):
+        m = re.search(rx, n, re.I)
+        if m: return sd, (n[:m.start()] + n[m.end():])
+    m = re.search(r"(^|[ _.\-])([LlRr])([ _.\-]|$)", n) or re.search(r"(?<=[a-z0-9])([LR])$", n)
+    if m:
+        g = m.group(2) if m.re.groups >= 2 else m.group(1)
+        return g.lower(), (n[:m.start()] + " " + n[m.end():])
+    return None, n
+
+
+def parse_bone(raw):
+    """(part, side, finger index or None) or None for a bone name the generic reader doesn't understand."""
+    if _SKIP_RX.search(raw.lower()): return None
+    sd, rest = side_of(raw)
+    rest = re.sub(r"(?<=[a-z])(?=[A-Z])", "_", rest).lower()
+    rest = re.sub(r"[ .\-]+", "_", rest).strip("_")
+    base = re.sub(r"_?\d+$", "", rest).strip("_")
+    num = re.search(r"(\d+)\D*$", rest)
+    for rx, part in _PARTS:
+        if rx.search(base):
+            if part in FINGERS:
+                if sd is None: return None
+                k = int(num.group(1)) if num else 1
+                if k == 0: k = 1                        # thumb_0 / finger0 numbering
+                return (part, sd, k)
+            if part in ("pelvis", "neck", "head", "spine", "jaw"):
+                return (part, None, int(num.group(1)) if num else 0) if sd is None else None
+            return (part, sd, None) if sd else None
+    return None
+
+
+def generic_map(arm, cands):
+    """Generic mapping of the candidate bones. The spine chain is the path from the pelvis to the head: its bones are
+    spread over spine_01..03 and neck_01/02."""
+    parsed = {b.name: parse_bone(b.name) for b in arm.data.bones if b.name in cands}
+    out = {}
+    fingers = {}
+    # limbs named only "arm"/"leg" with numbered joints (arm_joint_L_1, leg_2_R ...): spread along the chain
+    for part, names in (("arm", {3: ["upperarm", "lowerarm", "hand"], 4: ["clavicle", "upperarm", "lowerarm", "hand"]}),
+                        ("calf_or_thigh", {2: ["thigh", "calf"], 3: ["thigh", "calf", "foot"],
+                                           4: ["thigh", "calf", "foot", "ball"]})):
+        for sd in ("l", "r"):
+            chain = sorted([n for n, p in parsed.items() if p and p[0] == part and p[1] == sd],
+                           key=lambda n: depth_bone(arm.data.bones[n]))
+            if len(chain) < 2: continue
+            use = names.get(len(chain)) or names[max(names)]
+            for n, t in zip(chain, use):
+                out[f"{t}_{sd}"] = n
+                parsed[n] = None
+    for n, p in parsed.items():                      # a lone "arm" is the upper arm
+        if p and p[0] == "arm": parsed[n] = ("upperarm", p[1], None)
+    for n, p in parsed.items():
+        if not p: continue
+        part, sd, k = p
+        if part in FINGERS:
+            fingers.setdefault((part, sd), []).append((k, n))
+        elif part in ("clavicle", "upperarm", "lowerarm", "hand", "thigh", "calf", "foot", "ball", "jaw"):
+            key = "jaw" if part == "jaw" else f"{part}_{sd}"
+            if key not in out or depth_bone(arm.data.bones[n]) < depth_bone(arm.data.bones[out[key]]):
+                out[key] = n            # the segment nearest the root (Rigify: upper_arm.L, not upper_arm.L.001)
+    # finger chains: the three bones nearest the hand, by depth (1-based numbering or not)
+    for (part, sd), lst in fingers.items():
+        lst.sort(key=lambda kn: depth_bone(arm.data.bones[kn[1]]))
+        for i, (k, n) in enumerate(lst[:3]):
+            out[f"{part}_0{i + 1}_{sd}"] = n
+    # plain "Leg" as thigh when there's a separate lower leg, else as calf
+    for n, p in parsed.items():
+        if p and p[0] == "calf_or_thigh":
+            key = "thigh_" + p[1] if f"calf_{p[1]}" in out and f"thigh_{p[1]}" not in out else "calf_" + p[1]
+            out.setdefault(key, n)
+    # pelvis: named, else the common ancestor of both thighs
+    pel = next((n for n, p in parsed.items() if p and p[0] == "pelvis"), None)
+    if pel is None and "thigh_l" in out and "thigh_r" in out:
+        al = ancestors(arm, out["thigh_l"]); ar = set(ancestors(arm, out["thigh_r"]))
+        pel = next((a for a in al if a in ar), None)
+    head = next((n for n, p in sorted(parsed.items(), key=lambda x: depth_bone(arm.data.bones[x[0]]))
+                 if p and p[0] == "head"), None)
+    if pel: out["pelvis"] = pel
+    if head: out["head"] = head
+    if pel and head and pel in ancestors(arm, head):
+        path = [a for a in reversed(ancestors(arm, head)) if a != pel and pel in ancestors(arm, a)]
+        necks = [a for a in path if parsed.get(a) and parsed[a][0] == "neck"]
+        spines = [a for a in path if a not in necks]
+    elif pel and not head:
+        # no bone named head: the last of a neck chain (neck_joint_1, neck_joint_2) is the head
+        necks = sorted([n for n, p in parsed.items() if p and p[0] == "neck"], key=lambda n: depth_bone(arm.data.bones[n]))
+        if len(necks) >= 2 and pel in ancestors(arm, necks[-1]):
+            head = out["head"] = necks[-1]
+            path = [a for a in reversed(ancestors(arm, head)) if a != pel and pel in ancestors(arm, a)]
+            necks = [a for a in path if parsed.get(a) and parsed[a][0] == "neck"]
+            spines = [a for a in path if a not in necks]
+        else:
+            spines = necks = []
+    else:
+        spines = necks = []
+    if pel and head:
+        spread(out, spines, ["spine_01", "spine_02", "spine_03"])
+        spread(out, necks, ["neck_01", "neck_02"])
+    return out
+
+
+def spread(out, bones, names):
+    """Map a chain of source bones onto template chain names: first and last kept, the rest spread evenly."""
+    if not bones: return
+    if len(bones) <= len(names):
+        for n, b in zip(names, bones): out[n] = b
+        return
+    for i, n in enumerate(names):
+        out[n] = bones[round(i * (len(bones) - 1) / (len(names) - 1))]
+
+
+def ancestors(arm, name):
+    b = arm.data.bones[name].parent
+    out = []
+    while b is not None:
+        out.append(b.name); b = b.parent
+    return out
+
+
+def weighted_bones(arm, meshes):
+    """Bones that weight any vertex of the meshes, plus their ancestors (the rest are control/helper bones)."""
+    names = {b.name for b in arm.data.bones}
+    used = set()
+    for m in meshes:
+        idx = {g.index: g.name for g in m.vertex_groups if g.name in names}
+        if not idx: continue
+        hit = set()
+        for v in m.data.vertices:
+            for ge in v.groups:
+                if ge.weight > 1e-4 and ge.group in idx: hit.add(ge.group)
+        used |= {idx[i] for i in hit}
+    for n in list(used):
+        used |= set(ancestors(arm, n))
+    return used or names
+
+
+def build_bonemap(arm, targets, user_map=None, meshes=()):
+    """source bone name -> template bone name, and a description of what was recognised.
+    targets = set of template bone names."""
     tl = {t.lower(): t for t in targets}
-    cands = []
-    for table in (None, MIXAMO, BIPED):
+    cands = weighted_bones(arm, meshes) if meshes else {b.name for b in arm.data.bones}
+    options = []
+    # template names as they are (UE4 mannequin / B4B rigs)
+    m = {}
+    for b in arm.data.bones:
+        if b.name in cands and norm_name(b.name) in tl: m[b.name] = tl[norm_name(b.name)]
+    options.append(("UE4 mannequin names", m))
+    for tname, table in TABLES.items():
         m = {}
         for b in arm.data.bones:
-            n = norm_name(b.name)
-            t = tl.get(n) if table is None else table.get(n)
-            if t is not None and t.lower() in tl:
-                m[b.name] = tl[t.lower()]
-        cands.append(m)
-    best = max(cands, key=len)
+            if b.name not in cands: continue
+            t = table.get(norm_name(b.name))
+            if t is not None and t.lower() in tl: m[b.name] = tl[t.lower()]
+        options.append((tname, m))
+    g = generic_map(arm, cands)
+    options.append(("generic (read from the bone names)", {s: tl[t.lower()] for t, s in g.items() if t.lower() in tl}))
+
+    def score(m):
+        v = set(m.values())
+        return (sum(1 for r in REQUIRED if r in v), len(v))
+    kind, best = max(options, key=lambda o: score(o[1]))
+    best = dict(best)
+    # fill gaps of a named scheme with the generic reading (e.g. a Mixamo rig with extra spine bones)
+    have = set(best.values())
+    for s, t in options[-1][1].items():
+        if t not in have and s not in best:
+            best[s] = t; have.add(t)
     if user_map:
+        srcnames = {b.name for b in arm.data.bones}
         for k, v in user_map.items():
-            if v not in targets: raise SystemExit(f"--bonemap: {v!r} is not a template bone")
+            if v not in targets: raise SystemExit(f"--bonemap: {v!r} is not a template bone (template bones: "
+                                                  f"{', '.join(b for b in B4B_MAIN if b in targets)} ...)")
+            if k not in srcnames: raise SystemExit(f"--bonemap: the model has no bone {k!r}")
+            best = {s: t for s, t in best.items() if t != v}
             best[k] = v
     # one source bone per target: keep the one nearest the root
     seen = {}
     for sb in sorted(best, key=lambda n: depth_bone(arm.data.bones[n])):
         t = best[sb]
         if t not in seen: seen[t] = sb
-    return {sb: t for t, sb in seen.items()}
+    return {sb: t for t, sb in seen.items()}, kind
+
+
+_LAYER_RX = re.compile(r"^(org|mch|def|ctrl|ctl|drv|jnt|bind)[-_.]", re.I)
+
+
+def own_bones(arm, bmap, inv, tp):
+    """{bone: the mapped bone it follows} for every bone of the source armature (None: above the pelvis, e.g. root)."""
+    alias = {}
+    for n in bmap:
+        alias.setdefault(_LAYER_RX.sub("", n).lower(), n)
+    pos = {b.name: (b.head_local.copy(), b.tail_local.copy()) for b in arm.data.bones}
+    # mapped segments: joint -> next mapped joint (or the bone's own tail)
+    segs = {}
+    for n, t in bmap.items():
+        aim = next((x for x in AIM.get(t, []) if x in inv), None)
+        segs[n] = (pos[n][0], pos[inv[aim]][0] if aim else pos[n][1])
+
+    def seg_dist(p, a, b):
+        ab = b - a
+        f = 0.0 if ab.length_squared < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / ab.length_squared))
+        return (a + ab * f - p).length
+
+    above = set(ancestors(arm, inv["pelvis"])) if "pelvis" in inv else set()   # root, Global, Position ...
+    owner = {}
+    for b in sorted(arm.data.bones, key=depth_bone):
+        n = b.name
+        if n in bmap: owner[n] = n; continue
+        if n in above: owner[n] = None; continue
+        a = alias.get(_LAYER_RX.sub("", n).lower())
+        if a: owner[n] = a; continue
+        po = owner.get(b.parent.name) if b.parent else None
+        if po: owner[n] = po; continue
+        mid = (pos[n][0] + pos[n][1]) / 2
+        owner[n] = min(segs, key=lambda m: seg_dist(mid, *segs[m])) if segs else None
+    return owner
+
+
+def bonemap_help(arm, bmap, missing, out_dir, targets):
+    """Write <out>/bonemap_template.json (every source bone, the mapped ones filled in) and return the error text."""
+    os.makedirs(out_dir, exist_ok=True)
+    tmpl = {b.name: bmap.get(b.name, "") for b in arm.data.bones}
+    p = os.path.join(out_dir, "bonemap_template.json")
+    json.dump(tmpl, open(p, "w"), indent=1)
+    have = ", ".join(f"{s}->{t}" for s, t in sorted(bmap.items(), key=lambda x: B4B_MAIN.index(x[1])
+                                                     if x[1] in B4B_MAIN else 999)[:40])
+    return (f"the model's skeleton: no bone found for {', '.join(missing)}.\n"
+            f"  recognised so far: {have or 'nothing'}\n"
+            f"  Write a bone map: a JSON file {{\"<your bone>\": \"<b4b bone>\", ...}} and pass --bonemap <file>. A starting "
+            f"point with all {len(tmpl)} of your bones is in\n  {p}\n  (fill in the empty ones you need, delete the rest). "
+            f"b4b bones: {', '.join(b for b in B4B_MAIN[:23] if b in targets)}, fingers like index_01_l.")
 
 
 def depth_bone(b):
@@ -195,15 +450,16 @@ def depth_bone(b):
     return d
 
 
-# segment end used to aim each template bone (its "tail"): the head of this child
-AIM = {"pelvis": "spine_01", "spine_01": "spine_02", "spine_02": "spine_03", "spine_03": "neck_01",
-       "neck_01": "head", "neck_02": "head"}
+# segment end used to aim each template bone (its "tail"): the head of the first of these that is mapped
+AIM = {"pelvis": ["spine_01", "spine_02", "spine_03", "neck_01", "head"], "spine_01": ["spine_02", "spine_03", "neck_01", "head"],
+       "spine_02": ["spine_03", "neck_01", "head"], "spine_03": ["neck_01", "neck_02", "head"],
+       "neck_01": ["neck_02", "head"], "neck_02": ["head"]}
 for s in ("l", "r"):
-    AIM.update({f"clavicle_{s}": f"upperarm_{s}", f"upperarm_{s}": f"lowerarm_{s}", f"lowerarm_{s}": f"hand_{s}",
-                f"hand_{s}": f"middle_01_{s}", f"thigh_{s}": f"calf_{s}", f"calf_{s}": f"foot_{s}",
-                f"foot_{s}": f"ball_{s}"})
+    AIM.update({f"clavicle_{s}": [f"upperarm_{s}"], f"upperarm_{s}": [f"lowerarm_{s}"], f"lowerarm_{s}": [f"hand_{s}"],
+                f"hand_{s}": [f"middle_01_{s}", f"index_01_{s}", f"ring_01_{s}"], f"thigh_{s}": [f"calf_{s}"],
+                f"calf_{s}": [f"foot_{s}"], f"foot_{s}": [f"ball_{s}"]})
     for f in FINGERS:
-        AIM[f"{f}_01_{s}"] = f"{f}_02_{s}"; AIM[f"{f}_02_{s}"] = f"{f}_03_{s}"
+        AIM[f"{f}_01_{s}"] = [f"{f}_02_{s}"]; AIM[f"{f}_02_{s}"] = [f"{f}_03_{s}"]
 
 
 # ---- template ------------------------------------------------------------------------------------------------------
@@ -259,9 +515,26 @@ def fit_character(o):
         for x in list(src_objs):
             if x.type == "MESH" and rx.search(x.name):
                 log("dropping", x.name); bpy.data.objects.remove(x); src_objs.remove(x)
+    if o.get("drop_mat"):
+        dm = {x.lower() for x in o["drop_mat"]}
+        for x in [x for x in src_objs if x.type == "MESH"]:
+            idx = {i for i, m in enumerate(x.data.materials) if m and re.sub(r"\.\d{3}$", "", m.name).lower() in dm}
+            if not idx: continue
+            bm = bmesh.new(); bm.from_mesh(x.data)
+            bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index in idx], context="FACES")
+            bm.to_mesh(x.data); bm.free()
+            if not x.data.polygons:
+                log("dropping", x.name, "(only dropped materials)"); bpy.data.objects.remove(x); src_objs.remove(x)
+    keyed = [x.name for x in src_objs if x.type == "MESH" and x.data.shape_keys]
+    for x in src_objs:
+        if x.type == "MESH" and x.data.shape_keys:
+            x.shape_key_clear()                     # the base shape stays
+    if keyed:
+        log(f"shape keys (face expressions, morphs) removed from {keyed}: survivors have no morph targets; the face "
+            f"follows the head (and jaw) bones")
     arms = [x for x in src_objs if x.type == "ARMATURE"]
     meshes = [x for x in src_objs if x.type == "MESH"]
-    if not meshes: raise SystemExit("no mesh in the source")
+    if not meshes: raise SystemExit("no mesh in the model (after --drop)")
     mode = o.get("mode", "3p")
     targets = set(tpl.bones)
     # FBX files often carry cm scale / axis rotations on the objects: bake them into the data first
@@ -269,17 +542,23 @@ def fit_character(o):
 
     if arms:
         sarm = max(arms, key=lambda a: len(a.data.bones))
-        user_map = json.load(open(o["bonemap"])) if o.get("bonemap") else None
-        bmap = build_bonemap(sarm, targets, user_map)
-        missing = [b for b in ("pelvis", "spine_01", "head", "upperarm_l", "lowerarm_l", "hand_l", "upperarm_r",
-                               "lowerarm_r", "hand_r", "thigh_l", "calf_l", "foot_l", "thigh_r", "calf_r", "foot_r")
-                   if b not in bmap.values()]
-        log(f"source armature {sarm.name!r}: {len(sarm.data.bones)} bones, {len(bmap)} mapped")
+        user_map = None
+        if o.get("bonemap"):
+            try:
+                user_map = json.load(open(o["bonemap"], encoding="utf-8-sig"))
+            except (OSError, ValueError) as e:
+                raise SystemExit(f"--bonemap {o['bonemap']}: not a readable JSON file ({e})")
+            user_map = {k: v for k, v in user_map.items() if v}
+        skinned = mesh_children(sarm, meshes)
+        bmap, kind = build_bonemap(sarm, targets, user_map, skinned)
+        missing = [b for b in REQUIRED if b not in bmap.values()]
+        log(f"source armature {sarm.name!r}: {len(sarm.data.bones)} bones, {len(bmap)} mapped ({kind})")
+        log("  " + ", ".join(f"{s}->{t}" for s, t in sorted(bmap.items(), key=lambda x: B4B_MAIN.index(x[1])
+                                                               if x[1] in B4B_MAIN else 999)))
         if missing:
-            raise SystemExit(f"source rig: no bone found for {missing}; pass --bonemap {{\"<source bone>\": "
-                             f"\"<b4b bone>\"}} (b4b bones: {sorted(targets)[:12]} ...)")
+            raise SystemExit(bonemap_help(sarm, bmap, missing, o["out"], targets))
         inv = {v: k for k, v in bmap.items()}
-        smeshes = mesh_children(sarm, meshes)
+        smeshes = skinned
         others = [m for m in meshes if m not in smeshes]
         if others:
             log("meshes not skinned to the rig (parented rigidly to head):", [m.name for m in others])
@@ -295,7 +574,11 @@ def fit_character(o):
         k = th / sh
         pel_s, pel_t = sp["pelvis"], tp["pelvis"]
         G = Matrix.Translation(pel_t) @ R @ Matrix.Scale(k, 4) @ Matrix.Translation(-pel_s)
-        log(f"orient: rotate {math.degrees(R.to_quaternion().angle):.1f} deg, scale {k:.3f}")
+        log(f"orient: rotate {math.degrees(R.to_quaternion().angle):.1f} deg, scale {k:.3f} "
+            f"(model {sh * 100:.0f} cm head to feet, template {th * 100:.0f} cm)")
+        if k < 0.2 or k > 5:
+            log(f"  warning: scale {k:.2f} is unusual: is the model in centimetres with a wrong unit scale, or is "
+                f"its armature scaled? The fit still continues")
         for x in [sarm] + meshes:
             if x.parent is None or x.parent not in [sarm] + meshes:
                 x.matrix_world = G @ x.matrix_world
@@ -304,48 +587,121 @@ def fit_character(o):
             vg = m.vertex_groups.new(name=inv["head"]); vg.add(range(len(m.data.vertices)), 1.0, "REPLACE")
             md = m.modifiers.new("Armature", "ARMATURE"); md.object = sarm
         smeshes = mesh_children(sarm, meshes)
-        # 2. pose every mapped bone so its joint lands on the template joint and it aims at the template's next joint
+        # proportions report: each limb segment's length against the template's (the fit stretches it to match)
+        spos_w = {b.name: b.head_local.copy() for b in sarm.data.bones}
+        ratios = []
+        for t, aims in AIM.items():
+            if t in inv and aims[0] in inv and aims[0] in tp and t in tp and not t.startswith(tuple(FINGERS)) \
+                    and t not in SPINE_CHAIN and t not in NECK_CHAIN:
+                ls = (spos_w[inv[aims[0]]] - spos_w[inv[t]]).length
+                lt = (tp[aims[0]] - tp[t]).length
+                if ls > 1e-4: ratios.append((lt / ls, t))
+        if ratios:
+            far = [f"{t} x{r:.2f}" for r, t in sorted(ratios, key=lambda x: -abs(math.log(x[0])))[:4] if abs(math.log(r)) > 0.25]
+            log("proportions: segments stretched to the template's by " + (", ".join(far) if far else "less than 25 %"))
+        # 2. pose every mapped bone so its joint lands on the template joint and it aims at the template's next joint;
+        #    bones in between (twist, extra spine/neck segments, helpers) and below (face, hair) move with their mapped
+        #    ancestor's deformation
         select_only([sarm], sarm)
         bpy.ops.object.mode_set(mode="EDIT")
         for eb in sarm.data.edit_bones:
             eb.inherit_scale = "NONE"
             eb.use_connect = False
+        # point every mapped bone at its aim joint (rest orientation only; the mesh doesn't move), so the stretch
+        # along the segment is a scale along the bone's own axis: no shear, which a pose can't hold
+        ebs = sarm.data.edit_bones
+        # chains fitted as one piece: (first mapped bone, the next mapped joint above the chain)
+        chains, chain_of = {}, {}
+        for cname, members, tops in (("spine", ["pelvis", "spine_01", "spine_02", "spine_03"], ["neck_01", "neck_02", "head"]),
+                                     ("neck", ["neck_01", "neck_02"], ["head"])):
+            have = [x for x in members if x in inv and x in tp]
+            top = next((x for x in tops if x in inv and x in tp), None)
+            if have and top:
+                chains[cname] = (have[0], top)
+                for x in have: chain_of[x] = cname
+        for sb, t in bmap.items():
+            aim = next((x for x in AIM.get(t, []) if x in inv and x in tp and x not in BIND_ONLY), None)
+            if aim is None or t in BIND_ONLY: continue
+            eb, ea = ebs[sb], ebs[inv[aim]]
+            d = ea.head - eb.head
+            if t in chain_of:
+                base, top = chains[chain_of[t]]
+                d = (ebs[inv[top]].head - ebs[inv[base]].head).normalized() * max(d.length, 1e-3)
+            if d.length > 1e-5:
+                roll_ref = eb.z_axis.copy()
+                eb.tail = eb.head + d
+                eb.align_roll(roll_ref)
         bpy.ops.object.mode_set(mode="POSE")
         order = sorted(sarm.pose.bones, key=lambda pb: depth_bone(pb.bone))
         spos = {b.name: b.head_local.copy() for b in sarm.data.bones}          # armature space == world now
         worst = 0.0
+        D_of = {}
+        chain_D = {}
+        for chain, (base, top) in chains.items():
+            a_s, b_s = spos[inv[base]], spos[inv[top]]
+            a_t, b_t = tp[base], tp[top]
+            ds, dt = b_s - a_s, b_t - a_t
+            if ds.length > 1e-5 and dt.length > 1e-5:
+                q = ds.normalized().rotation_difference(dt.normalized())
+                y = ds.normalized()
+                S = Matrix.Identity(3) + (dt.length / ds.length - 1.0) * Matrix(((y.x * y.x, y.x * y.y, y.x * y.z),
+                                                                                  (y.y * y.x, y.y * y.y, y.y * y.z),
+                                                                                  (y.z * y.x, y.z * y.y, y.z * y.z)))
+                chain_D[chain] = Matrix.Translation(a_t) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-a_s)
+                log(f"  {chain} ({base} -> {top}) fitted as one piece, stretched x{dt.length / ds.length:.2f}")
+        # phase 1: the fit transform D of every mapped bone (joint onto the template joint, aimed, stretched)
+        q_of = {}
         for pb in order:
             t = bmap.get(pb.name)
-            if t is None: continue
-            aim = AIM.get(t)
+            if t is None or t in BIND_ONLY: continue
+            rest = pb.bone.matrix_local.copy()
+            ch = chain_of.get(t)
+            if ch in chain_D:
+                # torso and neck: one transform per chain (pelvis -> neck, neck -> head), so segment lengths that
+                # differ from the template's (Mixamo hips, VRM and Rigify spines) don't squash and stretch it in bands
+                D_of[pb.name] = chain_D[ch]
+                q_of[pb.name] = chain_D[ch].to_quaternion()
+                continue
+            aim = next((x for x in AIM.get(t, []) if x in inv and x in tp and x not in BIND_ONLY), None)
             head_s = spos[pb.name]
             head_t = tp[t]
-            if aim and aim in inv and aim in tp:
+            if aim:
                 dir_s = spos[inv[aim]] - head_s
                 dir_t = tp[aim] - head_t
             else:
                 dir_s = dir_t = None
-            rest = pb.bone.matrix_local.copy()
             if dir_s is not None and dir_s.length > 1e-6 and dir_t.length > 1e-6:
                 q = dir_s.normalized().rotation_difference(dir_t.normalized())
                 st = dir_t.length / dir_s.length
             else:
-                # no aim joint (end bones, head): keep the parent's rotation change
+                # no aim joint (end bones, head): keep the nearest mapped parent's rotation change
                 par = pb.parent
-                while par is not None and par.name not in bmap: par = par.parent
-                q = par.matrix.to_quaternion() @ par.bone.matrix_local.to_quaternion().inverted() if par else Quaternion()
+                while par is not None and par.name not in q_of: par = par.parent
+                q = q_of[par.name] if par is not None else Quaternion()
                 st = 1.0
-            # stretch along the bone's own axis, about the head (no shear, so the pose stays loc/rot/scale); rotate;
-            # move the head onto the template joint
+            # stretch along the bone's own axis (= the segment, see above) about the head; rotate; move the head
+            # onto the template joint
             ya = rest.col[1].xyz.normalized()
             S = Matrix.Identity(3) + (st - 1.0) * Matrix(((ya.x * ya.x, ya.x * ya.y, ya.x * ya.z),
                                                           (ya.y * ya.x, ya.y * ya.y, ya.y * ya.z),
                                                           (ya.z * ya.x, ya.z * ya.y, ya.z * ya.z)))
-            D = Matrix.Translation(head_t) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-head_s)
-            pb.matrix = D @ rest
+            D_of[pb.name] = Matrix.Translation(head_t) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-head_s)
+            q_of[pb.name] = q
+            worst = max(worst, ((D_of[pb.name] @ head_s) - head_t).length)
+        # which mapped bone each other bone moves with (and gives its weights to): its mapped ancestor, or the mapped
+        # bone of the same name in another layer (Rigify ORG-/MCH- vs DEF-), else the mapped bone nearest to it
+        # (helper bones parented outside the deform chain, e.g. MakeHuman elbow/knee helpers)
+        owner = own_bones(sarm, bmap, inv, tp)
+        # phase 2: pose every bone, root first (a pose is stored relative to the parent's)
+        for pb in order:
+            t = bmap.get(pb.name)
+            if t is not None and t not in BIND_ONLY:
+                D = D_of[pb.name]
+            else:
+                ob = owner.get(pb.parent.name) if (t in BIND_ONLY and pb.parent) else owner.get(pb.name)
+                D = D_of.get(ob, Matrix.Identity(4)) if ob else Matrix.Identity(4)
+            pb.matrix = D @ pb.bone.matrix_local
             bpy.context.view_layer.update()
-            got = pb.matrix.translation
-            worst = max(worst, (got - head_t).length)
         log(f"pose fit: max joint error {worst * 100:.2f} cm")
         bpy.ops.object.mode_set(mode="OBJECT")
         # 3. bake the pose into the meshes
@@ -354,11 +710,10 @@ def fit_character(o):
             for md in list(m.modifiers):
                 if md.type == "ARMATURE" and md.object == sarm:
                     bpy.ops.object.modifier_apply(modifier=md.name)
-        # 4. weights: rename to template bones, unmapped -> nearest mapped ancestor
+        # 4. weights: rename to template bones (other bones -> their owner above)
         def target_of(name):
-            b = sarm.data.bones.get(name)
-            while b is not None and b.name not in bmap: b = b.parent
-            return bmap[b.name] if b is not None else "pelvis"
+            ob = owner.get(name)
+            return bmap[ob] if ob in bmap else "pelvis"
         for m in smeshes:
             rename_groups(m, {g.name: target_of(g.name) for g in m.vertex_groups})
         bpy.data.objects.remove(sarm)
@@ -366,6 +721,9 @@ def fit_character(o):
         # unrigged: stand it like the template (the model faces --facing, default -y = Blender's front view), scale to
         # the template's height, feet on the ground, centred on the pelvis; weights come from the template mesh
         log("source has no armature: placing it by its bounding box, weights from the template mesh (nearest surface)")
+        for x in meshes:                             # a hierarchy of parts (head, torso, arm-left ...): flatten it
+            if x.parent is not None:
+                mw = x.matrix_world.copy(); x.parent = None; x.matrix_world = mw
         smeshes = meshes
         o["weights"] = "transfer"
         face = AXES[o.get("facing", "-y")]
@@ -377,16 +735,22 @@ def fit_character(o):
         vs = [x.matrix_world @ v.co for x in meshes for v in x.data.vertices]
         lo = Vector((min(v.x for v in vs), min(v.y for v in vs), min(v.z for v in vs)))
         hi = Vector((max(v.x for v in vs), max(v.y for v in vs), max(v.z for v in vs)))
-        tv = [tm.matrix_world @ v.co for tm in tpl.meshes for v in tm.data.vertices]
-        th = max(v.z for v in tv) - min(v.z for v in tv)
+        # the template's stature from its skeleton (an FP arms mesh has no feet): ground 4.5 cm below the balls of
+        # the feet, top of the head 11.5 % above the head joint (measured on the 3P hero meshes)
+        ground = (tpl.pos["ball_l"].z + tpl.pos["ball_r"].z) / 2 - 0.045
+        th = (tpl.pos["head"].z - ground) * 1.115
         k = th / max(1e-6, hi.z - lo.z)
         pel = tpl.pos["pelvis"]
-        G = Matrix.Translation(Vector((pel.x, pel.y, min(v.z for v in tv)))) @ Matrix.Scale(k, 4) @ \
+        G = Matrix.Translation(Vector((pel.x, pel.y, ground))) @ Matrix.Scale(k, 4) @ \
             Matrix.Translation(-Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)))
         for x in meshes:
             if x.parent is None or x.parent not in meshes: x.matrix_world = G @ x.matrix_world
         apply_transforms(meshes)
-        log(f"unrigged: scale {k:.3f}; the arms must already match the template's pose (A-pose, about 45 degrees)")
+        log(f"unrigged: scale {k:.3f}")
+        # arms in another pose than the template's A-pose (T-pose, hanging down): pose the template's arms like the
+        # model's, take the weights from the posed template, then un-pose the model into the template's bind pose
+        unpose_arms(tpl, meshes)
+        o["weights"] = "done"
     if o.get("weights") == "transfer":
         transfer_weights(tpl, smeshes, all_groups=True)
     elif o.get("twist", "template") == "template":
@@ -398,7 +762,7 @@ def fit_character(o):
     if o.get("probe"):
         mats = []
         for m in smeshes:
-            for mt in m.data.materials:
+            for mt in used_materials(m):
                 n = re.sub(r"\.\d{3}$", "", mt.name) if mt else None
                 if n not in mats: mats.append(n)
         os.makedirs(o["out"], exist_ok=True)
@@ -414,6 +778,13 @@ def fit_character(o):
         m.matrix_parent_inverse = tpl.arm.matrix_world.inverted()
         md = m.modifiers.new("Armature", "ARMATURE"); md.object = tpl.arm
     finish(o, tpl, smeshes)
+
+
+def used_materials(m):
+    """The materials a mesh's faces use (slots without faces, e.g. after --drop or the FP cut, don't count)."""
+    idx = sorted({p.material_index for p in m.data.polygons})
+    mats = list(m.data.materials)
+    return [mats[i] if i < len(mats) else None for i in idx] if mats else [None]
 
 
 def rename_groups(m, mapping):
@@ -497,6 +868,133 @@ def transfer_weights(tpl, meshes, all_groups):
     log("weights:", "copied from the template" if all_groups else "limb weights split among the template's twist bones")
 
 
+def part_bones(name):
+    """Template bones a named part of an unrigged model may be weighted to (None: any)."""
+    p = parse_bone(name) or parse_bone(re.sub(r"[-_ .]?(mesh|geo|obj)\d*$", "", name, flags=re.I))
+    if not p: return None
+    part, sd = p[0], p[1]
+    arm_all = ("clavicle", "upperarm", "lowerarm", "hand", "wrist", "elbow", "shoulder") + tuple(FINGERS)
+    fam = {"upperarm": arm_all, "lowerarm": ("lowerarm", "hand", "wrist", "elbow") + tuple(FINGERS),
+           "hand": ("hand", "wrist") + tuple(FINGERS), "clavicle": ("clavicle", "upperarm", "shoulder"),
+           "thigh": ("thigh", "calf", "foot", "ball", "knee", "hip"), "calf_or_thigh": ("thigh", "calf", "foot", "ball", "knee", "hip"),
+           "calf": ("calf", "foot", "ball", "knee"), "foot": ("foot", "ball"), "ball": ("ball",)}.get(part)
+    if fam and sd: return {"prefixes": fam, "side": sd}
+    if part == "head": return {"exact": ("head", "neck_02")}
+    if part in ("spine", "pelvis"): return {"exact": ("pelvis", "spine_01", "spine_02", "spine_03", "neck_01")}
+    return None
+
+
+def allowed(bone, rule):
+    if rule is None: return True
+    if "exact" in rule: return bone in rule["exact"]
+    return bone.endswith("_" + rule["side"]) and bone.startswith(rule["prefixes"])
+
+
+def unpose_arms(tpl, meshes):
+    """Unrigged model: bring its arms into the template's bind pose. The template armature is posed so its arms point
+    like the model's (upperarm rotated about the shoulder), the weights are copied from the posed template mesh (named
+    parts like "arm-left" only take bones of that part), then the inverse pose is applied to the model."""
+    arm = tpl.arm
+    tv = [tm.matrix_world @ v.co for tm in tpl.meshes for v in tm.data.vertices]
+    mv = [(m, m.matrix_world @ v.co) for m in meshes for v in m.data.vertices]
+    rules = {m.name: part_bones(m.name) for m in meshes}
+    named = {m.name: r for m, r in ((m, rules[m.name]) for m in meshes) if r}
+    if named: log("unrigged: parts by name (their vertices only take those bones):",
+                  {n: (r["prefixes"][1] + "_" + r["side"]) if "prefixes" in r else r["exact"][0] for n, r in named.items()})
+    tlo = Vector((min(p.x for p in tv), min(p.y for p in tv), min(p.z for p in tv)))
+    thi = Vector((max(p.x for p in tv), max(p.y for p in tv), max(p.z for p in tv)))
+    rot = {}
+    for sd, sign in (("l", 1), ("r", -1)):          # heroes face +X: their left is +Y
+        ua = tpl.pos.get(f"upperarm_{sd}")
+        if ua is None: continue
+        # the template's arm tip: its most lateral vertices on that side, same measure as for the model
+        def tip(points):
+            pts = sorted(points, key=lambda p: -sign * p.y)[:max(8, len(points) // 400)]
+            return sum(pts, Vector()) / len(pts)
+        t_tip = tip([p for p in tv if sign * p.y > 0])
+        arm_objs = [m for m in meshes if (named.get(m.name) or {}).get("side") == sd and
+                    "upperarm" in (named.get(m.name) or {}).get("prefixes", ())]
+        if arm_objs:
+            pts = [p for m, p in mv if m in arm_objs]
+            shoulder = max(pts, key=lambda p: p.z)          # the part's top end
+            top = [p for p in pts if p.z > shoulder.z - 0.03]
+            shoulder = sum(top, Vector()) / len(top)
+            m_tip = max(pts, key=lambda p: (p - shoulder).length)
+        else:
+            # the template's shoulder, placed proportionally in the model's bounds
+            mlo = Vector((min(p.x for m, p in mv), min(p.y for m, p in mv), min(p.z for m, p in mv)))
+            mhi = Vector((max(p.x for m, p in mv), max(p.y for m, p in mv), max(p.z for m, p in mv)))
+            f = Vector(((ua.x - tlo.x) / max(1e-6, thi.x - tlo.x), (ua.y - tlo.y) / max(1e-6, thi.y - tlo.y),
+                        (ua.z - tlo.z) / max(1e-6, thi.z - tlo.z)))
+            shoulder = Vector((mlo.x + f.x * (mhi.x - mlo.x), mlo.y + f.y * (mhi.y - mlo.y), mlo.z + f.z * (mhi.z - mlo.z)))
+            m_tip = tip([p for m, p in mv if sign * p.y > 0])
+        dt, dm = (t_tip - ua), (m_tip - shoulder)
+        if dt.length < 1e-4 or dm.length < 1e-4: continue
+        q = dt.normalized().rotation_difference(dm.normalized())
+        ang = math.degrees(q.angle)
+        log(f"unrigged: {'left' if sd == 'l' else 'right'} arm is {ang:.0f} deg from the template's pose")
+        if ang > 8: rot[sd] = q
+    # pose the template (armature space == world: the template armature has no transform of its own)
+    select_only([arm], arm)
+    bpy.ops.object.mode_set(mode="POSE")
+    for sd, q in rot.items():
+        pb = arm.pose.bones[f"upperarm_{sd}"]
+        head = arm.matrix_world @ pb.bone.head_local
+        M = Matrix.Translation(head) @ q.to_matrix().to_4x4() @ Matrix.Translation(-head)
+        pb.matrix = arm.matrix_world.inverted() @ M @ arm.matrix_world @ pb.bone.matrix_local
+    bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    # weights from the posed template (evaluated meshes), restricted by part names
+    dg = bpy.context.evaluated_depsgraph_get()
+    pts, wts = [], []
+    for tm in tpl.meshes:
+        ev = tm.evaluated_get(dg)
+        me = ev.to_mesh()
+        W = mesh_weights(tm)
+        for v, w in zip(me.vertices, W):
+            pts.append(tm.matrix_world @ v.co); wts.append(w)
+        ev.to_mesh_clear()
+    kd = KDTree(len(pts))
+    for i, p in enumerate(pts): kd.insert(p, i)
+    kd.balance()
+    for m in meshes:
+        rule = rules[m.name]
+        out = []
+        for v in m.data.vertices:
+            p = m.matrix_world @ v.co
+            acc, tot = {}, 0.0
+            for co, i, d in kd.find_n(p, 16 if rule else 4):
+                w = {n: x for n, x in wts[i].items() if allowed(n, rule)}
+                if not w: continue
+                f = 1.0 / max(d, 1e-4); tot += f
+                for n, x in w.items(): acc[n] = acc.get(n, 0.0) + x * f
+            if not acc and rule:                     # nothing of that part nearby: the part's first bone
+                first = rule["exact"][0] if "exact" in rule else f"{rule['prefixes'][0]}_{rule['side']}"
+                acc, tot = {first: 1.0}, 1.0
+            out.append({n: x / tot for n, x in acc.items()} if tot else {"pelvis": 1.0})
+        set_weights(m, out)
+    log("weights: copied from the template" + (" (posed like the model)" if rot else ""))
+    if not rot: return
+    # un-pose: skin to the template with the inverse arm rotation, apply
+    select_only([arm], arm)
+    bpy.ops.object.mode_set(mode="POSE")
+    for sd, q in rot.items():
+        pb = arm.pose.bones[f"upperarm_{sd}"]
+        head = arm.matrix_world @ pb.bone.head_local
+        M = Matrix.Translation(head) @ q.inverted().to_matrix().to_4x4() @ Matrix.Translation(-head)
+        pb.matrix = arm.matrix_world.inverted() @ M @ arm.matrix_world @ pb.bone.matrix_local
+    bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for m in meshes:
+        md = m.modifiers.new("Unpose", "ARMATURE"); md.object = arm
+        select_only([m], m)
+        bpy.ops.object.modifier_apply(modifier=md.name)
+    for pb in arm.pose.bones:
+        pb.matrix_basis = Matrix.Identity(4)
+    bpy.context.view_layer.update()
+    log("unrigged: arms moved into the template's pose")
+
+
 def keep_arms(m):
     W = mesh_weights(m)
     armv = [sum(x for n, x in w.items() if ARM_BONES_RX.match(n)) / max(1e-6, sum(w.values())) >= 0.5 for w in W]
@@ -509,18 +1007,57 @@ def keep_arms(m):
 
 # ---- materials, atlas, LODs, export ---------------------------------------------------------------------------------
 
-TEX_KEYS = {"basecolor": ("albedo", "basecolor", "base_color", "diffuse", "color", "_bc", "_d", "col"),
-            "normal": ("normal", "_n", "nrm", "norm"),
+TEX_KEYS = {"basecolor": ("albedo", "basecolor", "base_color", "basemap", "base_map", "diffuse", "color", "colour", "_bc",
+                          "_d.", "_d_", "_diff", "_col", "_alb"),
+            "normal": ("normal", "_n.", "_n_", "_nrm", "_nor", "norm"),
             "roughness": ("rough",), "metallic": ("metal",), "ao": ("_ao", "occlusion", "ambient"),
-            "orm": ("rmao", "orm", "_arm"), "alpha": ("alpha", "opacity")}
+            "orm": ("rmao", "_orm", "orm.", "_arm.", "occlusionroughnessmetallic"), "mask": ("maskmap", "mask_map", "_mask"),
+            "gloss": ("gloss", "smooth"), "alpha": ("alpha", "opacity", "transparen"),
+            "skip": ("emissi", "height", "displace", "_disp", "bump", "spec", "sss", "subsurface", "cavity", "curvature",
+                     "thickness", "id_map", "_id.", "matcap", "shade", "_rim", "outline")}
+IMG_EXT = (".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp", ".webp")
+TEX_CACHE = None                      # set per run: where embedded (packed) images are written
+
+
+def role_from_name(path):
+    """What an image file is, from its name (None: can't tell). Checked most specific first."""
+    fl = os.path.basename(path).lower()
+    for key in ("skip", "normal", "orm", "mask", "roughness", "gloss", "metallic", "ao", "alpha", "basecolor"):
+        if any(w in fl for w in TEX_KEYS[key]): return key
+    return None
+
+
+def image_file(img):
+    """A file path for a Blender image: its file, else its embedded bytes (glb/vrm/FBX embedded media) written to the
+    run's texture cache."""
+    if img is None: return None
+    p = bpy.path.abspath(img.filepath) if img.filepath else ""
+    if p and os.path.isfile(p): return p
+    if TEX_CACHE and (img.packed_file is not None or img.has_data or img.size[0]):
+        os.makedirs(TEX_CACHE, exist_ok=True)
+        base = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.splitext(img.name)[0]) or "image"
+        if img.packed_file is not None:
+            data = bytes(img.packed_file.data)
+            ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg" if data[:2] == b"\xff\xd8" else ".bin"
+            out = os.path.join(TEX_CACHE, base + ext)
+            if ext != ".bin":
+                with open(out, "wb") as f: f.write(data)
+                return out
+        out = os.path.join(TEX_CACHE, base + ".png")
+        try:
+            img.filepath_raw = out; img.file_format = "PNG"; img.save()
+            return out
+        except RuntimeError:
+            return None
+    return p or None                   # a missing file: the caller looks for it by name next to the model
 
 
 def socket_image(sock, seen=None):
-    """Follow links back from a shader socket to an image texture node."""
+    """Follow links back from a shader socket to an image texture node (the Image)."""
     if not sock.is_linked: return None
     n = sock.links[0].from_node
     if n.type == "TEX_IMAGE":
-        return bpy.path.abspath(n.image.filepath) if n.image and n.image.filepath else (n.image.name if n.image else None)
+        return n.image
     for inp in n.inputs:
         if inp.type in ("RGBA", "VECTOR", "VALUE") and inp.is_linked:
             r = socket_image(inp)
@@ -531,50 +1068,83 @@ def socket_image(sock, seen=None):
 def classify_files(files):
     out = {}
     for f in sorted(files):
-        fl = os.path.basename(f).lower()
-        for key, words in TEX_KEYS.items():
-            if key not in out and any(w in fl for w in words):
-                out[key] = f; break
+        k = role_from_name(f)
+        if k and k != "skip" and k not in out: out[k] = f
     return out
 
 
-def material_textures(mat, tex_dirs, user=None):
-    """Texture files of a material: --tex MAT=<prefix|dir> first, then the shader's linked images, then files named
-    after the material in the model's folder / --textures."""
+def images_in(dirs):
+    for d in dirs:
+        for root, _, files in os.walk(d):
+            for f in files:
+                if f.lower().endswith(IMG_EXT): yield os.path.join(root, f)
+
+
+def material_textures(mat, tex_dirs, user=None, n_materials=1):
+    """Texture files of a material: --tex MAT=<prefix|dir> first, then the shader's linked images (embedded ones
+    written out), then files named after the material in the model's folder / --textures; a model with one material
+    and one texture set in its folder takes that set. Names that say what a file is win over the socket it hangs on
+    (a mask map linked as base colour)."""
     base = re.sub(r"\.\d{3}$", "", mat.name).lower() if mat else ""
     for k, v in (user or {}).items():
         if k.lower() == base:
+            if not (os.path.isdir(v) or os.path.isdir(os.path.dirname(v) or ".")):
+                raise SystemExit(f"--tex {k}={v}: no such folder or file prefix")
             files = ([os.path.join(v, f) for f in os.listdir(v)] if os.path.isdir(v) else
                      [os.path.join(os.path.dirname(v), f) for f in os.listdir(os.path.dirname(v) or ".")
                       if f.startswith(os.path.basename(v))])
-            got = classify_files([f for f in files if f.lower().endswith((".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp"))])
+            got = classify_files([f for f in files if f.lower().endswith(IMG_EXT)])
             if got: return got
+            log(f"  --tex {k}={v}: no texture file recognised there (names with albedo/basecolor/diffuse, normal, "
+                f"roughness, metallic, ao ...)")
     out = {}
     if mat and mat.node_tree:
         bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
         if bsdf:
             for key, sock in (("basecolor", "Base Color"), ("normal", "Normal"), ("roughness", "Roughness"),
                               ("metallic", "Metallic"), ("alpha", "Alpha")):
-                p = socket_image(bsdf.inputs[sock])
-                if p: out[key] = p
-    # files that don't exist (FBX with absolute paths from the author's machine): look next to the model / --textures
-    for k, p in list(out.items()):
-        if not os.path.isfile(p):
-            hit = find_file(os.path.basename(p), tex_dirs)
-            if hit: out[k] = hit
-            else: del out[k]
-    # nothing linked: guess by material name
+                img = socket_image(bsdf.inputs[sock])
+                if img is not None:
+                    out[key] = (image_file(img), img.name)
+        if not out:
+            # no Principled BSDF links (unlit/toon materials, e.g. VRM MToon): the shader's image nodes, by colour space
+            for n in mat.node_tree.nodes:
+                if n.type != "TEX_IMAGE" or n.image is None: continue
+                key = role_from_name(n.image.name) or ("normal" if n.image.colorspace_settings.name == "Non-Color"
+                                                       else "basecolor")
+                if key != "skip" and key not in out: out[key] = (image_file(n.image), n.image.name)
+    res = {}
+    for k, (p, name) in out.items():
+        # files that don't exist (FBX with absolute paths from the author's machine): look next to the model / --textures
+        if not p or not os.path.isfile(p):
+            p = find_file(os.path.basename(p or name), tex_dirs)
+            if not p:
+                log(f"  material {base}: its {k} image {name!r} is not next to the model (copy it there or use --tex)")
+                continue
+        role = role_from_name(p)
+        if role and role != "skip" and role != k and k != "alpha" and role != "basecolor" \
+                and not (k == "basecolor" and role == "alpha"):
+            log(f"  material {base}: {os.path.basename(p)} is linked as {k} but its name says {role}: used as {role}")
+            k = role
+        elif role == "skip" and k != "alpha":
+            log(f"  material {base}: {os.path.basename(p)} ({k}) looks like a map the game doesn't use: ignored")
+            continue
+        res.setdefault(k, p)
+    out = res
     if "basecolor" not in out and mat is not None:
-        base = re.sub(r"\.\d{3}$", "", mat.name).lower()
-        for d in tex_dirs:
-            for root, _, files in os.walk(d):
-                for f in files:
-                    fl = f.lower()
-                    if not fl.endswith((".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp")): continue
-                    if base.replace(" ", "_") not in fl.replace(" ", "_"): continue
-                    for key, words in TEX_KEYS.items():
-                        if key not in out and any(w in fl for w in words):
-                            out[key] = os.path.join(root, f)
+        # nothing linked: guess by material name
+        key_name = base.replace(" ", "_")
+        for f in images_in(tex_dirs):
+            fl = os.path.basename(f).lower().replace(" ", "_")
+            if key_name and key_name in fl:
+                k = role_from_name(f)
+                if k and k != "skip": out.setdefault(k, f)
+    if "basecolor" not in out and n_materials == 1:
+        got = classify_files(list(images_in(tex_dirs)))
+        if "basecolor" in got:
+            log(f"  material {base}: using the texture set in the model's folder: "
+                f"{', '.join(os.path.basename(v) for v in got.values())}")
+            for k, v in got.items(): out.setdefault(k, v)
     return out
 
 
@@ -627,7 +1197,7 @@ def assign_slots(o, tpl, meshes, tex_dirs):
     slots_lower = {s.lower(): s for s in tpl.slots}
     srcmats = []
     for m in meshes:
-        for mat in m.data.materials:
+        for mat in used_materials(m):
             if mat not in srcmats: srcmats.append(mat)
 
     def base(mat):
@@ -668,7 +1238,7 @@ def assign_slots(o, tpl, meshes, tex_dirs):
                                  f"set {st}: list them in --atlas {st}=...")
         tiles = sets.setdefault(st, {"grid": g, "tiles": []})["tiles"]
         if not any(t["material"] == base(mat) for t in tiles):
-            tiles.append({"material": base(mat), "rect": rect, "textures": material_textures(mat, tex_dirs, tex_user),
+            tiles.append({"material": base(mat), "rect": rect, "textures": material_textures(mat, tex_dirs, tex_user, len(srcmats)),
                           "values": bsdf_values(mat)})
         slotmat = bpy.data.materials.get(slot) or bpy.data.materials.new(slot)
         for m in meshes:
@@ -702,16 +1272,23 @@ def assign_slots(o, tpl, meshes, tex_dirs):
     return {"slots": slots_used, "sets": sets}
 
 
+LOD_MIN_TRIS = 1500      # never decimate below this (a low-poly model's LODs stay whole: boxes collapse otherwise)
+
+
 def make_lods(o, meshes):
     ratios = [float(x) for x in o.get("lods", "1").split(",")]
     lods = []
+    total = sum(len(m.data.polygons) for m in meshes)
     for li, r in enumerate(ratios):
         if li == 0:
             lods.append(meshes); continue
+        r = min(1.0, max(r, LOD_MIN_TRIS / max(1, total)))
         copies = []
         for m in meshes:
             c = m.copy(); c.data = m.data.copy(); c.name = f"{m.name}_LOD{li}"
             bpy.context.scene.collection.objects.link(c)
+            if r >= 0.999:
+                copies.append(c); continue
             d = c.modifiers.new("Decimate", "DECIMATE"); d.ratio = r; d.use_collapse_triangulate = True
             # keep the decimate before the armature modifier
             while c.modifiers[0].name != "Decimate":
@@ -735,8 +1312,10 @@ def export_glb(path, arm, meshes):
 
 
 def finish(o, tpl, meshes):
+    global TEX_CACHE
     out = o["out"]
     os.makedirs(out, exist_ok=True)
+    TEX_CACHE = os.path.join(out, "textures")
     tex_dirs = [os.path.dirname(os.path.abspath(o["source"]))] + ([o["textures"]] if o.get("textures") else [])
     for m in meshes:                                           # triangulate + clean up before LODs and export
         select_only([m], m)
@@ -860,21 +1439,62 @@ def sverts_now(meshes):
 
 # ---- inspect --------------------------------------------------------------------------------------------------------
 
+def alpha_stats(path):
+    """(fraction of texels with alpha < 0.5, fraction with 0.05 < alpha < 0.95) of an image, None without alpha."""
+    import numpy as np
+    try:
+        img = bpy.data.images.load(path, check_existing=False)
+    except RuntimeError:
+        return None
+    if img.channels < 4 or not img.size[0]:
+        bpy.data.images.remove(img); return None
+    if img.size[0] * img.size[1] > 1024 * 1024:
+        img.scale(max(1, img.size[0] // 2), max(1, img.size[1] // 2))
+    a = np.empty(img.size[0] * img.size[1] * 4, dtype=np.float32)
+    img.pixels.foreach_get(a)
+    bpy.data.images.remove(img)
+    al = a[3::4]
+    return float((al < 0.5).mean()), float(((al > 0.05) & (al < 0.95)).mean())
+
+
 def inspect(src, out):
+    global TEX_CACHE
+    TEX_CACHE = os.path.join(os.path.dirname(out), "textures")
     objs = import_any(src)
-    info = {"objects": [], "materials": [], "armatures": []}
+    tex_dirs = [os.path.dirname(os.path.abspath(src))]
+    info = {"objects": [], "materials": [], "armatures": [], "material_info": {}}
+    mats = []
     for o in objs:
         if o.type == "MESH" and not o.name.startswith("Icosphere"):
             info["objects"].append({"name": o.name, "vertices": len(o.data.vertices), "faces": len(o.data.polygons),
                                     "materials": [re.sub(r"\.\d{3}$", "", m.name) if m else None
-                                                  for m in o.data.materials]})
+                                                  for m in o.data.materials],
+                                    "parent": o.parent.name if o.parent else None,
+                                    "shape_keys": len(o.data.shape_keys.key_blocks) if o.data.shape_keys else 0})
             for m in o.data.materials:
                 n = re.sub(r"\.\d{3}$", "", m.name) if m else None
-                if n not in info["materials"]: info["materials"].append(n)
+                if n not in info["materials"]: info["materials"].append(n); mats.append(m)
         elif o.type == "ARMATURE":
             info["armatures"].append({"name": o.name, "bones": [b.name for b in o.data.bones]})
         elif o.type == "EMPTY":
-            info["objects"].append({"name": o.name, "empty": True})
+            info["objects"].append({"name": o.name, "empty": True, "parent": o.parent.name if o.parent else None})
+    faces = {}
+    for o in objs:
+        if o.type != "MESH": continue
+        for poly in o.data.polygons:
+            if poly.material_index < len(o.data.materials) and o.data.materials[poly.material_index]:
+                n = re.sub(r"\.\d{3}$", "", o.data.materials[poly.material_index].name)
+                faces[n] = faces.get(n, 0) + 1
+    real = [m for m in mats if m is not None]
+    for m in real:
+        n = re.sub(r"\.\d{3}$", "", m.name)
+        tx = material_textures(m, tex_dirs, None, len(real))
+        mi = {"textures": tx, "faces": faces.get(n, 0), "blend": getattr(m, "blend_method", "OPAQUE")}
+        ap = tx.get("alpha") or tx.get("basecolor")
+        if ap and os.path.isfile(ap):
+            st = alpha_stats(ap)
+            if st: mi["alpha_clear"], mi["alpha_soft"] = st
+        info["material_info"][n] = mi
     json.dump(info, open(out, "w"), indent=1)
     log("wrote", out)
 
@@ -1003,13 +1623,19 @@ def compose(job_path):
                         region[..., 2] = n[..., 2]
                         region[..., 3] = 1.0
                 else:   # pbr: R = AO, G = roughness, B = metallic, A = the retail texture's average
+                    # Unity HDRP mask map: R metallic, G AO, B detail mask, A smoothness
+                    mask_i = {"ao": 1, "roughness": 3, "metallic": 0}
                     def chan(key, orm_i, const):
                         if ok(key): return load_px(tx[key], pw)[..., 0]
                         if ok("orm"): return load_px(tx["orm"], pw)[..., orm_i]
+                        if ok("mask"):
+                            c = load_px(tx["mask"], pw)[..., mask_i[key]]
+                            return 1.0 - c if key == "roughness" else c
+                        if key == "roughness" and ok("gloss"): return 1.0 - load_px(tx["gloss"], pw)[..., 0]
                         return np.full((pw, pw), const, np.float32)
                     region[..., 0] = chan("ao", 0, 1.0)
                     region[..., 1] = chan("roughness", 1, val.get("roughness", 0.7))
-                    region[..., 2] = chan("metallic", 2, val.get("metallic", 0.0))
+                    region[..., 2] = chan("metallic", 2, val.get("metallic", 0.0) if j.get("kind") != "character" else 0.0)
                     region[..., 3] = mean[3]
         save_px(np.clip(canvas, 0, 1), j["out"])
         log("composed", os.path.basename(j["out"]), role, size)

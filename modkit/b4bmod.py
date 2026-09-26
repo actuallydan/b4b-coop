@@ -479,7 +479,7 @@ def extract_refs(a):
 
 def cmd_dotnet(cmd, a):
     """info/tree/export/texture/mi/...: the .NET tool, after extracting the assets it names."""
-    for x in (a[:1] if cmd == "rename" else a):   # rename: the new path is not in the game
+    for x in (a[:1] if cmd in ("rename", "mi") else a):   # rename, mi set: new paths are not in the game
         if x.startswith(("/Game/", "/Engine/")):
             ensure(x, folder=(cmd == "tree"))
             if cmd != "info":
@@ -501,14 +501,14 @@ def blender_exe():
     return b
 
 
-MODEL_EXTS = (".fbx", ".glb", ".gltf", ".obj", ".dae", ".blend")
+MODEL_EXTS = (".fbx", ".glb", ".gltf", ".obj", ".dae", ".blend", ".vrm")
 
 
 def model_file(model):
     """A model file the mesh tools read: glTF as is; FBX/OBJ/DAE/.blend need Blender (they convert it themselves)."""
     ext = os.path.splitext(model)[1].lower()
     if ext not in MODEL_EXTS:
-        die(f"{model}: give a .fbx, .glb, .gltf, .obj, .dae or .blend file")
+        die(f"{model}: give a .fbx, .glb, .gltf, .vrm, .obj, .dae or .blend file (other formats: open it in Blender, export FBX or glTF)")
     if not os.path.exists(model):
         die(f"{model}: not found")
     if ext not in (".glb", ".gltf") and not blender_exe():

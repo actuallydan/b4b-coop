@@ -368,7 +368,7 @@ def edit_lodinfo_count(s, n):
     assert rr.p == s.props_end
 
 
-MODEL_EXTS = (".fbx", ".obj", ".dae", ".blend")
+MODEL_EXTS = (".fbx", ".obj", ".dae", ".blend", ".vrm")
 
 
 def blender_exe():

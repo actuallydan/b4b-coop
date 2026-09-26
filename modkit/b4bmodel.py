@@ -4,8 +4,11 @@ ready for `addon.py pack`. Mod makers run it as `b4bmod survivor|weapon ...` (wh
 and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
 
   b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir>
-        [--slot MAT=SLOT]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
-        [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none]
+        [--slot MAT=SLOT|drop]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
+        [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none] [--facing -y]
+        <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
+        (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
+        Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
                                             `outfit=` line in <moddir>/addoninfo.txt (in game: /model <name>)
   b4bmodel.py weapon <model> --fp-mesh <FP weapon SKM> [--3p-mesh <3P weapon SKM>] [--static <SM>]... -o <moddir>
@@ -18,7 +21,8 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
 
   common: --src <extract folder> (where the game's files were extracted: b4bmod extract ...), --work <dir>,
           --normal-dx (the model's normal maps are DirectX style; default: OpenGL/glTF style, green flipped),
-          --quality fast|balanced|best (texture encoder), --keep-work
+          --quality fast|balanced|best (texture encoder), --max-texture 4096|2048|1024 (largest texture made;
+          2048 makes the add-on about 4x smaller), --keep-work
 
 <SKM>/<SM> = a game path (/Game/.../3P_Mom_Elite_04_SKM) or a .uasset file. What it does:
   1. exports the template meshes to glTF (skmgltf.py export),
@@ -203,6 +207,13 @@ class TexTool:
         self.jobs = []
         self.done = set()
         self.hair_mis = []
+        self.kind = o.get("kind")
+        self.max_tex = int(o.get("max_texture", 4096))
+        if self.max_tex not in (512, 1024, 2048, 4096): die("--max-texture: 512, 1024, 2048 or 4096")
+        self.preview = {}                # texture set -> base colour PNG (preview_textures_*.json)
+        self.mi_sets = []                # (MI, texture parameter, new texture) for textures that were shared
+        self.adopted = {}                # shared MI package -> its copy in the template's folder
+        self.meshes = []                 # the cooked meshes written (repointed when an MI is adopted)
 
     def retail_png(self, tex_file):
         png = os.path.join(self.work, "retail_" + os.path.basename(tex_file)[:-7] + ".png")
@@ -213,7 +224,7 @@ class TexTool:
                 if r.returncode == 0 and os.path.exists(png): break
         return png if os.path.exists(png) else None
 
-    def compose_set(self, set_info, params, owned, master=None, mi=None):
+    def compose_set(self, set_info, params, owned, master=None, mi=None, set_name=None):
         """params: {param name: texture path} of the slot's MI chain. set_info: manifest set (grid, tiles)."""
         tiles = set_info["tiles"]
         hair = bool(master and HAIR_MASTER_RX.search(master))
@@ -223,24 +234,85 @@ class TexTool:
             for k in ("basecolor", "normal"):
                 p = t["textures"].get(k)
                 if p and os.path.exists(p): base = max(base, png_size(p))
-        size = min(4096, 1 << math.ceil(math.log2(max(256, base * g))))
+        size = min(self.max_tex, 1 << math.ceil(math.log2(max(256, base * g))))
+        hair_size = min(size, 2048)                  # the strand mask needs less (retail hero hair masks: 2048 or less)
         for param, tex in params.items():
-            if tex in self.done or not tex.startswith(owned): continue
+            if tex in self.done: continue
             role = role_of(param)
             if hair and param.lower() == "hair multimask": role = "hairmm"
             if role is None: continue
             f = upkg.game_path_to_file(tex, self.src)
             if not f or not os.path.exists(f): continue
+            asset, path = f, tex
+            if not tex.startswith(owned):
+                # a texture shared with other outfits (e.g. Holly Elite 00's head colour lives in Elite_02, hair masks in
+                # Meshes/Shared): write ours as a new texture in the template's folder and point the slot's material
+                # instance at it, instead of changing the other outfits. The MI itself is adopted into the folder too
+                # when it's shared (then the meshes are repointed to the copy).
+                if role not in ("basecolor", "normal", "pbr", "hairmm") or not mi: continue
+                mi = self.adopt_mi(mi, owned)
+                if mi is None: continue
+                path = owned + "Textures/" + tex.split("/")[-1].split(".")[0]
+                asset = self.copy_pkg(tex, path)
+                self.mi_sets.append((mi, param, path))
+                log(f"  {param} of {mi.split('.')[-1]}: {tex.split('.')[0]} is shared with other outfits; yours goes to {path}")
             out = os.path.join(self.work, os.path.basename(f)[:-7] + ".png")
-            self.jobs.append({"out": out, "size": size if role in ("basecolor", "normal", "pbr", "hairmm") else 256,
+            self.jobs.append({"out": out, "size": hair_size if role == "hairmm" else
+                              size if role in ("basecolor", "normal", "pbr") else 256,
                               "role": role, "tiles": tiles, "mean_from": self.retail_png(f),
-                              "normal_dx": self.normal_dx, "asset": f, "path": tex})
+                              "normal_dx": self.normal_dx, "asset": asset, "path": path, "kind": self.kind})
             self.done.add(tex)
+            if role in ("basecolor", "hairmm") and set_name: self.preview.setdefault(set_name, out)
             if role == "hairmm":
                 # Master_Hair_M has no colour texture: the colour is RootColor -> TipColor along the strand (MultiMask).
                 # Take it from the model's hair texture (compose writes its average next to the PNG).
                 if mi and mi.startswith(owned): self.hair_mis.append((mi, out + ".json"))
                 else: log(f"  hair: {mi} is shared with other outfits: its colours stay the game's")
+
+    def mi_ref(self, mi):
+        """An MI for `b4bmod mi`: the copy in the mod folder if there is one (adopted, or edited before)."""
+        f = upkg.game_path_to_file(mi.split(".")[0], self.moddir)
+        return f if f and os.path.exists(f) else mi.split(".")[0]
+
+    def b4b(self, *args, what=""):
+        r = subprocess.run([sys.executable, self.b4bmod] + list(args) + ["--src", self.src], capture_output=True, text=True)
+        if r.returncode:
+            sys.stderr.write(r.stdout + r.stderr); die(f"{what or args[0]} failed")
+        return r
+
+    def copy_pkg(self, pkg, new, refs=()):
+        """A copy of a game package under a new path in the mod folder; returns its file."""
+        f = upkg.game_path_to_file(pkg.split(".")[0], self.src)
+        self.b4b("rename", f, new, "-o", self.moddir, *[x for r in refs for x in ("--ref", r)], what=f"copying {pkg}")
+        return upkg.game_path_to_file(new, self.moddir)
+
+    def adopt_mi(self, mi, owned):
+        """The slot's material instance, owned by the template's folder: a shared one (Holly_Hair_MI) is copied to
+        <folder>/Materials/ and every mesh written so far that uses it is repointed to the copy."""
+        pkg = mi.split(".")[0]
+        if pkg.startswith(owned): return mi
+        if pkg in self.adopted: return self.adopted[pkg]
+        f = upkg.game_path_to_file(pkg, self.src)
+        if not f or not os.path.exists(f): return None
+        cls, _ = main_class(f)
+        if cls != "MaterialInstanceConstant":
+            log(f"  {pkg.split('/')[-1]} is a master material ({cls}): its textures stay the game's"); return None
+        new = owned + "Materials/" + pkg.split("/")[-1]
+        self.copy_pkg(pkg, new)
+        name = pkg.split("/")[-1]
+        for mf in self.meshes:
+            if not os.path.exists(mf): continue
+            if not any(n == pkg for cp, cn, outer, n in upkg.Package(mf).imports):
+                continue
+            tmp = os.path.join(self.work, "repoint", "Gobi", "Content", os.path.basename(mf))
+            os.makedirs(os.path.dirname(tmp), exist_ok=True)
+            for ext in (".uasset", ".uexp"):
+                shutil.copyfile(mf[:-7] + ext, tmp[:-7] + ext)
+            self.b4b("rename", tmp, upkg.file_to_game_path(mf), "-o", self.moddir, "--ref", f"{pkg}={new}",
+                     what=f"pointing {os.path.basename(mf)} at {new}")
+            log(f"  {os.path.basename(mf)[:-7]}: slot material {name} -> {new} (a copy: the original is shared)")
+        self.adopted[pkg] = f"{new}.{name}"
+        return self.adopted[pkg]
 
     def run(self):
         if not self.jobs: return
@@ -254,11 +326,14 @@ class TexTool:
                 sys.stderr.write(r.stdout + r.stderr); die(f"texture encoding failed for {j['path']}")
             log(f"  {j['path'].split('/')[-1].split('.')[0]}: {j['role']} {j['size']}x{j['size']}")
         self.jobs = []
+        for mi, param, path in self.mi_sets:
+            self.b4b("mi", self.mi_ref(mi), "set", param, path, "-o", self.moddir, what=f"material {mi}: {param}")
+        self.mi_sets = []
         for mi, stats in self.hair_mis:
             c = json.load(open(stats))["color_linear"]
             root = ",".join(f"{x * HAIR_ROOT_DARKEN:.4f}" for x in c) + ",1"
             tip = ",".join(f"{x:.4f}" for x in c) + ",1"
-            r = subprocess.run([sys.executable, self.b4bmod, "mi", mi.split(".")[0], "set", "RootColor", root,
+            r = subprocess.run([sys.executable, self.b4bmod, "mi", self.mi_ref(mi), "set", "RootColor", root,
                                 "set", "TipColor", tip, "-o", self.moddir, "--src", self.src],
                                capture_output=True, text=True)
             if r.returncode:
@@ -285,21 +360,101 @@ def textures_for(manifest, mesh_file, tt, static=False):
             log(f"  texture set {set_name}: no slot of that name in {os.path.basename(mesh_file)}"); continue
         mi, params, master = slots[set_name]
         log(f"texture set {set_name} ({mi.split('.')[-1]}): tiles {[t['material'] for t in info['tiles']]}")
-        tt.compose_set(info, params, owned, master, mi)
+        tt.compose_set(info, params, owned, master, mi, set_name)
     tt.run()
 
 
 # ---- survivor -------------------------------------------------------------------------------------------------------
 
-def fit_args(o, keys=("bonemap", "drop", "weights", "twist")):
+def fit_args(o, keys=("bonemap", "drop", "weights", "twist", "facing")):
     a = []
     for k in keys:
         if o.get(k): a += ["--" + k, o[k]]
     for t in o.get("tex", []): a += ["--tex", t]
+    for m in o.get("drop_mat", []): a += ["--drop_mat", m]
     return a
 
 
+# ---- which template slot each of the model's materials goes to (--slot overrides) -----------------------------------
+SLOT_SKIP_RX = re.compile(r"(_lod$|teeth|glass|lens|eye|hidden|cloth\d*$|occ)", re.I)
+MAT_HAIR_RX = re.compile(r"hair|fur\b|ponytail|pony_?tail|afro|bangs?\b|fringe|braid|\bbun\b|mane|beard|mustache|"
+                         r"moustache|wig|sideburn", re.I)
+MAT_OVERLAY_RX = re.compile(r"lash|brow(?!n)|eyeline|eye_?liner|stubble", re.I)
+MAT_EYE_RX = re.compile(r"eye|iris|cornea|pupil|sclera", re.I)
+MAT_SKIN_RX = re.compile(r"skin|face|head|flesh|body|mouth|teeth|tongue|nail", re.I)
+MAT_CLOTH_ZONES = [(re.compile(r"pant|trouser|jean|short|skirt|leg|bottom|shoe|boot|sock|feet|foot|lower", re.I),
+                    re.compile(r"leg|pant|lower", re.I)),
+                   (re.compile(r"gear|bag|belt|hat|cap\b|helmet|glove|glass|accessor|strap|armou?r|mask|pouch|holster|"
+                               r"jewel|necklace|ear", re.I), re.compile(r"gear|acc", re.I)),
+                   (re.compile(r".", re.I), re.compile(r"torso|body|top|upper|jacket|shirt|arms?$", re.I))]
+
+
+def slot_kind(name, master):
+    m = (master or "").split(".")[-1]
+    if SLOT_SKIP_RX.search(name) or not master: return None
+    if "Hair" in m: return "lashes" if "lash" in name.lower() else "hair"
+    if "Head_M" in m or "Skin" in m: return "skin"
+    if "Outfit" in m or "Cloth" in m or "Gear" in m: return "cloth"
+    return None
+
+
+def auto_slots(mats, minfo, s3, user):
+    """{material: slot} for every kept material, and the dropped ones. --slot MAT=SLOT (or =drop) wins; the rest by
+    what the material looks like: alpha cards and hair names -> the hair slot (alpha kept, one colour), lashes/brows
+    -> the hair slot, eyes and skin -> the skin (head) slot, clothes -> the outfit's cloth slots by body zone.
+    Eye overlays (mostly transparent, e.g. VRM eye highlights) are dropped: an opaque slot would show them as cards."""
+    kinds = {}
+    for sname, mi, tex, master in s3:
+        k = slot_kind(sname, master)
+        if k: kinds.setdefault(k, []).append(sname)
+    skin = sorted(kinds.get("skin", []), key=lambda n: (0 if "head" in n.lower() else 1))
+    cloth = sorted(kinds.get("cloth", []), key=lambda n: (0 if re.search(r"body|torso", n, re.I) else 1))
+    hair = kinds.get("hair", [])
+    out, drop, why = {}, [], {}
+    single = len(mats) == 1
+    for m in mats:
+        if m in user or any(k.endswith("*") and m.lower().startswith(k[:-1].lower()) for k in user):
+            v = user.get(m) or next(v for k, v in user.items() if k.endswith("*") and m.lower().startswith(k[:-1].lower()))
+            if v.lower() == "drop": drop.append(m); why[m] = "--slot drop"
+            else: out[m] = v; why[m] = "--slot"
+            continue
+        inf = minfo.get(m, {})
+        clear = inf.get("alpha_clear", 0.0)
+        alpha = clear > 0.2 and (inf.get("blend", "OPAQUE") != "OPAQUE" or "alpha" in inf.get("textures", {}) or clear > 0.4)
+        # the material's name and its texture file names (MakeHuman eyes: material "low-poly", texture brown_eye.png)
+        n = m.lower() + " " + " ".join(os.path.basename(p).lower() for p in inf.get("textures", {}).values())
+        if MAT_OVERLAY_RX.search(n) or (MAT_HAIR_RX.search(n) and not MAT_EYE_RX.search(n)) or \
+                (alpha and not MAT_EYE_RX.search(n) and not MAT_SKIN_RX.search(n)):
+            if hair: out[m] = hair[0]; why[m] = "hair / alpha cards" if not MAT_OVERLAY_RX.search(n) else "lashes / brows (alpha)"
+            elif MAT_OVERLAY_RX.search(n): drop.append(m); why[m] = "lashes/brows, the template has no hair slot"
+            elif cloth: out[m] = cloth[0]; why[m] = "hair, but the template has no hair slot (renders opaque)"
+            continue
+        if MAT_EYE_RX.search(n):
+            if clear > 0.5 and re.search(r"highlight|extra|spec|reflect|shine|catch", n):
+                drop.append(m); why[m] = "eye highlight overlay (transparent)"; continue
+            if clear > 0.5 and hair:
+                out[m] = hair[0]; why[m] = "eye layer with alpha (e.g. iris): hair slot, masked, in the hair colour"
+                continue
+            if skin: out[m] = skin[0]; why[m] = "eyes (opaque, on the skin slot)"; continue
+        if (MAT_SKIN_RX.search(n) or single) and skin and not re.search(r"cloth|suit|shirt|pant", n):
+            out[m] = skin[0]; why[m] = "skin" if not single else "the model's only material (skin shader)"
+            continue
+        if not cloth:
+            if skin: out[m] = skin[0]; why[m] = "no cloth slot in the template"; continue
+            die(f"material {m!r}: {os.path.basename(s3[0][1])}'s slots have no cloth or skin material to put it on; "
+                f"--slot {m}=<slot>")
+        for rx_mat, rx_slot in MAT_CLOTH_ZONES:
+            if rx_mat.search(n):
+                hit = next((c for c in cloth if rx_slot.search(c)), cloth[0])
+                out[m] = hit; why[m] = "clothes"; break
+    log("materials -> slots (auto; override with --slot MAT=SLOT or --slot MAT=drop):")
+    for m in mats:
+        log(f"  {m:32s} -> {out.get(m, 'dropped'):12s} ({why.get(m, '')})")
+    return out, drop
+
+
 def survivor(o):
+    o.o["kind"] = "character"
     model = o.pos[0]
     src = src_dir(o.o)
     work = o.o["work"]
@@ -312,14 +467,19 @@ def survivor(o):
         f"{sum(len(a['bones']) for a in info['armatures'])} bones")
     s3 = mesh_slots(tp, src)
     slot_names = [s for s, *_ in s3]
-    user = dict(x.split("=", 1) for x in o.o["slot"])
-    slot3 = {}
-    for m in mats:
-        s = user.get(m) or next((x for x in slot_names if x.lower() == m.lower()), None)
-        if s is None:
-            die(f"material {m!r}: say which slot of {os.path.basename(tp)} it goes to: --slot {m}=<slot> "
-                f"(slots: {slot_names})")
-        slot3[m] = s
+    user = {}
+    for x in o.o["slot"]:
+        if "=" not in x: die(f"--slot {x!r}: write --slot <your material>=<slot> (or =drop)")
+        a, b = x.split("=", 1)
+        if a not in mats and not a.endswith("*"):
+            die(f"--slot {x}: the model has no material {a!r} (its materials: {mats})")
+        if b.lower() != "drop" and b.lower() not in {n.lower() for n in slot_names}:
+            die(f"--slot {x}: {os.path.basename(tp)} has no slot {b!r} (slots: {slot_names})")
+        user[a] = next((n for n in slot_names if n.lower() == b.lower()), b)
+    slot3, drop = auto_slots(mats, info.get("material_info", {}), s3, user)
+    o.o["drop_mat"] = drop
+    mats = [m for m in mats if m not in drop]
+    if not mats: die("every material of the model is dropped: nothing left to fit")
     bc3 = {s: basecolor_of(tex) for s, mi, tex, master in s3}
     master3 = {s: master for s, mi, tex, master in s3}
     # texture set of a 3P slot = the slot itself, unless another slot samples the same base colour texture
@@ -377,6 +537,7 @@ def survivor(o):
         skmgltf.import_gltf(fp, manf["lods"], out_file(fp, moddir))
         mans.append((manf, fp))
     tt = TexTool(o.o)
+    tt.meshes = [out_file(m, moddir) for _, m in mans]
     # a texture set is named after the 3P slot whose material instance owns it; compose each once
     sets = {}
     for man, _ in mans:
@@ -387,6 +548,12 @@ def survivor(o):
                 if old is None: cur["tiles"].append(t)
                 elif old.get("absent") and not t.get("absent"): cur["tiles"][cur["tiles"].index(old)] = t
     textures_for({"sets": sets}, tp, tt)
+    for (man, _), tag in zip(mans, ("3p", "fp")):
+        prev = {slot: tt.preview[st] for slot, st in man["slots"].items() if st in tt.preview}
+        json.dump(prev, open(os.path.join(work, f"preview_textures_{tag}.json"), "w"), indent=1)
+    log(f"check it before the game: blender -b --python {os.path.join(HERE, 'blender', 'preview.py')} -- "
+        f"{os.path.join(work, 'fit3p', 'lod0.glb')} preview.png --textures {os.path.join(work, 'preview_textures_3p.json')}"
+        f" --views front,side,back [--pose test]")
     log("done:", moddir)
 
 
