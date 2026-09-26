@@ -8,7 +8,7 @@ The game gives heroes two kinds of it, and a custom mesh can use both without ne
   2. Cloth. A skirt becomes a cloth section: `cloth_region` separates its faces into an object the importer turns into
      its own section, and builds a low-poly simulation mesh around it (rings from the waist down, the waist ring fixed);
      modkit/cloth.py writes it into the template's clothing asset and maps the render vertices onto it.
-How it works: docs/investigations/mesh-mods.md §13 (b4b-coop repository).
+How it works: docs/investigations/mesh-mods.md §14 (b4b-coop repository).
 """
 import bmesh, math, re
 from mathutils import Vector

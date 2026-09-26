@@ -52,8 +52,12 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    full rig works too), and rigs with other names that say what each bone is (`upper_arm.L`, `Arm_R`,
    `leg_joint_L_2` ...). Unrigged works too, in an A-pose, T-pose or with the arms hanging down (the weights come
    from the game's mesh; a model built from named parts like `head`, `torso`, `arm-left` keeps each part on its
-   limb). Any size and proportions: it is scaled to the survivor and its limbs are fitted onto the survivor's
-   skeleton, so the game's animations play right. Clothes/hair/eyes may be separate objects and materials.
+   limb). Any size and proportions: it is scaled to the survivor's height and **keeps its own proportions** in third
+   person (short legs stay short, a long neck stays long: the game fits its animations to each mesh's skeleton, as
+   it does for the smaller female survivors); the first-person arms are fitted onto the survivor's arms, so hands
+   hold the weapons like the game's. `--proportions fit` stretches the third-person model onto the survivor's
+   skeleton instead (the old behaviour; a number such as `0.5` goes halfway). Clothes/hair/eyes may be separate
+   objects and materials.
 2. **Pick the outfit to replace** (it keeps its skeleton, animations, physics). An Elite outfit is a whole survivor,
    head included:
    ```
@@ -84,7 +88,8 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
      alpha/opacity. Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are DirectX style.
    - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole),
      `--bonemap map.json` (your bone names -> the game's), `--weights transfer` (take the game mesh's weights),
-     `--max-texture 2048` (smaller textures: an add-on about 4x smaller), `--hair tint` (the game's hair shader, one
+     `--max-texture 2048` (smaller textures: an add-on about 4x smaller), `--proportions fit|0.5` (third person:
+     stretch onto the survivor's skeleton instead of keeping the model's proportions), `--hair tint` (the game's hair shader, one
      colour: [Hair](#hair)), `--work DIR` (keep the intermediate
      glTF/PNGs there). All of them: `b4bmod model help`.
 5. **Check** before the game (optional): render the fitted model with the textures made for the game, standing and
@@ -193,8 +198,11 @@ What the survivor pipeline prints, and what to do about it.
 | `the model's skeleton: no bone found for pelvis, ...` | The bone names didn't say which bone is which. It lists what it recognised and writes `bonemap_template.json` (every bone of your model) into the work folder: fill in the missing ones (`"Bone_023": "upperarm_l"`), delete the rest, pass `--bonemap bonemap.json`. The b4b bones you need: pelvis, spine_01, head, upperarm/lowerarm/hand and thigh/calf/foot with `_l`/`_r` |
 | `--bonemap: 'x' is not a template bone` / `the model has no bone 'x'` | a typo on the right / left side of your bone map |
 | `orient: ... scale 0.01` or `scale 100` with a warning | the file's units are off (centimetres read as metres, or a scaled armature). The fit still works; if the model looks wrong, apply the scale in Blender (Ctrl+A > All Transforms) and export again |
-| `proportions: segments stretched ... calf x1.80` | your model's limbs are longer/shorter than the survivor's: they are stretched onto the survivor's skeleton so the animations fit. Big factors (a chibi, a giant) look stretched; pick a survivor with similar proportions (heroes differ a little) |
-| `torso ... fitted as one piece, stretched x0.6` | the same for the torso and neck (fitted as one piece each, so they don't bulge in bands) |
+| `proportions (model / survivor, same height): legs x0.67, torso x1.64, neck x0.70 ...; kept` | your model's segments against the survivor's at the same height. By default (`--proportions own`) they are **kept**: the third-person mesh gets a skeleton with your joints and the game fits the animations to it (feet on the ground, pelvis at your model's height). The first-person arms are always fitted onto the survivor's (`first-person arms: fitted onto the FP skeleton`): the game moves every first-person bone itself |
+| `... stretched onto the survivor's joints` / `legs, torso differ by more than 25 %` | you ran `--proportions fit`: the model is stretched/squashed onto the survivor's skeleton (what the kit did before). Drop the option to keep your proportions, or give a number between 0 (fit) and 1 (own) |
+| `pelvis 75.0 cm above the ground (survivor 102.9), head joint 164.9 cm ...` | where your model's hips and head end up. Very short or very long legs are fine; the game scales the hip motion to your pelvis height |
+| Third person: the hands don't meet the weapon's grips | your model's arms are much longer or shorter than the survivor's (the proportions line says `arms x...`): the hands stay where your arms end. `--proportions 0.5` (halfway) or `fit` moves them to the survivor's; a survivor closer to your model's build (the female survivors are smaller) helps too |
+| `torso ... fitted as one piece, stretched x1.00` | torso and neck are turned (and with `fit` stretched) as one piece each, so they don't bulge in bands |
 | `shape keys ... removed` | face expressions / morphs: survivors have none; a mouth-open and a blink key are used to rig the face first ([Talking and blinking](#talking-and-blinking)) |
 | `face: ... from scaled from the template` | that part of the face wasn't found on your model (see [Talking and blinking](#talking-and-blinking)); check the mouth with the face preview |
 | The lip line opens in the wrong place (upper lip moves with the jaw) | give the model a mouth-open shape key or lip bones, or `--face off` |

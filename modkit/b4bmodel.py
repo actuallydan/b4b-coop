@@ -10,8 +10,11 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
         <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
         (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
         Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
+        [--proportions own|fit|0..1]   own (default): the model keeps its own limb/torso/neck lengths in third
+                                person (the mesh's skeleton gets its joints; the game retargets the animations);
+                                fit: stretched onto the survivor's joints; a number blends. FP arms always fit
         [--hair-physics auto|off]  auto: long hair swings on the survivor's physics hair bones (templates with a
-                                   hair chain: Holly, Mom, ...; mesh-mods.md §13) [--hair-swing 0..1]
+                                   hair chain: Holly, Mom, ...; mesh-mods.md §14) [--hair-swing 0..1]
         [--cloth auto|off|MAT,...]  auto: a skirt/dress becomes cloth (templates with a clothing asset: Holly Elite 00)
         [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
                                 tint = the game's hair shader, one colour root to tip (your texture's average)
@@ -583,14 +586,16 @@ def survivor(o):
     # 3P
     d3 = os.path.join(work, "fit3p")
     run_blender(["character", "--template", template_glb(tp, work), "--source", os.path.abspath(model), "--out", d3,
-                 "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06")] + fit_args(o.o) + atlas_args +
+                 "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06"),
+                 "--proportions", o.get("proportions") or "own"] + fit_args(o.o) + atlas_args +
                 slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")] + dangle_args(o.o, tp, src))
     man3 = json.load(open(os.path.join(d3, "manifest.json")))
     # the game's hair shader tints vertex-coloured strands (retail: mostly black); the colour-texture material doesn't
     # (the cultist's hair is white, the default)
     hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)} \
         if o.get("hair", "texture") == "tint" else {}
-    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair, bones=face_bone_moves(man3),
+    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair,
+                        bind_bones=bind_bone_moves(man3), bones=face_bone_moves(man3),
                         cloth=man3.get("extras", {}).get("cloth"))
     face_preview(o.o, tp, man3, work)
     mans = [(man3, tp)]
@@ -890,6 +895,11 @@ def retarget_skins(fp_mesh, tt, o):
     log(f"skins: {n} skin material instance(s) of {rel} now use the model's textures")
 
 
+def bind_bone_moves(man):
+    """Bind skeleton of a model fitted with its own proportions (b4bfit rebind_template): {bone: UE cm} for skmgltf."""
+    return {b.lower(): blender_to_ue(p) for b, p in man.get("extras", {}).get("bind_bones_m", {}).items()}
+
+
 def dangle_args(o, tp, src):
     """b4bfit flags for secondary motion (blender/b4bdangle.py, cloth.py): --hair-physics auto puts the back hair on
     the template's simulated hair chain (if its physics asset has one), --cloth auto|MAT,... makes the skirt cloth
@@ -925,7 +935,7 @@ def face_preview(o, skm_file, man, work):
     moves = face_bone_moves(man)
     if not moves: return
     s = skm.SkeletalMesh(skm_file)
-    skmgltf.set_bone_positions(s, {k.lower(): v for k, v in moves.items()})       # in memory: the rest pose as written
+    skmgltf.set_bone_positions(s, {**bind_bone_moves(man), **moves})       # in memory: the rest pose as written
     rs = s.m["refskel"]
     names = [s.name(b[:2]) for b in rs["bones"]]
     rest = {n: [names[b[2]] if b[2] >= 0 else None, list(p[0:4]), list(p[4:7])] for n, b, p in

@@ -12,7 +12,7 @@ native TransitionUp/DownSkinData. The fabric is cooked by the engine at load. Re
 has one FMeshToMeshVertData per vertex: position/normal/tangent = sum_i bary_i * (V_i - N_i * dist) over a simulation
 triangle (V, N = stored vertices/normals: stored normals point along -cross(B-A, C-A)), plus the LOD's cloth vertex
 buffer (all cloth sections' records in section order, per section (offset, base vertex)). Checked on retail Holly
-Elite 00 (flannel + sleeves). docs/investigations/mesh-mods.md §13.
+Elite 00 (flannel + sleeves). docs/investigations/mesh-mods.md §14.
 """
 import copy, math, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

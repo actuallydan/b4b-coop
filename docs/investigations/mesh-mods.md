@@ -1,6 +1,6 @@
 # Mesh mods: B4B skeletal mesh format, writer and glTF import (#18, #21, epic #23)
 
-Status 2026-09-25, build 14216215. Branches `models-meshes`, `models-fullmodel`. Tools: `modkit/upkg.py` (package
+Status 2026-09-26, build 14216215. Branches `models-meshes`, `models-fullmodel`, `models-proportions` (§13). Tools: `modkit/upkg.py` (package
 reader/writer, property dump, MI reader), `modkit/skm.py` (SKM render data parse/edit/write),
 `modkit/skmgltf.py` (glTF/FBX export/import), `modkit/sm.py` (static meshes), `modkit/b4bmodel.py`
 (model -> survivor / weapon pipeline, `b4bmod survivor|weapon`), `modkit/blender/b4bfit.py` (headless Blender fitting),
@@ -40,6 +40,9 @@ reader/writer, property dump, MI reader), `modkit/skm.py` (SKM render data parse
 - **Characters found online** (§10): VRM, Rigify, Mixamo, UE-named and unrigged-in-parts models with no hand-made
   settings (bone maps, slots, shared textures, T-pose all automatic), live on 5 survivors; faces follow head/jaw only
   (the game animates faces with face bones driven by a PoseAsset, §10).
+- **Own proportions** (§13): `3P_Biped_SK` takes body bone translations from each mesh's bind skeleton (retail female
+  heroes use it), so 3P models keep their own limb/torso/neck lengths (mesh bind skeleton rewritten); FP arms stay
+  fitted (FP skeleton: all bones animated). Live: short-legged monster vs the old stretched fit side by side.
 - No retail survivor, FP-arms or weapon mesh has morph targets (0 of 320 hero/weapon SKMs): faces are bone-driven, so
   the importer never has to write morphs. Weapon **skins** are material sets for the retail UVs: the pipeline points
   every skin MI of the weapon at the model's textures (a player with a skin equipped sees the model as made).
@@ -226,7 +229,7 @@ Import rules (skmgltf.py):
 - Sockets: the FP weapon SKM has `SkeletalMeshSocket` exports relative to `gun` (`muzzle`, `holo`, `scope`, `laser`,
   ...); the 3P weapon skeleton has a `muzzle` **bone**. `skmgltf.py import --socket muzzle=x,y,z` / `--bone muzzle=...`
   move them (b4bmodel does it from the model's muzzle marker or barrel tip).
-- Not supported: cloth on a template without a clothing asset (skirts on one that has: §13), morph targets (heads), new bones
+- Not supported: cloth on a template without a clothing asset (skirts on one that has: §14), morph targets (heads), new bones
   (the mesh's ref skeleton must be a subset of the Skeleton asset), new material masters.
 
 ## 4. In-game results (live, 2026-09-25)
@@ -254,7 +257,7 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
 - Face animation: the model's face is skinned to `head` (and jaw if the rig has one); B4B's face bones (eyelids, lips)
   don't move it. What following the game's face animation would take: §10.
 - New bones (rebuild the ref skeleton from the Skeleton asset), new material masters: not supported. Cloth and swinging
-  hair: §13.
+  hair: §14.
 - Hitboxes follow the template's physics asset; everyone sees their own add-ons (addons.md §7).
 
 ## 6. How the model pipeline works (`b4bmodel.py`, `blender/b4bfit.py`)
@@ -280,7 +283,9 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
   MakeHuman's Rigify helpers `DEF-elbow-helper.L`, `DEF-knee-helper.L` hang off ORG bones and stayed behind before:
   detached upper arms, jagged knees, the mouth left under the chin). Jaw: re-weighted only (joint not moved).
   Result: 0.00 cm joint error on all test rigs. The armature modifier is then applied: the mesh sits in the template's
-  bind pose (A-pose), which is what the game skins against.
+  bind pose (A-pose), which is what the game skins against. Since §13 this full fit is `--proportions fit` (and
+  always used for FP arms); the 3P default only turns the segments and gives the mesh a bind skeleton with the
+  model's own joints.
 - **Weights**: source groups renamed to template bones; unmapped source bones (twist, extra face bones) go to the
   nearest mapped ancestor. `--twist template` (default) splits each limb weight among the template's twist bones
   (`upperarm_twist_01`, `lowerarm_twist_01`, `elbow_twist_01`, `wrist_twist_01`, `thigh_twist_01`, `calf_twist_01`,
@@ -383,9 +388,9 @@ and FP arms, no `--slot` given.
 | Model | Source rig | Survivor | Worked | Still off |
 |---|---|---|---|---|
 | Shino (VRoid, 17 materials, alpha hair, 42 shape keys) | VRM `J_Bip_*` + 100 hair/skirt joints | Holly Elite 00 | bones 52/158 mapped (VRoid table), auto slots: skin/face/mouth/eyewhite -> Head atlas, clothes -> Body atlas + Gear, hair + lashes/brows/eyeline + iris -> Hair (masked), highlights dropped; live: 3P (host, others with add-on), FP arms, idle/run | hair one colour (fixed in §11: the "light blue" was a grey texture without its MToon colour), skirt and hair rigid, no eyelid/mouth animation |
-| Horror Monster (2.4 m, one material) | Mixamo, 2-chain fingers | Walker Elite 00 | 34/41 mapped; textures: FBX linked the mask map as base colour -> reclassified by name, Unity mask map -> PBR; live: 3P idle/run, FP claws holding a bat | legs stretched x1.7-1.8 (short legs on the survivor skeleton) |
+| Horror Monster (2.4 m, one material) | Mixamo, 2-chain fingers | Walker Elite 00 | 34/41 mapped; textures: FBX linked the mask map as base colour -> reclassified by name, Unity mask map -> PBR; live: 3P idle/run, FP claws holding a bat | legs stretched x1.7-1.8 (short legs on the survivor skeleton; model proportions kept since §13) |
 | "bulky" (MPFB, 2.15 m, afro, overalls) | UE4 mannequin names | Hoffman Elite 00 | 53/53; live as a bot: run, aim, shoot | afro hair renders as one grey-brown colour |
-| "shorty" (MPFB, 1.27 m, ponytail) | Rigify full rig (DEF- + ORG/MCH/face) | Doc Elite 00 | 54 mapped (Rigify table); after `own_bones`: no detached arms/knees/mouth; live: 3P, FP arms | neck squashed (x0.39: Rigify neck starts below the shoulders); thighs x1.5 |
+| "shorty" (MPFB, 1.27 m, ponytail) | Rigify full rig (DEF- + ORG/MCH/face) | Doc Elite 00 | 54 mapped (Rigify table); after `own_bones`: no detached arms/knees/mouth; live: 3P, FP arms | neck squashed (x0.39: Rigify neck starts below the shoulders); thighs x1.5 (the model's own since §13) |
 | Blocky (Kenney, parts: head/torso/arm-left/...) | none, arms hanging down | Karlee Elite 00 | un-posed 53 deg into the A-pose, parts keep their limb; live: 3P after the LOD fix | boxes deform like boxes; arms offset from the survivor's shoulders |
 | CesiumMan | `Skeleton_arm_joint_L__4_`, `leg_joint_R_2` | Walker | 19/19 mapped by the generic reader (numbered chains, neck_2 = head) | not taken into the game (logo texture) |
 
@@ -585,7 +590,83 @@ Open: the lower lip pouts a lot on 25 deg lip_lower curls (the curl moves a larg
 models without a mouth interior show a hole; painted anime eyes only half close; no eyelid detection without a blink key
 beyond the template's lid weights. `face say` (SayLine) doesn't find events (naming above).
 
-## 13. Secondary motion: swinging hair, skirts as cloth (models-cloth, 2026-09-26)
+## 13. Characters keep their own proportions (models-proportions, 2026-09-26)
+Goal: a model with other proportions than the survivor (short legs, long neck, a giant torso) looks like itself in
+third person instead of being stretched onto the survivor's joints (§10: monster legs x1.8, shorty neck x0.39).
+
+**The game already retargets per mesh.** `3P_Biped_SK`'s `BoneTree` (tagged property, `TranslationRetargetingMode`
+per bone; `upkg.py props 3P_Biped_SK.uasset`, names from its native `FReferenceSkeleton` after the guid flag):
+- `Skeleton` (translation from the **mesh's** reference skeleton, rotation from the animation): spine_isolate,
+  spine_01..03, neck_01/02, head, upperarm/lowerarm/hand, thigh/calf/foot/ball, all twist bones, backpack, weapon,
+  camera, sleeve/chain/gasmask bones.
+- `OrientAndScale` (animated translation turned and scaled by mesh ref / skeleton ref): **pelvis** (so the root motion
+  height follows the mesh's pelvis height), clavicles, fingers, face bones, `ik_hand_root/gun/l/r`.
+- `AnimationRelative`: `ik_foot_l/r`; `Animation`: root, ik_foot_root, hair_*, camera_movement.
+- Retail uses it: Holly/Doc/Karlee/Mom 3P meshes have a smaller skeleton than Walker/Hoffman with **other ratios**
+  (pelvis 94.8 vs 102.9 cm, head joint 154.2 vs 165.0, calf 39.6 vs 46.4 (x0.85), thigh 41.5 vs 42.4 (x0.98),
+  lowerarm 23.7 vs 26.1, clavicle 11.5 vs 14.0) with the same local bind **rotations** and the same animations. IK
+  bones sit on their FK bone (`ik_hand_gun` = `ik_hand_r` = hand_r, `ik_hand_l` = hand_l, `ik_foot_l` = foot_l);
+  `weapon` keeps x and scales z with the shoulder height (118.98 vs 128.21).
+- `FP_Biped_SK`: **every bone `Animation`** and all FP meshes (Holly's too) share one bind pose: first-person arms can't
+  keep other lengths (the animation would put the bones back); they stay fully fitted.
+
+**Pipeline** (`b4bfit.py`, 3P only; `--proportions own` default, `fit` = the old full fit, a number = geometric blend
+of the segment lengths):
+- After the uniform scale (head-to-feet height), each mapped segment is only **turned** onto the template's direction
+  (torso and neck still as one piece each), joints chained through the **template's** hierarchy from the pelvis
+  (source hierarchies differ: Rigify hangs thighs and shoulders off `ORG-` bones), then the whole model is moved so its
+  soles (lowest foot/ball-weighted vertices) are on the template's ground.
+- `rebind_template`: the template armature and meshes are posed onto those joints (per segment turn + stretch;
+  unmapped bones with their mapped ancestor, IK bones with their FK bone, `weapon` z by the shoulder-height ratio) and
+  that becomes their rest pose, so twist weights and the face step compare against a template of the same shape.
+  Bind rotations are unchanged (animations need them).
+- The moved bones go to manifest `extras.bind_bones_m`; `skmgltf.import_gltf(bind_bones=)` writes them into the mesh's
+  `FReferenceSkeleton` (positions only, rotations kept; parents first) before reading the glTF (face bones after), so the joint check
+  compares against the new bind pose (0.000 cm on all test models).
+- Log: `proportions (model / survivor, same height): legs x0.67, torso x1.64, neck x0.70, arms x0.94 ...` then pelvis
+  and head joint heights and the ground shift; `bind skeleton: N bones moved`.
+- Unrigged models: unchanged (no joints to keep; placed by bounds, weights from the template).
+
+Test set (proportions model / survivor after the uniform scale, 3P):
+
+| Model | Survivor | legs | torso | neck | arms | shoulders | pelvis (survivor) |
+|---|---|---|---|---|---|---|---|
+| Horror Monster (Mixamo) | Walker E00 | x0.67 | x1.64 | x0.70 | x0.94 | x1.21 | 75.0 cm (102.9) |
+| "shorty" (Rigify) | Doc E00 | x0.91 | x1.08 | x2.58 (Rigify neck starts at the chest) | x0.94 | x1.22 | 73.6 cm (94.8) |
+| "bulky" (UE names) | Hoffman E00 | x1.03 | x1.11 | x0.73 | x1.02 | x0.91 | 99.1 cm (102.9) |
+| Shino (VRoid) | Holly E00 | x1.08 | x0.95 | x0.69 | x0.98 | x0.79 | 104.2 cm (94.8) |
+
+The old full fit stretched each of these back to x1.00 (monster calves x1.8, torso x0.62; shorty neck x0.39; every
+model's neck ~x1.4). Offline: joint error 0.00 cm, the cooked meshes' bind rotations identical to the template's
+(`skm.py` re-read), IK bones on their FK bones, `preview.py --pose test` bends cleanly. Previews:
+`~/.local/share/b4b-coop/proportions/prev/{monster_front_cmp,shorty_cmp}.png` (source / fit / own / own posed).
+First Rigify run chained through the source hierarchy: its thighs and shoulders hang off `ORG-` bones, so they stayed
+at the template's joints while the spine moved (a giraffe neck); fixed by chaining through the template's tree.
+
+Live (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host and client 2 with the add-ons (`addons_dir=`), client 3
+`addons=0`; Evansburgh B saferoom; outfits `monster`, `shorty`, `bulky`, `shino` (own) and `monsterfit`,
+`shortyfit` (`--proportions fit`); screenshots `~/.local/share/b4b-coop/proportions/shots/`, not committed):
+- `before_after_monster_saferoom.png`: bot in `monsterfit` (left: stilt legs, short torso) next to client 2 in
+  `monster` (right: the model's big torso and short legs), both standing on the floor, heads at the same height.
+- Client 2 as `monster`, `shorty`, `shino` seen by the host holding the SMG with both hands (`h_sees_monster_front.png`,
+  `pair_shorty.png`, `pair_shino_bulky.png`: bot `bulky`); bot `monster` running back to the host (`run_crops.png`).
+- Client 2 first person as `monster` (arms always fully fitted): SMG, AR, pistol (`c2_fp_smg.png`,
+  `c2_fp_primary.png`, `c2_fp_pistol.png`), grips as before.
+- Client 3 without the add-on: `mdl dump` shows the survivors' base pieces (`3P_Walker_Torso_02` ...), screenshot
+  `c3_noaddon.png`.
+- No `LogSkeletalMesh`/`LogAnimation`/Fatal lines in the three logs. `tools/e2e.py --quick --no-lock`: 14/14.
+
+- After merging the face rig (§12, same run of `b4bfit`: body bind skeleton first, face bones after, both in the
+  mesh's reference skeleton; joint check 0.000 cm): Fort Hope, client as `shino` (face rigged, own proportions) and
+  `monster` seen by the host (`fh_merged_shino.png`; `before_after_monster_forthope.png`: the old stretched fit from
+  §10 left, now right). `e2e.py --quick --no-lock` 14/14 on the merged build.
+
+Tradeoffs / limits: the hitboxes are the template's physics bodies on the moved bones (sizes unchanged); very long or
+short arms keep their own length, so the 3P hands may sit off the weapon's grips (the test set's arms are within 6 % of
+the survivors'; `--proportions 0.5` or `fit` if a model shows it); first-person arms always take the survivor's
+proportions (FP skeleton); unrigged models are placed by their bounds as before. Not seen: crouch, reload, climbing.
+
+## 14. Secondary motion: swinging hair, skirts as cloth (models-cloth, 2026-09-26)
 Custom long hair and skirts used to move rigidly with head/pelvis. Code: `modkit/blender/b4bdangle.py` (called from
 `b4bfit.py` 3P, `--hair_bones`, `--cloth`), `modkit/cloth.py` (template inspection, clothing asset writer, render
 mapping), `modkit/uprops.py` (tagged-property tree parse/write, byte-identical on retail cloth/PA exports),
@@ -646,7 +727,9 @@ controller):** the skirt sways while turning/walking and flares/trails behind wh
 hair_00..02 (deltas 5-23 deg while moving), on host and client; no cloth/skeletal-mesh errors in either log. First
 build (Body MI, one-sided) showed see-through slits between pleats when the cloth moved; on the two-sided MI none seen.
 Screenshots (presented frames, not committed): `~/.local/share/b4b-coop/cloth/shots3/` (`w_best.png` running,
-`w_grid.png` sequence, `cl_grid.png` client view), first build `shots/run3_skirt.png` (slits). `e2e --quick`: 14/14.
+`w_grid.png` sequence, `cl_grid.png` client view), first build `shots/run3_skirt.png` (slits). `e2e --quick`: 14/14. After merging §13 (own proportions, default: Shino's bind
+skeleton moved, waist 114 cm) the same build and live run: skirt and hair still swing (`shots4/running_best.png`,
+`shots4/grid.png`); the chain/sim are built after the template is rebound, so they use the model's joints.
 
 Open: only Holly Elite 00 tested (other cloth templates should work: same writer, their asset's PA/config); a
 template without a clothing asset can't get cloth (adding the exports/imports needs a package writer that adds
