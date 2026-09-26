@@ -121,7 +121,9 @@ staying open (still all 27 five minutes later). Evidence they are Steam's, not t
   `relay network 100 ... POPs=35: OK. Relays: 25 valid ...`. It is Steam Datagram Relay pinging its relay POPs, which
   Steam does whenever relay access is initialised or refreshed (by the game, by Steam, by Steam P2P use). A Steam P2P
   join between two local copies did not trigger it (session `relay=0`).
-Verdict: outside our promise (the game's own UDP sockets), like Steam's networking in any Steam game; on Windows the
+Verdict: fine. The promise is peer-to-peer play without official game servers, not an air gap (Steam is how friends
+connect; Dan, 2026-09-26); the loopback binding covers the game's own UDP sockets. Like Steam's networking in any
+Steam game; on Windows the
 same code is steamclient64.dll, whose binds the hook already leaves alone. Loopback-binding them would cut Steam off
 from its relays, which Steam P2P joins rely on. The e2e check now reports these as
 "Steam's native client" (ss line without wineserver) and fails only on sockets made through Wine's ws2_32, sampled

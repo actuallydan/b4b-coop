@@ -346,8 +346,8 @@ Known issues / open:
   simulated join requests verified on one account; the real callback, the Join Game menu and Steam-initiated launch
   need the two-account plan in docs/investigations/steam-invites.md (#10). Local copies on one account overwrite each
   other's rich presence.
-- Steam's own relay sockets (in-process steamclient) bind 0.0.0.0; outside the game-socket loopback promise (Dan to
-  confirm the wording).
+- Steam's own relay sockets (in-process steamclient) bind 0.0.0.0. Fine: the promise is peer-to-peer play without
+  official game servers (Steam is how friends connect), not an air gap; only the game's own UDP stays on loopback.
 - A client that disconnects before the saferoom-exit charge keeps its burn card. Skull totem points and duffel-bag
   rewards reach the client (verified, client-rewards.md §6b), but a remote player's duffel roll can't see what they
   own, so they may get a product they already have (a no-op).
