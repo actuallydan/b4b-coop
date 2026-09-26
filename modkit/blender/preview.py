@@ -128,6 +128,8 @@ if opts["textures"]:
                 nm.node_tree.links.new(t.outputs["Color"], b.inputs["Base Color"])
                 if "haircolor_bc" in p.lower():                     # hair colour texture: A = strands (masked)
                     nm.node_tree.links.new(t.outputs["Alpha"], b.inputs["Alpha"])
+            if not b.inputs["Alpha"].is_linked:
+                t.image.alpha_mode = "CHANNEL_PACKED"   # A is a mask for the game's shader, not opacity (else black)
             b.inputs["Roughness"].default_value = 0.7
             nm.use_backface_culling = m.use_backface_culling
             o.data.materials[i] = nm

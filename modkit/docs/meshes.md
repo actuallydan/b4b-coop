@@ -68,7 +68,8 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    (masked by the texture's alpha, in your texture's own colours: see [Hair](#hair)), clothes on the outfit's cloth slots by body zone (tops,
    trousers/shoes, gear), eye highlights (transparent overlays) left out. To choose yourself: `b4bmod mesh info
    <outfit>` lists the slots (`mat 4 ... Head`, `mat 5 ... Torso`), then `--slot <your material>=<slot>` or
-   `--slot <your material>=drop`; the rest stays automatic.
+   `--slot <your material>=drop`; the rest stays automatic. Objects without a material are called `none`: they are
+   left out unless you place them (`--slot none=<slot>`, and a texture with `--tex none=<image>`).
 4. **Run the pipeline** (3P + FP arms + textures, then the add-on):
    ```
    b4bmod survivor mymodel.fbx ^
@@ -85,7 +86,10 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
      folder), or given: `--tex jacket=textures/Jacket_` (a file prefix or a folder). File names win over how a
      texture is wired (a mask map plugged into base colour is used as a mask map). Understood: base colour,
      normal, roughness, gloss/smoothness, metallic, AO, ORM, Unity mask maps (R metallic, G AO, A smoothness),
-     alpha/opacity. Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are DirectX style.
+     alpha/opacity. Maps named after a colour image are taken with it (`head.png` -> `head_n.dds`, `head_ao.dds`,
+     `head_rough.png`), also when the material links only the colour. PNG, JPEG, TGA, BMP, WebP and **DDS**
+     (BC1-BC7, as game files use) are read. Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are
+     DirectX style (two-channel BC5 and DXT5nm normal maps are understood).
    - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole),
      `--bonemap map.json` (your bone names -> the game's), `--weights transfer` (take the game mesh's weights),
      `--max-texture 2048` (smaller textures: an add-on about 4x smaller), `--proportions fit|0.5` (third person:
@@ -136,9 +140,10 @@ can't find is guessed from the survivor's face scaled to yours (`scaled from the
 - `--face off` leaves the face on the head bone (no talking or blinking), as before.
 
 ## Swinging hair and skirts
-Two options make long hair and skirts move with the character instead of sticking to the head and hips:
+Long hair and skirts move with the character instead of sticking to the head and hips, whenever the survivor/outfit
+supports it (on by default; `--hair-physics off` / `--cloth off` turn them off):
 ```
-b4bmod survivor model.vrm --outfit .../3P_Holly_Elite_00_SKM ... --hair-physics auto --cloth auto
+b4bmod survivor model.vrm --outfit .../3P_Holly_Elite_00_SKM ...
 b4bfit: hair: 3859 of 13057 hair vertices on the survivor's physics hair bones (hair_00,hair_01,hair_02)
 b4bfit: cloth: ['F00_001_01_Bottoms_01_CLOTH'] -> 568 cloth faces, simulation mesh 7x20 (140 vertices), waist 105 cm, hem 72 cm
   cloth: section on slot flannel1 (two-sided variant of Body)
@@ -203,7 +208,6 @@ What the survivor pipeline prints, and what to do about it.
 |---|---|
 | `the model's skeleton: no bone found for pelvis, ...` | The bone names didn't say which bone is which. It lists what it recognised and writes `bonemap_template.json` (every bone of your model) into the work folder: fill in the missing ones (`"Bone_023": "upperarm_l"`), delete the rest, pass `--bonemap bonemap.json`. The b4b bones you need: pelvis, spine_01, head, upperarm/lowerarm/hand and thigh/calf/foot with `_l`/`_r` |
 | `--bonemap: 'x' is not a template bone` / `the model has no bone 'x'` | a typo on the right / left side of your bone map |
-| `orient: ... scale 0.01` or `scale 100` with a warning | the file's units are off (centimetres read as metres, or a scaled armature). The fit still works; if the model looks wrong, apply the scale in Blender (Ctrl+A > All Transforms) and export again |
 | `proportions (model / survivor, same height): legs x0.67, torso x1.64, neck x0.70 ...; kept` | your model's segments against the survivor's at the same height. By default (`--proportions own`) they are **kept**: the third-person mesh gets a skeleton with your joints and the game fits the animations to it (feet on the ground, pelvis at your model's height). The first-person arms are always fitted onto the survivor's (`first-person arms: fitted onto the FP skeleton`): the game moves every first-person bone itself |
 | `... stretched onto the survivor's joints` / `legs, torso differ by more than 25 %` | you ran `--proportions fit`: the model is stretched/squashed onto the survivor's skeleton (what the kit did before). Drop the option to keep your proportions, or give a number between 0 (fit) and 1 (own) |
 | `pelvis 75.0 cm above the ground (survivor 102.9), head joint 164.9 cm ...` | where your model's hips and head end up. Very short or very long legs are fine; the game scales the hip motion to your pelvis height |
@@ -214,13 +218,27 @@ What the survivor pipeline prints, and what to do about it.
 | The lip line opens in the wrong place (upper lip moves with the jaw) | give the model a mouth-open shape key or lip bones, or `--face off` |
 | `unrigged: left arm is 50 deg from the template's pose` | an unrigged model not in an A-pose: it is un-posed automatically. If the arms come out bent or stuck to the body, rig the model (Mixamo auto-rigger, Blender Rigify) and try again |
 | `materials -> slots (auto ...)` table | where each material went. Wrong? `--slot <material>=<slot>` or `=drop` |
+| Materials named `Material #25`, `Material #26` ... (a model from a game rip with generic material names) | the textures are found through the materials' image nodes, and the automatic placement reads the images' file names (`hair.png` -> Hair, `eye.png` -> the skin slot). A name that says nothing (`all_color.png` for the arms' skin) lands on a cloth slot: check the table and place those with `--slot` |
+| `none -> dropped (objects without a material ...)` | objects without a material (often teeth, tongue, the inside of the mouth). Keep them: `--slot none=<slot>`; if they use the same image as another material, give it: `--tex none=<folder>/<image name without extension>` (they then share its tile) |
+| `material x: maps named after head.png: head_n.dds (normal), head_ao.dds (ao)` | maps next to the colour image with its name and a suffix (`_n`, `_normal`, `_ao`, `_rough`, `_orm`, `_mask`, `_alpha` ...) are used with it |
+| `... shares Material #30's tile (same textures)` | several materials draw the same image: they get one place in the texture, not one each |
+| `hair.png has no cut-out alpha; the strands' mask is the alpha of hair_n.dds` | some games keep the hair's opacity in the normal map's alpha: it is used as the hair mask. A hat or other solid part that uses the hair image too would get holes on the Hair slot: put it on a cloth slot (`--slot <its material>=Gear`) |
+| `hair_n.dds: not a normal map (blue channel 0.50 ...): left out` | a file named like a normal map that isn't one (a flow or specular map): the slot gets a flat normal map instead |
+| `two-channel (BC5) normal map, Z rebuilt` / `DXT5nm (X in alpha)` | compressed normal map layouts of game files: read correctly |
+| `Blender can't read this image` | an image format Blender doesn't know (rare DDS variants): convert it to PNG and point `--tex` at it |
+| `N faces' UVs moved by whole texture repeats into 0..1 (same look)` | the model's UVs sit outside 0..1 by whole steps (game rips often at -1..0): moved back, the look doesn't change |
+| `texture repeated 2x2 in the tile` | a tiling texture (UVs running over several repeats) that shares a texture with other materials: it is drawn repeated inside its tile (less sharp). For full sharpness give that material a slot of its own |
+| `faces span more than one texture repeat: squeezed into the tile` | a few faces run over the edge of the texture: their UVs are pressed onto the edge (a small smear there) |
+| `normals: 21 of 22 objects had their normals pointing inward ... turned around` | the file's normals pointed into the model while the faces point out (seen in game rips): it rendered nearly black, fixed automatically. `the model may be inside out`: in Blender select all, Mesh > Normals > Recalculate Outside, export again |
+| `the file's unit scale looks off: ... x0.3937 gives 166 cm (centimetres stored as inches ...)` | the exporter's unit setting was wrong (or the armature is scaled). Harmless: the model is scaled to the survivor's height anyway; if it still looks wrong, apply the scale in Blender (Ctrl+A > All Transforms) and export again |
+| `face: seeds from the eyes` | the head's bounds took in the neck, a beard or hair: the mouth is looked for relative to the eyes instead |
 | `material x: its basecolor image 'y' is not next to the model` | the file references a texture on its author's disk: copy the images next to the model, or `--tex x=<folder or file prefix>` |
 | `... is linked as base colour but its name says mask` | fine: the file name wins (a mask map is used as one) |
 | `... is shared with other outfits; yours goes to ...` | the survivor's template shares that texture or material with other outfits: your copy is made in the outfit's folder, other outfits stay as they are |
 | Hair is one colour / a bit dark | only with `--hair tint` (the game's hair shader: one colour root to tip, your texture's average, root 40 % darker). The default `--hair texture` keeps your texture's colours |
 | Hair much darker / another colour than the texture file | the material multiplies the texture by a colour (glTF base colour factor, VRoid/MToon hair colour): that is applied, as in Blender / VRoid. VRM 0.x colours are read as sRGB, like VRoid does |
 | Eyes look flat | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in its own colours (`--hair tint`: in the hair colour); highlights are left out |
-| Skirts, long hair, capes don't swing | `--hair-physics auto --cloth auto` on a survivor/outfit that supports it ([Swinging hair and skirts](#swinging-hair-and-skirts)); capes and coats: not supported |
+| Skirts, long hair, capes don't swing | pick a survivor/outfit that supports it (swinging is on by default there) ([Swinging hair and skirts](#swinging-hair-and-skirts)); capes and coats: not supported |
 | A low-poly model turns into triangles at a distance | fixed: models under ~1500 triangles keep every LOD whole (older kits: `--lods 1,1,1,1,1`) |
 | The add-on is 150-200 MB | 4096 textures (several materials packed into one texture set): `--max-texture 2048` |
 | The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |

@@ -16,9 +16,9 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
         [--proportions own|fit|0..1]   own (default): the model keeps its own limb/torso/neck lengths in third
                                 person (the mesh's skeleton gets its joints; the game retargets the animations);
                                 fit: stretched onto the survivor's joints; a number blends. FP arms always fit
-        [--hair-physics auto|off]  auto: long hair swings on the survivor's physics hair bones (templates with a
+        [--hair-physics auto|off]  auto (default): long hair swings on the survivor's physics hair bones (templates with a
                                    hair chain: Holly, Mom, ...; mesh-mods.md §14) [--hair-swing 0..1]
-        [--cloth auto|off|MAT,...]  auto: a skirt/dress becomes cloth (templates with a clothing asset: Holly Elite 00)
+        [--cloth auto|off|MAT,...]  auto (default): a skirt/dress becomes cloth (templates with a clothing asset: Holly Elite 00)
         [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
                                 tint = the game's hair shader, one colour root to tip (your texture's average)
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
@@ -122,9 +122,9 @@ def run_blender(args):
         die("Blender step failed: " + " ".join(args[:1]))
 
 
-def inspect(model, work):
+def inspect(model, work, tex=()):
     out = os.path.join(work, "inspect.json")
-    run_blender(["inspect", os.path.abspath(model), out])
+    run_blender(["inspect", os.path.abspath(model), out] + [x for t in tex for x in ("--tex", t)])
     return json.load(open(out))
 
 
@@ -410,13 +410,29 @@ class TexTool:
         self.hair_mis = []
 
 
+_HASHES = {}
+
+
+def file_hash(p):
+    """Content hash of a file (the same image under two names or folders counts once)."""
+    import hashlib
+    if p not in _HASHES:
+        try:
+            with open(p, "rb") as f: _HASHES[p] = hashlib.sha1(f.read()).hexdigest()
+        except OSError:
+            _HASHES[p] = os.path.realpath(p)
+    return _HASHES[p]
+
+
 def png_size(p):
-    """Width of a PNG/JPEG without an image library (PNG IHDR; others: assume 2048)."""
+    """Largest side of an image without an image library (PNG IHDR, DDS header; others: assume 2048)."""
+    import struct
     with open(p, "rb") as f:
         h = f.read(24)
     if h[:8] == b"\x89PNG\r\n\x1a\n":
-        import struct
         return max(struct.unpack(">II", h[16:24]))
+    if h[:4] == b"DDS ":
+        return max(struct.unpack("<II", h[12:20]))          # height, width
     return 2048
 
 
@@ -433,6 +449,9 @@ def textures_for(manifest, mesh_file, tt, static=False):
 
 
 # ---- survivor -------------------------------------------------------------------------------------------------------
+
+NO_MATERIAL = "none"          # b4bfit's label for faces/objects without a material (--slot none=..., --tex none=...)
+
 
 def fit_args(o, keys=("bonemap", "drop", "weights", "twist", "facing", "face", "mouth", "face_eyes")):
     a = []
@@ -487,6 +506,12 @@ def auto_slots(mats, minfo, s3, user):
             else: out[m] = v; why[m] = "--slot"
             continue
         inf = minfo.get(m, {})
+        if m == NO_MATERIAL and not single:
+            objs = inf.get("objects", [])
+            drop.append(m)
+            why[m] = (f"objects without a material ({', '.join(objs[:4])}{' ...' if len(objs) > 4 else ''}); keep them "
+                      f"with --slot none=<slot> [--tex none=<image>]")
+            continue
         clear = inf.get("alpha_clear", 0.0)
         alpha = clear > 0.2 and (inf.get("blend", "OPAQUE") != "OPAQUE" or "alpha" in inf.get("textures", {}) or clear > 0.4)
         # the material's name and its texture file names (MakeHuman eyes: material "low-poly", texture brown_eye.png)
@@ -529,7 +554,7 @@ def survivor(o):
     moddir = o.o["out"]
     tp = asset_file(o.get("outfit") or die("--outfit <3P outfit SKM> is required"), src)
     fp = asset_file(o["fp"], src) if o.get("fp") else None
-    info = inspect(model, work)
+    info = inspect(model, work, o.o["tex"])
     mats = [m for m in info["materials"] if m]
     log(f"model: {len(info['objects'])} objects, materials {mats}, "
         f"{sum(len(a['bones']) for a in info['armatures'])} bones")
@@ -581,10 +606,31 @@ def survivor(o):
             st = fp_slotset[s]
             if m not in atlas.setdefault(st, []): atlas[st].append(m)
         log(f"FP slots: {fp_slot}; FP texture sets: {fp_slotset}")
-    atlas_args = []
+    # materials drawing the same textures (one image used by several materials, as game rips do) share one tile
+    minfo = info.get("material_info", {})
+
+    def sig(m):
+        inf = minfo.get(m, {})
+        tx = inf.get("textures", {})
+        if not tx.get("basecolor"): return None                # the same colour image = the same UV layout
+        return json.dumps([file_hash(tx["basecolor"]), inf.get("factor")])
+    alias = {}
     for st, ms in atlas.items():
+        first = {}
+        for m in ms:
+            k = sig(m)
+            if k is None: continue
+            if k in first: alias.setdefault(st, {})[m] = first[k]
+            else: first[k] = m
+        if alias.get(st):
+            log(f"texture set {st}: " + ", ".join(f"{m} shares {c}'s tile (same textures)" for m, c in alias[st].items()))
+    canon = {st: [m for m in ms if m not in alias.get(st, {})] for st, ms in atlas.items()}
+    tiles_json = os.path.join(work, "tiles.json")
+    json.dump({"alias": alias}, open(tiles_json, "w"), indent=1)
+    atlas_args = ["--tiles", tiles_json]
+    for st, ms in canon.items():
         if len(ms) > 1: atlas_args += ["--atlas", f"{st}=" + ",".join(ms)]
-    log("texture sets:", {k: v for k, v in atlas.items()})
+    log("texture sets:", {k: v for k, v in canon.items()})
     slotset3 = [x for s in slot_names if set_of_slot3[s] != s for x in ("--slotset", f"{s}={set_of_slot3[s]}")]
     # 3P
     d3 = os.path.join(work, "fit3p")
@@ -603,6 +649,11 @@ def survivor(o):
     face_preview(o.o, tp, man3, work)
     mans = [(man3, tp)]
     if fp:
+        # the FP arms draw the same atlas tiles as the 3P mesh: same repeats of tiling textures
+        rep = {st: {t["material"]: t["repeat"] for t in v["tiles"] if t.get("repeat")} for st, v in man3["sets"].items()}
+        tiles_fp = os.path.join(work, "tiles_fp.json")
+        json.dump({"alias": alias, "repeat": {k: v for k, v in rep.items() if v}}, open(tiles_fp, "w"), indent=1)
+        atlas_args[1] = tiles_fp
         df = os.path.join(work, "fitfp")
         run_blender(["character", "--template", template_glb(fp, work), "--source", os.path.abspath(model), "--out",
                      df, "--mode", "fp", "--lods", o.get("fp_lods", "1,0.5")] + fit_args(o.o) + atlas_args +
@@ -909,7 +960,7 @@ def dangle_args(o, tp, src):
     (if the template has a clothing asset)."""
     import cloth
     a = []
-    if o.get("hair_physics", "off") != "off":
+    if o.get("hair_physics", "auto") != "off":   # default on where the template supports it
         chains, pa = cloth.hair_chains(tp, src)
         if chains:
             a += ["--hair_bones", ";".join(",".join(c) for c in chains)]
@@ -918,7 +969,7 @@ def dangle_args(o, tp, src):
             log(f"hair: {os.path.basename(tp)}'s physics asset ({(pa or '?').split('.')[-1]}) has no simulated hair "
                 f"bones: the hair moves with the head (templates with a hair chain: Holly, Holly Elite 06, Walker "
                 f"Elite 03, Doc Elite 03, Mom)")
-    if o.get("cloth", "off") != "off":
+    if o.get("cloth", "auto") != "off":
         if cloth.cloth_assets(skm.SkeletalMesh(tp)):
             a += ["--cloth", o["cloth"]]
         else:

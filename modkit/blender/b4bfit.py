@@ -727,10 +727,12 @@ def fit_character(o):
     if o.get("drop_mat"):
         dm = {x.lower() for x in o["drop_mat"]}
         for x in [x for x in src_objs if x.type == "MESH"]:
-            idx = {i for i, m in enumerate(x.data.materials) if m and re.sub(r"\.\d{3}$", "", m.name).lower() in dm}
-            if not idx: continue
+            mats_x = list(x.data.materials)
+            gone = lambda i: (re.sub(r"\.\d{3}$", "", mats_x[i].name).lower() in dm) if i < len(mats_x) and mats_x[i] \
+                else NO_MATERIAL in dm                     # faces without a material: --slot none=drop
+            if not any(gone(i) for i in {p.material_index for p in x.data.polygons}): continue
             bm = bmesh.new(); bm.from_mesh(x.data)
-            bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index in idx], context="FACES")
+            bmesh.ops.delete(bm, geom=[f for f in bm.faces if gone(f.material_index)], context="FACES")
             bm.to_mesh(x.data); bm.free()
             if not x.data.polygons:
                 log("dropping", x.name, "(only dropped materials)"); bpy.data.objects.remove(x); src_objs.remove(x)
@@ -756,6 +758,7 @@ def fit_character(o):
     targets = set(tpl.bones)
     # FBX files often carry cm scale / axis rotations on the objects: bake them into the data first
     apply_transforms(src_objs)
+    fix_inverted_normals(meshes)
 
     own_bind = chains = chain_of = None
     if arms:
@@ -794,9 +797,7 @@ def fit_character(o):
         G = Matrix.Translation(pel_t) @ R @ Matrix.Scale(k, 4) @ Matrix.Translation(-pel_s)
         log(f"orient: rotate {math.degrees(R.to_quaternion().angle):.1f} deg, scale {k:.3f} "
             f"(model {sh * 100:.0f} cm head to feet, template {th * 100:.0f} cm)")
-        if k < 0.2 or k > 5:
-            log(f"  warning: scale {k:.2f} is unusual: is the model in centimetres with a wrong unit scale, or is "
-                f"its armature scaled? The fit still continues")
+        unit_hint(sh, k)
         for x in [sarm] + meshes:
             if x.parent is None or x.parent not in [sarm] + meshes:
                 x.matrix_world = G @ x.matrix_world
@@ -991,6 +992,7 @@ def fit_character(o):
             if x.parent is None or x.parent not in meshes: x.matrix_world = G @ x.matrix_world
         apply_transforms(meshes)
         log(f"unrigged: scale {k:.3f}")
+        unit_hint((hi.z - lo.z) / 1.13, k)             # the head joint sits about 1/1.13 of the stature up
         # arms in another pose than the template's A-pose (T-pose, hanging down): pose the template's arms like the
         # model's, take the weights from the posed template, then un-pose the model into the template's bind pose
         unpose_arms(tpl, meshes)
@@ -1015,7 +1017,7 @@ def fit_character(o):
         mats = []
         for m in smeshes:
             for mt in used_materials(m):
-                n = re.sub(r"\.\d{3}$", "", mt.name) if mt else None
+                n = re.sub(r"\.\d{3}$", "", mt.name) if mt else NO_MATERIAL
                 if n not in mats: mats.append(n)
         os.makedirs(o["out"], exist_ok=True)
         json.dump({"materials": mats}, open(os.path.join(o["out"], "probe.json"), "w"))
@@ -1030,6 +1032,52 @@ def fit_character(o):
         m.matrix_parent_inverse = tpl.arm.matrix_world.inverted()
         md = m.modifiers.new("Armature", "ARMATURE"); md.object = tpl.arm
     finish(o, tpl, smeshes)
+
+
+UNIT_MIXUPS = [(1 / 2.54, "centimetres stored as inches"), (2.54, "inches stored as centimetres"),
+               (0.01, "centimetres read as metres"), (100.0, "metres read as centimetres"),
+               (0.1, "millimetres read as centimetres"), (0.001, "millimetres read as metres"),
+               (1 / 30.48, "centimetres stored as feet"), (0.3048, "feet read as metres")]
+
+
+def unit_hint(sh, k):
+    """The file's unit scale, judged by the height of the head joint (a person: about 1.3-1.8 m). A wrong unit only
+    changes the uniform scale the fit applies anyway; this tells the modder what happened."""
+    if 0.6 <= sh <= 2.6: return
+    f, why = min(UNIT_MIXUPS, key=lambda x: abs(math.log(sh * x[0] / 1.55)))
+    fits = 0.9 <= sh * f <= 2.3
+    log(f"  the file's unit scale looks off: its head joint is {sh * 100:.0f} cm above the feet (a person: 130-180)"
+        + (f"; x{f:.4g} gives {sh * f * 100:.0f} cm ({why}: the exporter's unit setting)" if fits else "")
+        + f". Harmless: the model is scaled to the survivor's height (x{k:.3f})")
+
+
+def fix_inverted_normals(meshes):
+    """Custom (split) normals that point against the faces' winding (game rips: the ripper flipped one of them). The
+    game draws one side of each face (by winding) and lights it by the normals: inverted normals render nearly black.
+    When the faces point outward (judged from each mesh's centre, over the whole model) the normals are turned around;
+    when the faces point inward too, the model is inside out: said, not changed."""
+    bad, n_all, out, n_faces = [], 0, 0, 0
+    for m in meshes:
+        me = m.data
+        if not me.polygons or not getattr(me, "has_custom_normals", False): continue
+        cn = me.corner_normals
+        dis = sum(1 for p in me.polygons for li in p.loop_indices if p.normal.dot(cn[li].vector) < 0)
+        n_all += 1
+        if dis > 0.9 * len(me.loops):
+            bad.append(m)
+            c = sum((v.co for v in me.vertices), Vector()) / len(me.vertices)
+            out += sum(1 for p in me.polygons if p.normal.dot(p.center - c) > 0)
+            n_faces += len(me.polygons)
+    if not bad: return
+    if out < 0.6 * n_faces:
+        log(f"  normals: {len(bad)} objects' normals point against their faces, and the faces point inward: the model "
+            f"may be inside out (Blender: select all, Mesh > Normals > Recalculate Outside, export again)")
+        return
+    for m in bad:
+        me = m.data
+        me.normals_split_custom_set([(-c.vector).to_tuple() for c in me.corner_normals])
+    log(f"  normals: {len(bad)} of {n_all} objects had their normals pointing inward, against the faces (seen in game "
+        f"rips): turned around ({', '.join(m.name for m in bad[:6])}{' ...' if len(bad) > 6 else ''})")
 
 
 def face_module():
@@ -1317,7 +1365,8 @@ TEX_KEYS = {"basecolor": ("albedo", "basecolor", "base_color", "basemap", "base_
             "gloss": ("gloss", "smooth"), "alpha": ("alpha", "opacity", "transparen"),
             "skip": ("emissi", "height", "displace", "_disp", "bump", "spec", "sss", "subsurface", "cavity", "curvature",
                      "thickness", "id_map", "_id.", "matcap", "shade", "_rim", "outline")}
-IMG_EXT = (".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp", ".webp")
+IMG_EXT = (".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp", ".webp", ".dds")   # DDS: BC1-BC7 (game rips)
+NO_MATERIAL = "none"                  # the label of faces / objects without a material (--slot none=..., --tex none=...)
 TEX_CACHE = None                      # set per run: where embedded (packed) images are written
 
 
@@ -1375,11 +1424,44 @@ def classify_files(files):
     return out
 
 
+_IMAGES = {}
+
+
 def images_in(dirs):
     for d in dirs:
-        for root, _, files in os.walk(d):
-            for f in files:
-                if f.lower().endswith(IMG_EXT): yield os.path.join(root, f)
+        if d not in _IMAGES:
+            _IMAGES[d] = sorted(os.path.join(root, f) for root, _, files in os.walk(d) for f in files
+                                if f.lower().endswith(IMG_EXT))
+        yield from _IMAGES[d]
+
+
+# a base colour file's own name part: "head" of head.png / head_d.dds / Head_BaseColor.tga / all_color.png
+_BC_SUFFIX_RX = re.compile(r"[_\-. ](albedo|base_?colou?r|diffuse|diff|colou?r|col|bc|d|alb|c)$", re.I)
+_HAIR_NAME_RX = re.compile(r"hair|fur\b|ponytail|bangs?\b|fringe|braid|beard|mustache|moustache|wig|lash|brow(?!n)", re.I)
+
+
+def companion_maps(bc_path, dirs, name=""):
+    """Maps that belong to a base colour file by name: head.png -> head_n.dds (normal), head_ao.dds, head_rough.png
+    ... (game rips and many exports keep one set per texture: <name>_n/_normal/_ao/_orm/_mask/_alpha next to it; the
+    material only links the colour, or has generic names like 'Material #25'). {role: file}"""
+    stem = os.path.splitext(os.path.basename(bc_path))[0]
+    root = _BC_SUFFIX_RX.sub("", stem) or stem
+    out = {}
+    for f in sorted(set(images_in(list(dirs) + [os.path.dirname(bc_path)])),
+                    key=lambda f: (f.lower().endswith(".dds"), f)):     # PNG/TGA before a DDS of the same name
+        s = os.path.splitext(os.path.basename(f))[0]
+        if s.lower() == stem.lower() or not s.lower().startswith(root.lower()): continue
+        rest = s[len(root):]
+        if not rest or rest[0] not in "_-. ": continue                 # hair_n, not hairband
+        k = role_from_name("x" + rest + os.path.splitext(f)[1])        # what the suffix says, not the name part
+        if k and k not in ("skip", "basecolor"): out.setdefault(k, f)
+    return out
+
+
+def mask_like_alpha(path):
+    """A file's alpha channel looks like a cut-out mask (hair strands): plenty of clear and of solid texels."""
+    st = alpha_stats(path)
+    return bool(st) and st[0] > 0.15 and st[0] < 0.9 and st[1] < 0.5
 
 
 def material_textures(mat, tex_dirs, user=None, n_materials=1):
@@ -1387,7 +1469,7 @@ def material_textures(mat, tex_dirs, user=None, n_materials=1):
     written out), then files named after the material in the model's folder / --textures; a model with one material
     and one texture set in its folder takes that set. Names that say what a file is win over the socket it hangs on
     (a mask map linked as base colour)."""
-    base = re.sub(r"\.\d{3}$", "", mat.name).lower() if mat else ""
+    base = re.sub(r"\.\d{3}$", "", mat.name).lower() if mat else NO_MATERIAL
     for k, v in (user or {}).items():
         if k.lower() == base:
             if not (os.path.isdir(v) or os.path.isdir(os.path.dirname(v) or ".")):
@@ -1395,8 +1477,13 @@ def material_textures(mat, tex_dirs, user=None, n_materials=1):
             files = ([os.path.join(v, f) for f in os.listdir(v)] if os.path.isdir(v) else
                      [os.path.join(os.path.dirname(v), f) for f in os.listdir(os.path.dirname(v) or ".")
                       if f.startswith(os.path.basename(v))])
-            got = classify_files([f for f in files if f.lower().endswith(IMG_EXT)])
-            if got: return got
+            imgs = [f for f in files if f.lower().endswith(IMG_EXT)]
+            got = classify_files(imgs)
+            plain = sorted((f for f in imgs if role_from_name(f) is None),
+                           key=lambda f: (len(os.path.basename(f)), f.lower().endswith(".dds"), f))
+            if "basecolor" not in got and plain:
+                got["basecolor"] = plain[0]            # --tex x=textures/head: head.png (a name that says nothing)
+            if got: return with_companions(got, base, tex_dirs, mat)
             log(f"  --tex {k}={v}: no texture file recognised there (names with albedo/basecolor/diffuse, normal, "
                 f"roughness, metallic, ao ...)")
     out = {}
@@ -1447,6 +1534,27 @@ def material_textures(mat, tex_dirs, user=None, n_materials=1):
             log(f"  material {base}: using the texture set in the model's folder: "
                 f"{', '.join(os.path.basename(v) for v in got.values())}")
             for k, v in got.items(): out.setdefault(k, v)
+    return with_companions(out, base, tex_dirs, mat)
+
+
+def with_companions(out, base, tex_dirs, mat):
+    """Add the maps named after the base colour file (companion_maps) that the material doesn't link, and for hair
+    whose colour has no alpha the cut-out mask some games keep in the normal map's alpha."""
+    bc = out.get("basecolor")
+    if not bc or not os.path.isfile(bc): return out
+    add = {k: v for k, v in companion_maps(bc, tex_dirs).items() if k not in out}
+    if add:
+        log(f"  material {base}: maps named after {os.path.basename(bc)}: "
+            + ", ".join(f"{os.path.basename(v)} ({k})" for k, v in add.items()))
+        out.update(add)
+    if "alpha" in out and out["alpha"] != bc: return out
+    names = base + " " + os.path.basename(bc)
+    if _HAIR_NAME_RX.search(names) and not mask_like_alpha(bc):
+        n = out.get("normal")
+        if n and os.path.isfile(n) and mask_like_alpha(n):
+            log(f"  material {base}: {os.path.basename(bc)} has no cut-out alpha; the strands' mask is the alpha of "
+                f"{os.path.basename(n)} (hair in game rips): used as the opacity")
+            out["alpha"] = n
     return out
 
 
@@ -1498,6 +1606,103 @@ def find_file(name, dirs):
     return None
 
 
+REPEAT_MAX = 4          # an atlas tile holds at most 4x4 repeats of a tiling texture (more: squeezed)
+
+
+def uv_islands(me, uv, faces):
+    """Faces grouped into UV islands (connected through shared vertices with the same UV)."""
+    parent = list(range(len(faces)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]; i = parent[i]
+        return i
+    first = {}
+    loops = me.loops
+    for fi, p in enumerate(faces):
+        for li in p.loop_indices:
+            u, v = uv.data[li].uv
+            j = first.setdefault((loops[li].vertex_index, round(u, 4), round(v, 4)), fi)
+            if j != fi:
+                a, b = find(fi), find(j)
+                if a != b: parent[a] = b
+    out = {}
+    for fi in range(len(faces)): out.setdefault(find(fi), []).append(fi)
+    return list(out.values())
+
+
+def uv_prepare(me, uv, faces):
+    """Move every UV island by whole tiles so its centre lies in the 0..1 tile (identical look with a repeating
+    texture) and measure what still lies outside: {"faces", "outside" (faces), "repeat" [nx, ny] a tile would need to
+    hold the islands as repeats, "islands", "moved"}."""
+    isl = uv_islands(me, uv, faces)
+    moved = 0
+    for fis in isl:
+        lis = [li for fi in fis for li in faces[fi].loop_indices]
+        us = [uv.data[li].uv[0] for li in lis]; vs = [uv.data[li].uv[1] for li in lis]
+        du, dv = math.floor((min(us) + max(us)) / 2), math.floor((min(vs) + max(vs)) / 2)
+        if du or dv:
+            moved += len(fis)
+            for li in lis:
+                u, v = uv.data[li].uv
+                uv.data[li].uv = (u - du, v - dv)
+    outside, nx, ny = 0, 1, 1
+    for fis in isl:
+        lis = [li for fi in fis for li in faces[fi].loop_indices]
+        us = [uv.data[li].uv[0] for li in lis]; vs = [uv.data[li].uv[1] for li in lis]
+        # as repeats: the island moved so it starts in the first tile
+        nx = max(nx, math.ceil(max(us) - math.floor(min(us) + 1e-3) - 1e-3))
+        ny = max(ny, math.ceil(max(vs) - math.floor(min(vs) + 1e-3) - 1e-3))
+        for fi in fis:
+            fu = [uv.data[li].uv for li in faces[fi].loop_indices]
+            if min(x[0] for x in fu) < -0.01 or max(x[0] for x in fu) > 1.01 or \
+                    min(x[1] for x in fu) < -0.01 or max(x[1] for x in fu) > 1.01:
+                outside += 1
+    return {"faces": faces, "islands": isl, "outside": outside, "repeat": [min(nx, REPEAT_MAX), min(ny, REPEAT_MAX)],
+            "moved": moved}
+
+
+def uv_to_tile(me, uv, w, rect, rep, what):
+    """UVs (after uv_prepare) into an atlas tile. rep [nx, ny] > 1: the texture is drawn nx x ny times in the tile, so
+    islands start in the first repeat and are scaled by 1/n; else faces still outside are moved by whole tiles one by
+    one, and what spans more than one tile is squeezed onto the tile's edge (logged)."""
+    faces = w["faces"]
+    nx, ny = rep
+    squeezed = 0
+    if (nx, ny) != (1, 1):
+        for fis in w["islands"]:
+            lis = [li for fi in fis for li in faces[fi].loop_indices]
+            du = math.floor(min(uv.data[li].uv[0] for li in lis) + 1e-3)
+            dv = math.floor(min(uv.data[li].uv[1] for li in lis) + 1e-3)
+            for li in lis:
+                u, v = uv.data[li].uv
+                uv.data[li].uv = ((u - du) / nx, (v - dv) / ny)
+    else:
+        for p in faces:
+            fu = [uv.data[li].uv for li in p.loop_indices]
+            lo_u, hi_u = min(x[0] for x in fu), max(x[0] for x in fu)
+            lo_v, hi_v = min(x[1] for x in fu), max(x[1] for x in fu)
+            if lo_u >= -0.01 and hi_u <= 1.01 and lo_v >= -0.01 and hi_v <= 1.01: continue
+            du, dv = math.floor((lo_u + hi_u) / 2), math.floor((lo_v + hi_v) / 2)
+            for li in p.loop_indices:
+                u, v = uv.data[li].uv
+                uv.data[li].uv = (u - du, v - dv)
+            if hi_u - lo_u > 1.02 or hi_v - lo_v > 1.02 or hi_u - du > 1.01 or lo_u - du < -0.01 or \
+                    hi_v - dv > 1.01 or lo_v - dv < -0.01:
+                squeezed += 1
+    x0, y0, tw, th = rect
+    for p in faces:
+        for li in p.loop_indices:
+            u, v = uv.data[li].uv
+            u = min(max(u, 0.0), 1.0); v = min(max(v, 0.0), 1.0)
+            # Blender UV origin is bottom-left, atlas rects are image (top-left) based
+            uv.data[li].uv = (x0 + u * tw, 1.0 - (y0 + (1.0 - v) * th))
+    if w["moved"]:
+        log(f"  {what}: {w['moved']} faces' UVs moved by whole texture repeats into 0..1 (same look)")
+    if squeezed:
+        log(f"  {what}: {squeezed} faces span more than one texture repeat: squeezed into the tile (a small smear)")
+
+
 def assign_slots(o, tpl, meshes, tex_dirs):
     """Rename materials to template slots and lay out texture sets.
 
@@ -1526,7 +1731,7 @@ def assign_slots(o, tpl, meshes, tex_dirs):
             if mat not in srcmats: srcmats.append(mat)
 
     def base(mat):
-        return re.sub(r"\.\d{3}$", "", mat.name if mat else "none")
+        return re.sub(r"\.\d{3}$", "", mat.name) if mat else NO_MATERIAL
 
     slot_of = {}
     for mat in srcmats:
@@ -1541,49 +1746,87 @@ def assign_slots(o, tpl, meshes, tex_dirs):
         if slot.lower() not in slots_lower:
             raise SystemExit(f"--slot {bn}={slot}: the template has no slot {slot!r} (slots: {tpl.slots})")
         slot_of[mat] = slots_lower[slot.lower()]
+    # --tiles FILE (b4bmodel): {"alias": {set: {material: material whose tile it shares}}, "repeat": {set: {material:
+    # [nx, ny]}}}: materials drawing the same textures share one atlas tile; the FP run takes the 3P run's repeats
+    tiles_cfg = json.load(open(o["tiles"])) if o.get("tiles") else {}
+    alias = {st.lower(): {k.lower(): v for k, v in d.items()} for st, d in tiles_cfg.get("alias", {}).items()}
+    forced = {st.lower(): {k.lower(): v for k, v in d.items()} for st, d in tiles_cfg.get("repeat", {}).items()}
     sets = {}
     slots_used = {}
+    plan = []                                   # (mat, slot, set, tile material, rect, grid)
     for mat in srcmats:
         slot = slot_of[mat]
         st = slotset.get(slot.lower(), slot)
         slots_used[slot] = st
-        bn = base(mat).lower()
+        canon = alias.get(st.lower(), {}).get(base(mat).lower(), base(mat))
+        cn = canon.lower()
         if st in atlases:
             names = atlases[st]
-            if bn not in names:
+            if cn not in names:
                 raise SystemExit(f"material {base(mat)!r} goes to slot {slot} (texture set {st}), but --atlas {st}= "
-                                 f"doesn't list it")
+                                 f"doesn't list it (--atlas {st}={','.join(names)})")
             g = math.ceil(math.sqrt(len(names)))
-            i = names.index(bn)
+            i = names.index(cn)
             rect = ((i % g) / g, (i // g) / g, 1.0 / g, 1.0 / g)
         else:
             g, rect = 1, (0.0, 0.0, 1.0, 1.0)
-            if st in sets and sets[st]["tiles"][0]["material"] != base(mat):
+            if st in sets and sets[st]["tiles"][0]["material"].lower() != cn:
                 raise SystemExit(f"materials {sets[st]['tiles'][0]['material']!r} and {base(mat)!r} both use texture "
                                  f"set {st}: list them in --atlas {st}=...")
         tiles = sets.setdefault(st, {"grid": g, "tiles": []})["tiles"]
-        if not any(t["material"] == base(mat) for t in tiles):
-            tiles.append({"material": base(mat), "rect": rect, "textures": material_textures(mat, tex_dirs, tex_user, len(srcmats)),
-                          "values": bsdf_values(mat)})
-        slotmat = bpy.data.materials.get(slot) or bpy.data.materials.new(slot)
+        if not any(t["material"].lower() == cn for t in tiles):
+            if cn == base(mat).lower():
+                tx = material_textures(mat, tex_dirs, tex_user, len(srcmats))
+            else:                               # the tile of another material with the same textures
+                src = next((x for x in srcmats if base(x).lower() == cn), mat)
+                tx = material_textures(src, tex_dirs, tex_user, len(srcmats))
+            tiles.append({"material": canon, "rect": rect, "textures": tx, "values": bsdf_values(mat)})
+        plan.append((mat, slot, st, cn, rect, g))
+    # UVs: whole islands moved by whole tiles into 0..1 first (the same look with a repeating texture: game rips often
+    # sit at v -1..0); what still reaches past the tile in an atlas is drawn as repeats of the texture in the tile, or
+    # (a few faces only) squeezed onto the tile's edge
+    groups = {}                                 # (mesh, material index) -> UV island work
+    for mat, slot, st, cn, rect, g in plan:
         for m in meshes:
             uv = m.data.uv_layers.active
+            if uv is None: continue
+            idxs = [i for i, mm in enumerate(m.data.materials) if mm == mat] or ([0] if mat is None and not m.data.materials else [])
+            for i in idxs:
+                faces = [p for p in m.data.polygons if p.material_index == i or
+                         (mat is None and p.material_index >= len(m.data.materials))]
+                if faces: groups[(m.name, i)] = uv_prepare(m.data, uv, faces)
+    need = {}
+    for mat, slot, st, cn, rect, g in plan:
+        if g == 1: continue
+        for m in meshes:
+            for i, mm in enumerate(list(m.data.materials) or [None]):
+                w = groups.get((m.name, i))
+                if w and mm == mat and w["outside"] > 0.02 * len(w["faces"]):
+                    r = need.setdefault((st, cn), [1, 1])
+                    r[0] = max(r[0], w["repeat"][0]); r[1] = max(r[1], w["repeat"][1])
+    for mat, slot, st, cn, rect, g in plan:        # the 3P run's repeats win (FP arms: the same texture set)
+        r = forced.get(st.lower(), {}).get(cn)
+        if g > 1 and r: need[(st, cn)] = list(r)
+    for st, info in sets.items():
+        for t in info["tiles"]:
+            r = need.get((st, t["material"].lower()))
+            if r and tuple(r) != (1, 1): t["repeat"] = list(r)
+    for mat, slot, st, cn, rect, g in plan:
+        slotmat = bpy.data.materials.get(slot) or bpy.data.materials.new(slot)
+        rep = need.get((st, cn), [1, 1])
+        for m in meshes:
+            uv = m.data.uv_layers.active
+            if mat is None and not m.data.materials:
+                m.data.materials.append(None)   # an object without material slots: give it one
             for i, mm in enumerate(m.data.materials):
                 if mm != mat: continue
-                if g > 1 and uv is not None:
-                    x0, y0, w, h = rect
-                    oob = 0
-                    for poly in m.data.polygons:
-                        if poly.material_index != i: continue
-                        for li in poly.loop_indices:
-                            u, v = uv.data[li].uv
-                            if u < -0.01 or u > 1.01 or v < -0.01 or v > 1.01: oob += 1
-                            u = min(max(u, 0.0), 1.0); v = min(max(v, 0.0), 1.0)
-                            # Blender UV origin is bottom-left, atlas rects are image (top-left) based
-                            uv.data[li].uv = (x0 + u * w, 1.0 - (y0 + (1.0 - v) * h))
-                    if oob: log(f"  {mat.name}: {oob} UVs outside 0..1 clamped (tiling textures can't be atlased)")
+                w = groups.get((m.name, i))
+                if g > 1 and uv is not None and w:
+                    uv_to_tile(m.data, uv, w, rect, rep, f"{base(mat)} ({m.name})")
                 m.data.materials[i] = slotmat
-        log(f"material {base(mat)} -> slot {slot}, texture set {st}" + (f" tile {rect}" if g > 1 else ""))
+        log(f"material {base(mat)} -> slot {slot}, texture set {st}" + (f" tile {rect}" if g > 1 else "") +
+            (f" (tile of {cn})" if cn != base(mat).lower() else "") +
+            (f", texture repeated {rep[0]}x{rep[1]} in the tile" if tuple(rep) != (1, 1) else ""))
     # atlases listed but with materials not present in this model (e.g. FP arms): still record the full layout so
     # the texture step composes the same image in both runs
     for st, names in atlases.items():
@@ -1677,6 +1920,7 @@ def fit_weapon(o):
     src_objs = [x for x in import_any(o["source"]) if x.name in bpy.data.objects]
     apply_transforms([x for x in src_objs if x.type in ("MESH", "EMPTY")])
     meshes = [x for x in src_objs if x.type == "MESH"]
+    fix_inverted_normals(meshes)
     for x in src_objs:
         if x.type == "ARMATURE":
             log("ignoring the source armature: weapon parts are bound rigidly by object name")
@@ -1782,7 +2026,7 @@ def alpha_stats(path):
     return float((al < 0.5).mean()), float(((al > 0.05) & (al < 0.95)).mean())
 
 
-def inspect(src, out):
+def inspect(src, out, tex_user=None):
     global TEX_CACHE
     TEX_CACHE = os.path.join(os.path.dirname(out), "textures")
     objs = import_any(src)
@@ -1796,25 +2040,34 @@ def inspect(src, out):
                                                   for m in o.data.materials],
                                     "parent": o.parent.name if o.parent else None,
                                     "shape_keys": len(o.data.shape_keys.key_blocks) if o.data.shape_keys else 0})
-            for m in o.data.materials:
-                n = re.sub(r"\.\d{3}$", "", m.name) if m else None
+            for m in used_materials(o):
+                n = re.sub(r"\.\d{3}$", "", m.name) if m else NO_MATERIAL
                 if n not in info["materials"]: info["materials"].append(n); mats.append(m)
         elif o.type == "ARMATURE":
             info["armatures"].append({"name": o.name, "bones": [b.name for b in o.data.bones]})
         elif o.type == "EMPTY":
             info["objects"].append({"name": o.name, "empty": True, "parent": o.parent.name if o.parent else None})
-    faces = {}
+    faces, bare = {}, []
     for o in objs:
         if o.type != "MESH": continue
         for poly in o.data.polygons:
             if poly.material_index < len(o.data.materials) and o.data.materials[poly.material_index]:
                 n = re.sub(r"\.\d{3}$", "", o.data.materials[poly.material_index].name)
-                faces[n] = faces.get(n, 0) + 1
+            else:
+                n = NO_MATERIAL
+                if o.name not in bare: bare.append(o.name)
+            faces[n] = faces.get(n, 0) + 1
+    if bare:
+        info["material_info"][NO_MATERIAL] = {"textures": {}, "faces": faces.get(NO_MATERIAL, 0), "objects": bare}
     real = [m for m in mats if m is not None]
-    for m in real:
-        n = re.sub(r"\.\d{3}$", "", m.name)
-        tx = material_textures(m, tex_dirs, None, len(real))
-        mi = {"textures": tx, "faces": faces.get(n, 0), "blend": getattr(m, "blend_method", "OPAQUE")}
+    for m in real + ([None] if NO_MATERIAL in info["materials"] else []):
+        n = re.sub(r"\.\d{3}$", "", m.name) if m else NO_MATERIAL
+        tx = material_textures(m, tex_dirs, tex_user, len(real))
+        if m is None:
+            if NO_MATERIAL in info["material_info"]: info["material_info"][n]["textures"] = tx
+            continue
+        mi = {"textures": tx, "faces": faces.get(n, 0), "blend": getattr(m, "blend_method", "OPAQUE"),
+              "factor": basecolor_factor(m)}
         ap = tx.get("alpha") or tx.get("basecolor")
         if ap and os.path.isfile(ap):
             st = alpha_stats(ap)
@@ -1826,18 +2079,58 @@ def inspect(src, out):
 
 # ---- texture composition (numpy; no Pillow needed) --------------------------------------------------------------------
 
-def load_px(path, size, gray=False):
-    """Image file -> float32 array (size, size, 4), top row first, 0..1 as stored (no colour management)."""
+def load_px(path, size, gray=False, height=None):
+    """Image file (PNG, JPEG, TGA, DDS ...) -> float32 array (height or size, size, 4), top row first, 0..1 as stored
+    (no colour management)."""
     import numpy as np
-    img = bpy.data.images.load(path, check_existing=False)
+    h = height or size
+    try:
+        img = bpy.data.images.load(path, check_existing=False)
+    except RuntimeError as e:
+        raise SystemExit(f"{path}: Blender can't read this image ({e}); convert it to PNG")
     img.colorspace_settings.name = "Non-Color"
-    if img.size[0] != size or img.size[1] != size:
-        img.scale(size, size)
-    a = np.empty(size * size * 4, dtype=np.float32)
+    if not img.size[0]:
+        bpy.data.images.remove(img)
+        raise SystemExit(f"{path}: Blender can't read this image (a DDS in a format it doesn't know?); convert it to PNG")
+    if img.size[0] != size or img.size[1] != h:
+        img.scale(size, h)
+    a = np.empty(size * h * 4, dtype=np.float32)
     img.pixels.foreach_get(a)
     bpy.data.images.remove(img)
-    a = a.reshape(size, size, 4)[::-1]
+    a = a.reshape(h, size, 4)[::-1]
     return a
+
+
+def tile_px(path, pw, rep=None):
+    """A tile's image (pw x pw): the file, or rep [nx, ny] repeats of it (a tiling texture in an atlas tile)."""
+    import numpy as np
+    nx, ny = rep or (1, 1)
+    if (nx, ny) == (1, 1): return load_px(path, pw)
+    a = load_px(path, max(1, pw // nx), height=max(1, pw // ny))
+    t = np.tile(a, (ny, nx, 1))
+    if t.shape[0] != pw or t.shape[1] != pw:
+        t = t[(np.arange(pw) * t.shape[0]) // pw][:, (np.arange(pw) * t.shape[1]) // pw]
+    return t
+
+
+def decode_normal(n, what=""):
+    """A normal map texel array -> tangent-space RGB (OpenGL/DirectX as stored). Understood: RGB normal maps,
+    two-channel (BC5/ATI2: B empty) and DXT5nm (X in alpha, R constant) with Z rebuilt; anything else (a flow or
+    specular map named _n) is left out (None)."""
+    import numpy as np
+    r, g, b, a = n[..., 0], n[..., 1], n[..., 2], n[..., 3]
+    if b.mean() > 0.6:
+        return n[..., :3]
+    if r.std() < 0.02 and a.std() > 0.05:
+        x, y, kind = a, g, "DXT5nm (X in alpha)"
+    elif b.std() < 0.02:
+        x, y, kind = r, g, "two-channel (BC5)"
+    else:
+        log(f"  {what}: not a normal map (blue channel {b.mean():.2f} on average, a normal map's is about 1): left out")
+        return None
+    z = np.sqrt(np.clip(1.0 - (2 * x - 1) ** 2 - (2 * y - 1) ** 2, 0.0, 1.0)) * 0.5 + 0.5
+    log(f"  {what}: {kind} normal map, Z rebuilt")
+    return np.stack([x, y, z], axis=-1)
 
 
 def image_mean(path):
@@ -1874,13 +2167,13 @@ def tinted(rgb, val):
     return np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.maximum(lin, 0) ** (1 / 2.4) - 0.055).astype(np.float32)
 
 
-def tile_alpha(tx, pw):
+def tile_alpha(tx, pw, rep=None):
     """A tile's opacity: its alpha texture (A if it has an alpha channel, else R), else the base colour's alpha."""
     import numpy as np
     for k in ("alpha", "basecolor"):
         p = tx.get(k)
         if p and os.path.exists(p):
-            a = load_px(p, pw)
+            a = tile_px(p, pw, rep)
             if a[..., 3].min() < 0.99: return a[..., 3]
             if k == "alpha": return a[..., 0]
     return np.ones((pw, pw), np.float32)
@@ -1903,10 +2196,11 @@ def hair_multimask(j, size):
         x0, y0, w, h = t["rect"]
         px, py, pw = int(round(x0 * size)), int(round(y0 * size)), int(round(w * size))
         tx, val = t.get("textures", {}), t.get("values", {})
-        a = tile_alpha(tx, pw)
+        rep = t.get("repeat")
+        a = tile_alpha(tx, pw, rep)
         canvas[py:py + pw, px:px + pw, 3] = a
         if tx.get("basecolor") and os.path.exists(tx["basecolor"]):
-            c = tinted(load_px(tx["basecolor"], pw)[..., :3], val)
+            c = tinted(tile_px(tx["basecolor"], pw, rep)[..., :3], val)
             m = a > 0.5
             if m.any():
                 cols.append(c[m].mean(axis=0)); weights.append(float(m.sum()))
@@ -1955,10 +2249,11 @@ def hair_basecolor(j, size):
         x0, y0, w, h = t["rect"]
         px, py, pw = int(round(x0 * size)), int(round(y0 * size)), int(round(w * size))
         tx, val = t.get("textures", {}), t.get("values", {})
-        a = tile_alpha(tx, pw)
+        rep = t.get("repeat")
+        a = tile_alpha(tx, pw, rep)
         region = canvas[py:py + pw, px:px + pw]
         if tx.get("basecolor") and os.path.exists(tx["basecolor"]):
-            region[..., :3] = tinted(load_px(tx["basecolor"], pw)[..., :3], val)
+            region[..., :3] = tinted(tile_px(tx["basecolor"], pw, rep)[..., :3], val)
         elif "basecolor" in val:
             region[..., :3] = [lin2srgb(c) for c in val["basecolor"]]
         region[..., 3] = a
@@ -1998,16 +2293,19 @@ def compose(job_path):
                 px, py, pw = int(round(x0 * size)), int(round(y0 * size)), int(round(w * size))
                 tx, val = t.get("textures", {}), t.get("values", {})
                 ok = lambda k: tx.get(k) and os.path.exists(tx[k])
+                rep = t.get("repeat")
+                load = lambda p: tile_px(p, pw, rep)
                 region = canvas[py:py + pw, px:px + pw]
                 if role == "basecolor":
                     if ok("basecolor"):
-                        region[..., :3] = tinted(load_px(tx["basecolor"], pw)[..., :3], val)
+                        region[..., :3] = tinted(load(tx["basecolor"])[..., :3], val)
                     elif "basecolor" in val:
                         region[..., :3] = [lin2srgb(c) for c in val["basecolor"]]
                     region[..., 3] = mean[3]
                 elif role == "normal":
-                    if ok("normal"):
-                        n = load_px(tx["normal"], pw)
+                    n = decode_normal(load(tx["normal"]), f"{t['material']}: {os.path.basename(tx['normal'])}") \
+                        if ok("normal") else None
+                    if n is not None:
                         region[..., 0] = n[..., 0]
                         region[..., 1] = n[..., 1] if j.get("normal_dx") else 1.0 - n[..., 1]
                         region[..., 2] = n[..., 2]
@@ -2016,12 +2314,12 @@ def compose(job_path):
                     # Unity HDRP mask map: R metallic, G AO, B detail mask, A smoothness
                     mask_i = {"ao": 1, "roughness": 3, "metallic": 0}
                     def chan(key, orm_i, const):
-                        if ok(key): return load_px(tx[key], pw)[..., 0]
-                        if ok("orm"): return load_px(tx["orm"], pw)[..., orm_i]
+                        if ok(key): return load(tx[key])[..., 0]
+                        if ok("orm"): return load(tx["orm"])[..., orm_i]
                         if ok("mask"):
-                            c = load_px(tx["mask"], pw)[..., mask_i[key]]
+                            c = load(tx["mask"])[..., mask_i[key]]
                             return 1.0 - c if key == "roughness" else c
-                        if key == "roughness" and ok("gloss"): return 1.0 - load_px(tx["gloss"], pw)[..., 0]
+                        if key == "roughness" and ok("gloss"): return 1.0 - load(tx["gloss"])[..., 0]
                         return np.full((pw, pw), const, np.float32)
                     region[..., 0] = chan("ao", 0, 1.0)
                     region[..., 1] = chan("roughness", 1, val.get("roughness", 0.7))
@@ -2055,7 +2353,7 @@ if __name__ == "__main__":
     elif kind == "convert":
         convert(pos[1], pos[2])
     elif kind == "inspect":
-        inspect(pos[1], pos[2])
+        inspect(pos[1], pos[2], dict(x.split("=", 1) for x in opts.get("tex", [])))
     elif kind == "compose":
         compose(pos[1])
     else:
