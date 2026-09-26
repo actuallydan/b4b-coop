@@ -98,6 +98,9 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
   the game.
 - There is no third-person crosshair: the normal centre-of-screen one is used, and shots land under it (see **Aim**
   below). Aim with right mouse for precise shots.
+- **Picking things up** works as in first person: put the crosshair on a weapon, ammo, item or a card at a card
+  shrine to see its prompt and card and press (or hold) F. (The game hides these in its own views from behind;
+  b4bcoop turns that off in yours.) Doors, vendors, the war table and reviving work the same in both views.
 - Camera settings (only your view, applied at once, kept for every map until the game quits; put them in
   `b4bcoop.ini` to keep them):
 
@@ -113,7 +116,7 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
   your hero's aim towards whatever is under the crosshair, so shots land there (also as a client: the host takes your
   hits as your game saw them). Something right beside your hero that only the camera sees past can still stop a
   shot. `thirdperson_aimfix=0` turns this off: shots then land `side`/`height` units beside the crosshair point, at
-  every range. Aiming with right mouse is always exact.
+  every range, and pick-ups react to what is that far beside it. Aiming with right mouse is always exact.
 
 **`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope.
 - `<id>` is the host's 17-digit Steam ID. The host finds it in Steam: click your account name at the top right →
