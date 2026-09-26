@@ -629,21 +629,32 @@ def edit_sockets(s, sockets):
 
 def set_bone_positions(s, bones):
     """--bone NAME=x,y,z (cm, component space): move a bone of the mesh's reference skeleton (bind pose) there,
-    keeping its rotation (for weapon bones like muzzle on 3P weapon skeletons). Children move with it."""
+    keeping its rotation (for weapon bones like muzzle on 3P weapon skeletons; face bones onto a custom face).
+    Bones not listed keep their local transform (children move with their parent); listed children of a moved parent
+    still land on their own target (parents are processed first)."""
     if not bones: return
     rs = s.m["refskel"]
     G = bone_globals(rs)
     idx = {s.name((b[0], b[1])).lower(): i for i, b in enumerate(rs["bones"])}
+    for name in bones:
+        if name not in idx: print(f"  WARNING: no bone {name!r}")
+    want = {idx[n]: p for n, p in bones.items() if n in idx}
     pose = list(rs["pose"])
-    for name, want in bones.items():
-        i = idx.get(name)
-        if i is None: print(f"  WARNING: no bone {name!r}"); continue
-        par = rs["bones"][i][2]
-        local = mp(minv(G[par]), want) if par >= 0 else want
-        q, t, sc = pose[i][0:4], pose[i][4:7], pose[i][7:10]
-        pose[i] = tuple(q) + tuple(local) + tuple(sc)
-        print(f"  bone {name}: bind position {tuple(round(G[i][r][3], 2) for r in range(3))} -> "
-              f"{tuple(round(x, 2) for x in want)}")
+    newG = []
+    moved = 0
+    for i, ((ni, nn, par), pz) in enumerate(zip(rs["bones"], pose)):
+        if i in want:
+            local = mp(minv(newG[par]), want[i]) if par >= 0 else want[i]
+            pose[i] = tuple(pz[0:4]) + tuple(local) + tuple(pz[7:10])
+            moved += 1
+            if len(want) <= 8:
+                print(f"  bone {s.name((ni, nn))}: bind position {tuple(round(G[i][r][3], 2) for r in range(3))} -> "
+                      f"{tuple(round(x, 2) for x in want[i])}")
+        L = q_to_m(pose[i][0:4], pose[i][4:7], pose[i][7:10])
+        newG.append(mm(newG[par], L) if par >= 0 else L)
+    if len(want) > 8:
+        far = max(math.sqrt(sum((G[i][r][3] - newG[i][r][3]) ** 2 for r in range(3))) for i in want)
+        print(f"  {moved} bones moved in the bind pose (up to {far:.2f} cm)")
     rs["pose"] = pose
 
 
@@ -660,6 +671,8 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
     matmap = {k.lower(): v for k, v in (matmap or {}).items()}
     tmpl_lod = next(l for l in m["lods"] if "sections" in l)
     tmpl_ntc = tmpl_lod["static_vb"]["num_texcoords"]
+    # bind skeleton first (a model fitted with its own proportions, face bones): the glTF's joints are compared to it
+    set_bone_positions(s, bones or {})
     lods = []
     for i, src in enumerate(srcs):
         print(f"LOD{i}: {src}")
@@ -679,7 +692,6 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
     edit_lodinfo_count(s, nl)
     n = clear_lod_material_maps(s)
     if n: print(f"  LODMaterialMap: {n} entries set to -1 (sections keep their own slots)")
-    set_bone_positions(s, bones or {})
     # bounds (bind pose, all LODs)
     allp = [p for lod in m["lods"] for p in lod["positions"]["positions"]]
     xs = [p[0] for p in allp]; ys = [p[1] for p in allp]; zs = [p[2] for p in allp]

@@ -9,6 +9,9 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
         <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
         (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
         Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
+        [--proportions own|fit|0..1]   own (default): the model keeps its own limb/torso/neck lengths in third
+                                person (the mesh's skeleton gets its joints; the game retargets the animations);
+                                fit: stretched onto the survivor's joints; a number blends. FP arms always fit
         [--hair texture|tint]   hair slot: texture (default) = your hair texture's own colours, masked by its alpha;
                                 tint = the game's hair shader, one colour root to tip (your texture's average)
         [--as <name> [--as-title <text>]]   an ADDED outfit: new packages under /Game/b4bcoop/outfits/<name>/ and an
@@ -579,14 +582,15 @@ def survivor(o):
     # 3P
     d3 = os.path.join(work, "fit3p")
     run_blender(["character", "--template", template_glb(tp, work), "--source", os.path.abspath(model), "--out", d3,
-                 "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06")] + fit_args(o.o) + atlas_args +
+                 "--mode", "3p", "--lods", o.get("lods", "1,0.5,0.3,0.15,0.06"),
+                 "--proportions", o.get("proportions") or "own"] + fit_args(o.o) + atlas_args +
                 slotset3 + [x for m, s in slot3.items() for x in ("--slot", f"{m}={s}")])
     man3 = json.load(open(os.path.join(d3, "manifest.json")))
     # the game's hair shader tints vertex-coloured strands (retail: mostly black); the colour-texture material doesn't
     # (the cultist's hair is white, the default)
     hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)} \
         if o.get("hair", "texture") == "tint" else {}
-    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair)
+    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair, bones=bind_bone_moves(man3))
     mans = [(man3, tp)]
     if fp:
         df = os.path.join(work, "fitfp")
@@ -882,6 +886,11 @@ def retarget_skins(fp_mesh, tt, o):
             log(f"  skin {name}: {r.stderr.strip()[-200:]}"); continue
         n += 1
     log(f"skins: {n} skin material instance(s) of {rel} now use the model's textures")
+
+
+def bind_bone_moves(man):
+    """Bind skeleton of a model fitted with its own proportions (b4bfit rebind_template): {bone: UE cm} for skmgltf."""
+    return {b.lower(): blender_to_ue(p) for b, p in man.get("extras", {}).get("bind_bones_m", {}).items()}
 
 
 def blender_to_ue(p):

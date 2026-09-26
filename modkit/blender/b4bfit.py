@@ -4,7 +4,8 @@ atlas rectangles) for the texture step. Driven by b4bmodel.py (`b4bmod survivor|
 Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-coop repository).
 
   blender -b --python blender/b4bfit.py -- character --template T.glb --source model.fbx --out DIR
-        [--mode 3p|fp] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05] [--slot SRCMAT=SLOT]... [--drop REGEX]
+        [--mode 3p|fp] [--proportions own|fit|0..1] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05]
+        [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
         [--drop_mat MATERIAL]...
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
@@ -531,6 +532,189 @@ for s in ("l", "r"):
 ARM_BONES_RX = re.compile(r"^(upperarm|lowerarm|hand|wrist|elbow|shoulder|thumb|index|middle|ring|pinky)_")
 
 
+
+# ---- proportions: the model's own segment lengths (3P) ---------------------------------------------------------------
+# 3P_Biped_SK takes the translation of every body bone (spine, neck, head, arms, legs, twist bones) from the MESH's
+# reference skeleton (retarget mode Skeleton), the pelvis height scaled (OrientAndScale), fingers/clavicles/IK bones
+# oriented and scaled: retail female heroes use it (Holly's 3P skeleton is 154 cm to the head joint, Walker's 165,
+# with other segment ratios, same animations). So a 3P mesh may keep the model's own limb lengths: every segment is
+# only turned onto the template's direction (the template's bind rotations stay, the animations need them) and the
+# mesh's bind skeleton gets the model's joints. FP_Biped_SK animates every bone's translation (all Animation mode):
+# first-person arms are always fitted onto the template. docs/investigations/mesh-mods.md §12.
+
+GROUPS = [("legs", [("thigh", "calf"), ("calf", "foot")]), ("arms", [("upperarm", "lowerarm"), ("lowerarm", "hand")]),
+          ("hands", [("hand", "middle_01")]), ("feet", [("foot", "ball")])]
+# IK bones sit on their FK bone in retail bind poses (Holly and Walker alike): they follow it
+IK_FOLLOW = {"ik_hand_gun": "hand_r", "ik_hand_r": "hand_r", "ik_hand_l": "hand_l", "ik_foot_l": "foot_l",
+             "ik_foot_r": "foot_r"}
+
+
+def proportions_keep(o, mode):
+    """--proportions own (default, 1) | fit (0) | a number in between: how much of the model's own segment lengths
+    the 3P fit keeps (lengths blended geometrically). FP: always 0."""
+    v = str(o.get("proportions") or "own").strip().lower()
+    if mode != "3p":
+        return 0.0
+    if v in ("own", "keep"): return 1.0
+    if v == "fit": return 0.0
+    try:
+        f = float(v)
+    except ValueError:
+        raise SystemExit(f"--proportions {v}: own, fit or a number from 0 (fit) to 1 (own)")
+    return max(0.0, min(1.0, f))
+
+
+def proportions_report(sp, inv, tp, keep, mode="3p"):
+    """Log the model's segment lengths against the template's (sp: source joint positions after the uniform scale)."""
+    def length(pairs, side=None):
+        tot_s = tot_t = 0.0
+        for a, b in pairs:
+            a_, b_ = (f"{a}_{side}", f"{b}_{side}") if side else (a, b)
+            if a_ not in inv or b_ not in inv or a_ not in tp or b_ not in tp: return None
+            tot_s += (sp[inv[b_]] - sp[inv[a_]]).length; tot_t += (tp[b_] - tp[a_]).length
+        return tot_s / tot_t if tot_t > 1e-6 else None
+    rows = []
+    for name, pairs in GROUPS:
+        r = [x for x in (length(pairs, "l"), length(pairs, "r")) if x]
+        if r: rows.append((name, sum(r) / len(r)))
+    top = next((x for x in ("neck_01", "neck_02", "head") if x in inv and x in tp), None)
+    if top and "pelvis" in inv: rows.insert(1, ("torso", length([("pelvis", top)])))
+    if top and top != "head" and "head" in inv: rows.insert(2, ("neck", length([(top, "head")])))
+    for name, a, b in (("shoulders", "upperarm_l", "upperarm_r"), ("hips", "thigh_l", "thigh_r")):
+        if a in inv and b in inv:
+            rows.append((name, (sp[inv[a]] - sp[inv[b]]).length / max(1e-6, (tp[a] - tp[b]).length)))
+    txt = ", ".join(f"{n} x{r:.2f}" for n, r in rows if r)
+    how = ("first-person arms: fitted onto the FP skeleton (its animations move every bone)" if mode != "3p" else
+           "kept: the mesh's bind skeleton gets the model's joints" if keep == 1.0 else
+           "stretched onto the survivor's joints" if keep == 0.0 else f"blended ({keep:.2f} of the model's own)")
+    log(f"proportions (model / survivor, same height): {txt}; {how}")
+    far = [n for n, r in rows if r and abs(math.log(r)) > 0.25]
+    if far and keep == 0.0 and mode == "3p":
+        log(f"  {', '.join(far)} differ by more than 25 %: they look stretched or squashed (--proportions own keeps "
+            f"them)")
+
+
+def own_bind_pose(tpl, sarm, meshes, bmap, inv, spos, D_of):
+    """The model's own proportions: stand the chained joints on the template's ground (the model's soles where the
+    template's are) and return the mapped joints' new positions {template bone: Vector}. Moves every D in D_of."""
+    owner = own_bones(sarm, bmap, inv, tpl.pos)
+    feet = {inv[x] for x in ("foot_l", "foot_r", "ball_l", "ball_r") if x in inv}
+    tground = min((tm.matrix_world @ v.co).z for tm in tpl.meshes for v in tm.data.vertices)
+    low = low_any = None
+    for m in meshes:
+        names = {g.index: g.name for g in m.vertex_groups}
+        for v in m.data.vertices:
+            if not v.groups: continue
+            g = max(v.groups, key=lambda x: x.weight)
+            ob = owner.get(names.get(g.group))
+            if ob not in D_of: continue
+            z = (D_of[ob] @ (m.matrix_world @ v.co)).z
+            low_any = z if low_any is None else min(low_any, z)
+            if ob in feet: low = z if low is None else min(low, z)
+    low = low if low is not None else low_any
+    shift = Matrix.Translation(Vector((0, 0, tground - low))) if low is not None else Matrix.Identity(4)
+    for k in D_of: D_of[k] = shift @ D_of[k]
+    P = {t: D_of[sb] @ spos[sb] for sb, t in bmap.items() if sb in D_of}
+    if "pelvis" in P:
+        log(f"proportions: pelvis {P['pelvis'].z * 100:.1f} cm above the ground (survivor {tpl.pos['pelvis'].z * 100:.1f}),"
+            f" head joint {P['head'].z * 100:.1f} cm (survivor {tpl.pos['head'].z * 100:.1f}); soles on the survivor's "
+            f"ground ({(tground - low) * 100 if low is not None else 0:+.1f} cm)")
+    return P
+
+
+def rebind_template(tpl, P, chains, chain_of, o):
+    """Move the template's joints onto P (the model's), segment by segment (turn + stretch; bones that aren't mapped
+    move with their mapped ancestor, IK bones with their FK bone, `weapon` scales with the shoulder height), deform its
+    meshes along, and make that the template armature's rest pose. Records every moved bone in manifest extras
+    bind_bones_m (Blender world metres), which the importer writes into the mesh's reference skeleton."""
+    arm = tpl.arm
+    tp = dict(tpl.pos)
+    bones = sorted(arm.data.bones, key=depth_bone)
+    D, Q, axis = {}, {}, {}
+
+    def seg(n, a, c):
+        dt, dm = tp[c] - tp[a], P[c] - P[a]
+        if dt.length < 1e-6 or dm.length < 1e-6: return None
+        q = dt.normalized().rotation_difference(dm.normalized())
+        st, u = dm.length / dt.length, dt.normalized()
+        S = Matrix.Identity(3) + (st - 1.0) * Matrix(((u.x * u.x, u.x * u.y, u.x * u.z), (u.y * u.x, u.y * u.y, u.y * u.z),
+                                                      (u.z * u.x, u.z * u.y, u.z * u.z)))
+        return Matrix.Translation(P[n]) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-tp[n]), q, (u, st)
+
+    for b in bones:
+        n = b.name
+        anc = b.parent
+        while anc is not None and anc.name not in P: anc = anc.parent
+        if n in P:
+            ch = chain_of.get(n)
+            if ch:
+                a, c = chains[ch]
+            else:
+                a, c = n, next((x for x in AIM.get(n, []) if x in P), None)
+            r = seg(n, a, c) if c else None
+            if r:
+                D[n], Q[n], axis[n] = r
+            else:                       # end bones (head, ball, finger tips): the parent's turn, no stretch
+                q = Q.get(anc.name, Quaternion()) if anc is not None else Quaternion()
+                D[n] = Matrix.Translation(P[n]) @ q.to_matrix().to_4x4() @ Matrix.Translation(-tp[n]); Q[n] = q
+        elif anc is not None:
+            D[n], Q[n] = D[anc.name], Q[anc.name]
+            if anc.name in axis: axis[n] = axis[anc.name]
+        else:
+            D[n] = Matrix.Identity(4)
+    for n, fk in IK_FOLLOW.items():
+        if n in tp and fk in D:
+            D[n] = Matrix.Translation(D[fk] @ tp[n] - tp[n]); axis.pop(n, None)
+    ua = [P[x].z / tp[x].z for x in ("upperarm_l", "upperarm_r") if x in P and tp[x].z > 1e-3]
+    if "weapon" in tp and ua:
+        w = tp["weapon"]; r = sum(ua) / len(ua)
+        D["weapon"] = Matrix.Translation(Vector((w.x, w.y, w.z * r)) - w)
+    # stretched bones point along their stretch axis (a pose holds scale along the bone, not shear)
+    select_only([arm], arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    for eb in arm.data.edit_bones:
+        eb.inherit_scale = "NONE"
+        eb.use_connect = False
+        u, st = axis.get(eb.name, (None, 1.0))
+        if u is not None and abs(st - 1.0) > 1e-4:
+            roll_ref = eb.z_axis.copy()
+            eb.tail = eb.head + u * eb.length
+            eb.align_roll(roll_ref)
+    bpy.ops.object.mode_set(mode="POSE")
+    M = {}
+    for pb in sorted(arm.pose.bones, key=lambda x: depth_bone(x.bone)):
+        pb.matrix = D[pb.name] @ pb.bone.matrix_local
+        bpy.context.view_layer.update()
+        M[pb.name] = pb.matrix.copy()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for tm in tpl.meshes:
+        select_only([tm], tm)
+        for md in list(tm.modifiers):
+            if md.type == "ARMATURE":
+                bpy.ops.object.modifier_apply(modifier=md.name)
+    # the posed skeleton becomes the rest pose
+    select_only([arm], arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    for eb in arm.data.edit_bones:
+        m = M[eb.name]
+        sy = m.col[1].xyz.length
+        length = eb.length
+        eb.matrix = m.normalized()
+        eb.length = max(1e-4, length * sy)
+    bpy.ops.object.mode_set(mode="POSE")
+    for pb in arm.pose.bones: pb.matrix_basis = Matrix.Identity(4)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for tm in tpl.meshes:
+        md = tm.modifiers.new("Armature", "ARMATURE"); md.object = arm
+    tpl.pos = {b.name: arm.matrix_world @ b.head_local for b in arm.data.bones}
+    err = max(((tpl.pos[n] - p).length for n, p in P.items() if n in tpl.pos), default=0.0)
+    moved = {n: p for n, p in tpl.pos.items() if (p - tp[n]).length > 1e-6}
+    o.setdefault("extras", {})["bind_bones_m"] = {n: [p.x, p.y, p.z] for n, p in moved.items()}
+    far = max(((tpl.pos[n] - tp[n]).length for n in moved), default=0.0)
+    log(f"bind skeleton: {len(moved)} bones moved to the model's proportions (up to {far * 100:.1f} cm; joint error "
+        f"{err * 100:.2f} cm)")
+
+
 def fit_character(o):
     tpl = Template(o["template"])
     src_objs = import_any(o["source"])
@@ -565,6 +749,7 @@ def fit_character(o):
     # FBX files often carry cm scale / axis rotations on the objects: bake them into the data first
     apply_transforms(src_objs)
 
+    own_bind = chains = chain_of = None
     if arms:
         sarm = max(arms, key=lambda a: len(a.data.bones))
         user_map = None
@@ -612,18 +797,9 @@ def fit_character(o):
             vg = m.vertex_groups.new(name=inv["head"]); vg.add(range(len(m.data.vertices)), 1.0, "REPLACE")
             md = m.modifiers.new("Armature", "ARMATURE"); md.object = sarm
         smeshes = mesh_children(sarm, meshes)
-        # proportions report: each limb segment's length against the template's (the fit stretches it to match)
-        spos_w = {b.name: b.head_local.copy() for b in sarm.data.bones}
-        ratios = []
-        for t, aims in AIM.items():
-            if t in inv and aims[0] in inv and aims[0] in tp and t in tp and not t.startswith(tuple(FINGERS)) \
-                    and t not in SPINE_CHAIN and t not in NECK_CHAIN:
-                ls = (spos_w[inv[aims[0]]] - spos_w[inv[t]]).length
-                lt = (tp[aims[0]] - tp[t]).length
-                if ls > 1e-4: ratios.append((lt / ls, t))
-        if ratios:
-            far = [f"{t} x{r:.2f}" for r, t in sorted(ratios, key=lambda x: -abs(math.log(x[0])))[:4] if abs(math.log(r)) > 0.25]
-            log("proportions: segments stretched to the template's by " + (", ".join(far) if far else "less than 25 %"))
+        # proportions: the model's segments against the survivor's (legs, torso, neck, arms)
+        keep = proportions_keep(o, mode)
+        proportions_report({b.name: b.head_local.copy() for b in sarm.data.bones}, inv, tp, keep, mode)
         # 2. pose every mapped bone so its joint lands on the template joint and it aims at the template's next joint;
         #    bones in between (twist, extra spine/neck segments, helpers) and below (face, hair) move with their mapped
         #    ancestor's deformation
@@ -662,26 +838,50 @@ def fit_character(o):
         worst = 0.0
         D_of = {}
         chain_D = {}
-        for chain, (base, top) in chains.items():
+
+        # template hierarchy: with the model's own proportions each joint is carried by the transform of its parent
+        # in the TEMPLATE's tree (source rigs differ: Rigify hangs thighs and shoulders off ORG- bones)
+        tparent = {b.name: b.parent.name if b.parent else None for b in tpl.arm.data.bones}
+        tdepth = {b.name: depth_bone(b) for b in tpl.arm.data.bones}
+
+        def mapped_tparent(t):
+            p = tparent.get(t)
+            while p is not None and (p not in inv or inv[p] not in D_of): p = tparent.get(p)
+            return p
+
+        def joint_target(sb, t):
+            """Where a mapped joint goes: the template's joint (fit); with the model's own proportions (keep > 0),
+            where its mapped parent's transform carries it (segments only turned, joints chained from the pelvis)."""
+            if keep == 0.0: return tp[t]
+            p = mapped_tparent(t)
+            return D_of[inv[p]] @ spos[sb] if p is not None else tp[t].copy()
+
+        def chain_fit(chain):
+            base, top = chains[chain]
             a_s, b_s = spos[inv[base]], spos[inv[top]]
-            a_t, b_t = tp[base], tp[top]
-            ds, dt = b_s - a_s, b_t - a_t
-            if ds.length > 1e-5 and dt.length > 1e-5:
-                q = ds.normalized().rotation_difference(dt.normalized())
-                y = ds.normalized()
-                S = Matrix.Identity(3) + (dt.length / ds.length - 1.0) * Matrix(((y.x * y.x, y.x * y.y, y.x * y.z),
-                                                                                  (y.y * y.x, y.y * y.y, y.y * y.z),
-                                                                                  (y.z * y.x, y.z * y.y, y.z * y.z)))
-                chain_D[chain] = Matrix.Translation(a_t) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-a_s)
-                log(f"  {chain} ({base} -> {top}) fitted as one piece, stretched x{dt.length / ds.length:.2f}")
+            ds, dt = b_s - a_s, tp[top] - tp[base]
+            if ds.length <= 1e-5 or dt.length <= 1e-5: return None
+            q = ds.normalized().rotation_difference(dt.normalized())
+            st = (dt.length / ds.length) ** (1.0 - keep)
+            y = ds.normalized()
+            S = Matrix.Identity(3) + (st - 1.0) * Matrix(((y.x * y.x, y.x * y.y, y.x * y.z),
+                                                          (y.y * y.x, y.y * y.y, y.y * y.z),
+                                                          (y.z * y.x, y.z * y.y, y.z * y.z)))
+            a_t = joint_target(inv[base], base)
+            log(f"  {chain} ({base} -> {top}) fitted as one piece, stretched x{st:.2f}")
+            return Matrix.Translation(a_t) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-a_s)
         # phase 1: the fit transform D of every mapped bone (joint onto the template joint, aimed, stretched)
         q_of = {}
-        for pb in order:
+        fit_order = order if keep == 0.0 else \
+            sorted((pb for pb in order if bmap.get(pb.name) in tdepth), key=lambda pb: tdepth[bmap[pb.name]])
+        for pb in fit_order:
             t = bmap.get(pb.name)
             if t is None or t in BIND_ONLY: continue
             rest = pb.bone.matrix_local.copy()
             ch = chain_of.get(t)
-            if ch in chain_D:
+            if ch is not None and ch not in chain_D:
+                chain_D[ch] = chain_fit(ch)
+            if chain_D.get(ch) is not None:
                 # torso and neck: one transform per chain (pelvis -> neck, neck -> head), so segment lengths that
                 # differ from the template's (Mixamo hips, VRM and Rigify spines) don't squash and stretch it in bands
                 D_of[pb.name] = chain_D[ch]
@@ -689,20 +889,24 @@ def fit_character(o):
                 continue
             aim = next((x for x in AIM.get(t, []) if x in inv and x in tp and x not in BIND_ONLY), None)
             head_s = spos[pb.name]
-            head_t = tp[t]
+            head_t = joint_target(pb.name, t)
             if aim:
                 dir_s = spos[inv[aim]] - head_s
-                dir_t = tp[aim] - head_t
+                dir_t = tp[aim] - tp[t]
             else:
                 dir_s = dir_t = None
             if dir_s is not None and dir_s.length > 1e-6 and dir_t.length > 1e-6:
                 q = dir_s.normalized().rotation_difference(dir_t.normalized())
-                st = dir_t.length / dir_s.length
+                st = (dir_t.length / dir_s.length) ** (1.0 - keep)
             else:
                 # no aim joint (end bones, head): keep the nearest mapped parent's rotation change
-                par = pb.parent
-                while par is not None and par.name not in q_of: par = par.parent
-                q = q_of[par.name] if par is not None else Quaternion()
+                if keep == 0.0:
+                    par = pb.parent
+                    while par is not None and par.name not in q_of: par = par.parent
+                    q = q_of[par.name] if par is not None else Quaternion()
+                else:
+                    p = mapped_tparent(t)
+                    q = q_of[inv[p]] if p is not None else Quaternion()
                 st = 1.0
             # stretch along the bone's own axis (= the segment, see above) about the head; rotate; move the head
             # onto the template joint
@@ -713,6 +917,7 @@ def fit_character(o):
             D_of[pb.name] = Matrix.Translation(head_t) @ q.to_matrix().to_4x4() @ S.to_4x4() @ Matrix.Translation(-head_s)
             q_of[pb.name] = q
             worst = max(worst, ((D_of[pb.name] @ head_s) - head_t).length)
+        own_bind = own_bind_pose(tpl, sarm, smeshes, bmap, inv, spos, D_of) if keep > 0.0 else None
         # which mapped bone each other bone moves with (and gives its weights to): its mapped ancestor, or the mapped
         # bone of the same name in another layer (Rigify ORG-/MCH- vs DEF-), else the mapped bone nearest to it
         # (helper bones parented outside the deform chain, e.g. MakeHuman elbow/knee helpers)
@@ -776,6 +981,10 @@ def fit_character(o):
         # model's, take the weights from the posed template, then un-pose the model into the template's bind pose
         unpose_arms(tpl, meshes)
         o["weights"] = "done"
+    if own_bind:
+        # the template (skeleton + meshes) takes the model's proportions too: later steps (twist weights, the face)
+        # compare against it, and its joints become the mesh's bind skeleton (manifest extras bind_bones_m)
+        rebind_template(tpl, own_bind, chains, chain_of, o)
     if o.get("weights") == "transfer":
         transfer_weights(tpl, smeshes, all_groups=True)
     elif o.get("twist", "template") == "template":
