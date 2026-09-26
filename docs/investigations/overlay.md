@@ -91,3 +91,25 @@ Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID
 - `B4B_LANE=2 tools/e2e.py --quick --no-lock`: 13/13 PASS incl. the new overlay smoke check (`#1 frames built=232
   drawn=232; #2 frames built=256 drawn=256`), /tmp/b4b-e2e-l2-20260925-163516.
 - Not tried: window resize (ResizeBuffers), native Windows, gamepad.
+
+## Dev screenshots of the presented frame (`screenshot <windows path>`)
+- Why: engine screenshots (`exec shot`, UE's viewport grab) contain the 3D scene only: no ~ overlay, no UMG, and
+  all black on UI-only screens. e2e's `duo-end-*.png` were 370-byte black PNGs (960x540, 1-bit): at `stop()` both
+  instances sit on the next chapter's pre-round corruption-card screen (Evansburgh_C) or its loading screen. Sampled
+  live every 10 s through the transition: engine mean 0.34 on Evansburgh_B, exactly 0 on Evansburgh_C's pre-round;
+  the Present capture showed the "Supply points earned" / "Corruption cards" screens.
+- How (overlay.cpp, `#ifndef B4B_RELEASE`): the command installs the Present/ECL hooks if the window was never opened
+  and sets a request; the next Present (RHI thread, after the overlay has drawn) copies the current back buffer
+  (PRESENT -> COPY_SOURCE -> PRESENT) into a READBACK buffer (`GetCopyableFootprints`, any size) on the game's direct
+  queue with its own allocator/list/fence. A worker thread waits for the fence, converts to 8-bit RGB (R8G8B8A8,
+  B8G8R8A8/X8, R10G10B10A2 = top 8 bits, R16G16B16A16_FLOAT scRGB -> sRGB, clamped; HDR10/PQ is not decoded) and
+  writes an uncompressed PNG (stored deflate blocks, no dependency; `<path>.part`, then renamed). One capture in flight;
+  `screenshot` alone prints the last result (`wrote ... (960x540, format 24)`; the game's back buffer is format 24 =
+  R10G10B10A2_UNORM).
+- `launch/shot.sh` uses it first (path in the prefix's Saved/Screenshots, moved out and resized), then the engine shot,
+  then (no `B4B_GPU`) the X11 window grab.
+- Live (2026-09-25, lane 2, `B4B_GPU=4090` headless gamescope, `multi.sh 2`): host and client in Fort Hope (HUD
+  visible), with the overlay open on the Players tab (both), in Evansburgh_B character select (plus the client's
+  Cheats tab, greyed), post-round and pre-round screens; `shot.sh` takes ~0.6 s. `e2e.py --quick --no-lock` 13/13 with
+  real `overlay-1/2.png` and `duo-end-1/2.png` (/tmp/b4b-e2e-l2-20260925-203705). Windowed run (no `B4B_GPU`) not
+  re-checked: the 5090 was busy.
