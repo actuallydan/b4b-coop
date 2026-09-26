@@ -276,14 +276,67 @@ cosmetic, ~25 s. AR02 handed out with `giveitem <slot> row Weapons_DT DF038C6A4E
 - `/models off` (host): both floor copies `back to its own mesh` on the host and on client 2 (from the notice).
 - `tools/e2e.py --quick` (lane 2, this build): 14/14 PASS.
 - Screenshots: `~/.local/share/b4b-coop/floorlooks/shots/` (not committed).
-- State (stopping point): feature done and live-verified; not yet done: a late joiner / a player dropping a weapon
-  while far from others (only the 3 m search radius on clients), LMG01 floor copy seen by a client picking it up in
-  third person, pickups nobody dropped (by design untouched).
+- State then: late joiners, drops far from others and the client-side position race were open (done below).
+
+### Late joiners and host-named pickups (2026-09-25, branch `models-looks2`, lane 1, `B4B_GPU=4090`)
+- **What a joiner can read**: held weapons: the skin row replicates with the weapon actor, so a late joiner's
+  `OnRep_CustomizationRow` -> ApplyCustomization hook puts the look on (verified below, nothing added). Dropped
+  pickups: nothing replicated says who dropped them or which look (`ItemRowsAndQuantities` has no skin, PreviousOwner
+  is host-only, Owner/Instigator empty); abusing a replicated gameplay field (attachments, row) would reach the next
+  owner's item. So the **host names them**: it pairs the drop exactly (PreviousOwner; fallback nearest within 3 m),
+  **with or without the add-on** (it tracks any `b4bcoop.weapon.*` row), and once the pickup lies still (2 checks
+  0.25 s apart moving < 2 cm, or 5 s) sends every client a **data line** `wlook floor <look> <code> <x> <y> <z>`.
+- **Data line**: `ClientTeamMessage` with a third Type `b4bcoopdata` (chat.c `CHAT_DATA_TYPE`, `admin_data_to`), never
+  shown. An agent without a handler passes it to the engine, which shows nothing; clients without b4bcoop likewise.
+  Purely additive and cosmetic, so **protocol stays 2** (a mixed session just behaves like before).
+- **Late join**: each remote PlayerController first seen gets, 2 s later, `wlook hello` plus a `wlook floor` line
+  (current position) for every told pickup still lying there. A told pickup that moves > 30 cm afterwards (seen: lay
+  still 0.5 s at the hero's feet, then fell 1.4 m) is sent `wlook gone <old>` + `floor <new>`.
+- **Looted pickups are not destroyed**: after a pickup, the actor stays at 0,0,0 with quantity 0 (`items`: `x0`),
+  maybe for reuse. Quantity 0 = gone: the host drops it from its list and sends `wlook gone`; every machine puts the
+  retail mesh back on a floor copy that became quantity 0; drops never pair with one.
+- **Clients**: the instant guess stays (nearest within 3 m, as before). A host line is matched to the pickup of that
+  weapon type lying within 1 m of the given spot (context 0/3 only, not already host-named; kept pending until the
+  pickup is replicated, e.g. out of relevancy, until map change or `gone`); duplicates are ignored. The host-named
+  pickup is marked; a guess of the same look within 5 m of it is taken back unless another pending line covers it;
+  once the host is known to send lines (`hello` on this connection) a guess not confirmed in 10 s is taken back.
+  Older hosts: guesses stay (old behavior). This makes the same-spot race (item swap between two heroes) moot.
+- Dev: `wlook pickups` shows `(host)`/`(guess)`, `told`, and the host/client line counters; `wlook drophero <item#>
+  <hero#>...` (host: those heroes drop in one frame), `wlook guess <x> <y> <look>` (force a client guess).
+
+Live (`multi.sh 2` + a 3rd instance started mid-mission, hot-join + `takeover`; `mod_ak47.pak` via `addons_dir=`):
+- Host + client with the add-on, both `/model ak47`, both drop: host `ak47 on the floor: ... (its dropper, 2
+  mesh(es), told once it lies still)`, `told 1 player(s): wlook floor ak47 AR02 11243 340 611` 2 s later; client
+  guess 10 ms after the drop, then `(the host's, 0 cm off, 2 mesh(es))`: host and client positions agree to 1 cm.
+- Late joiner (3rd instance, add-on): `told Hergmgurk the weapon looks on the floor (2)` -> both pickups `(the host's,
+  0 cm off)`; `wlook dump`: client 2's held AR02 `3P_AR02_SM` = `/Game/b4bcoop/weapons/ak47/...` (row replicated).
+  Screenshots `late_floor.png`, `latejoiner_sees_floor.png` (presented frames, HUD incl.).
+- Host **without** the add-on, two clients with it: host `ak47 on the floor ... (its dropper, 0 mesh(es))` + told;
+  both clients `(the host's, 0 cm off, 2 mesh(es))`; a relaunched late joiner got it 3 s after joining (spectating).
+- Same-frame drops of two heroes (`wlook drophero 0 2 1`) facing each other 70 cm apart: pickups landed crossed
+  (each near the other hero); guesses were right (the first scan runs while both are still at their hands) and the
+  host lines confirmed them. Forced wrong guess (`wlook guess`): `taken back (the host named another pickup)` at the
+  host's line; a forced guess the host never names: `not confirmed by the host, taken back` after 10 s. Two
+  same-look drops 2 m apart: before the "another pending line" rule the second guess flickered off for one tick.
+- Host picks up the client's floor AK: client gets `wlook gone ak47 AR02 11266 339 611`, host `... back to its own
+  mesh` on the looted pickup, the host's new AR02 its own `/model`; a late joiner then gets only the pickup still
+  lying there.
+- `tools/e2e.py --quick --no-lock` (lane 1, this build): 14/14 PASS. Logs: `~/.local/share/b4b-coop/looks2/run{1,2,3}`,
+  screenshots `~/.local/share/b4b-coop/looks2/shots/` (not committed).
+
+### Decisions: world pickups and the dropped magazine
+- **World pickups nobody dropped** (loot, context 1) **stay retail**: a look is a player's choice and nobody chose
+  these; whoever picks one up gets their own choice on the new weapon, as retail skins (which don't show on any
+  pickup either).
+- **Dropped magazine stays retail**: it is the Cascade system `VFX_EmptyMag_<Code>_3P_P` (only 8 weapons), always
+  loaded (`find VFX_EmptyMag`: all 8 packages resident), whose mesh is in the shared asset's
+  `ParticleModuleTypeDataMesh_0`; Cascade has no per-instance mesh parameter, so changing it for one player means a
+  per-look copy of the particle system (modkit, plus a magazine mesh `--as` doesn't build today) and a hook on the
+  3P reload montage's particle spawn. Visible only in third person for under a second. Follow-up if wanted.
 
 ### Limits / open
-- Clients pair a pickup by position (the host's PreviousOwner doesn't replicate): two heroes dropping the same weapon
-  type on the same spot within the same frame could swap looks (cosmetic). A late joiner doesn't know weapons dropped
-  before it joined. World pickups nobody dropped and the dropped-magazine particle stay retail.
+- Clients guess a pickup by position until the host's line arrives (~0.5-2 s after landing); with an older host the
+  guess is final. World pickups nobody dropped and the dropped-magazine particle stay retail (above).
 - While the look is on, players without the add-on see the default weapon, not the owner's skin.
 - One look per weapon code per player.
 - The client test window sometimes stays on the loading screen image (not repainted) although the game runs; views

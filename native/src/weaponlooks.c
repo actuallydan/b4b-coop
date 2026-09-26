@@ -158,8 +158,9 @@ static void set_comp_mesh(UObject *c, UObject *mesh, int clear_overrides) {
 // The first-person skin's materials are set once when the weapon's FP mesh is set up (ApplyCustomization leaves them),
 // so they are kept here and put back with the mesh.
 #define MAX_MATS 16
-// floor: item is a weapon pickup lying on the floor (a dropped weapon, §9 "Floor"), kept until it's gone or models go off
-typedef struct { UObject *comp, *orig, *item; int32_t ci, oi, ii; char look[33]; UObject *mat[MAX_MATS]; int32_t mi[MAX_MATS]; int nmat, floor; } Swap;
+// floor: item is a weapon pickup lying on the floor (a dropped weapon, §9 "Floor"), kept until it's gone or models go off;
+// conf: the host said so (else a client's own guess, taken back when the host names another pickup), t: when put on
+typedef struct { UObject *comp, *orig, *item; int32_t ci, oi, ii; char look[33]; UObject *mat[MAX_MATS]; int32_t mi[MAX_MATS]; int nmat, floor, conf; float t; } Swap;
 #define MAX_SWAPS 96
 static Swap swaps[MAX_SWAPS];
 static Swap *swap_of(UObject *c) {
@@ -180,7 +181,7 @@ static void note_swap(UObject *c, UObject *orig, UObject *item, const char *look
             s->mat[i] = m; s->mi[i] = m ? U_INDEX(m) : 0; s->nmat = i + 1;
         }
     }
-    s->comp = c; s->ci = U_INDEX(c); s->item = item; s->ii = U_INDEX(item); s->floor = 0;
+    s->comp = c; s->ci = U_INDEX(c); s->item = item; s->ii = U_INDEX(item); s->floor = 0; s->conf = 0;
     snprintf(s->look, sizeof s->look, "%s", look);
 }
 static int n_applied;
@@ -221,6 +222,27 @@ static void apply_look(UObject *item, UObject *mm, Look *l) {
         LOG("wlooks: %s wears %s (%d mesh(es))", ue_obj_name(item, b, sizeof b), l->name, changed);
     }
 }
+// The component's retail mesh and the material overrides it had back (those the new skin didn't set); the entry freed
+static void put_back(Swap *s) {
+    if (s->orig && alive(s->orig, s->oi)) {
+        classes();
+        set_comp_mesh(s->comp, s->orig, 0);
+        UFunction *sm = s->nmat ? fn_of(s->comp, "SetMaterial") : NULL;
+        int32_t pe = parm_off(sm, "ElementIndex"), pm = parm_off(sm, "Material");
+        int32_t om = ue_prop_offset(s->comp, "OverrideMaterials");
+        TArray *cur = om >= 0 ? (TArray *)((char *)s->comp + om) : NULL;
+        for (int k = 0; sm && pe >= 0 && pm >= 0 && k < s->nmat && UFN_PARMSSIZE(sm) <= 32; k++) {
+            if (cur && k < cur->num && ((UObject **)cur->data)[k]) continue;   // the new skin set this one
+            if (!s->mat[k] || !alive(s->mat[k], s->mi[k])) continue;
+            uint8_t p[32] = {0};
+            *(int32_t *)(p + pe) = k; *(UObject **)(p + pm) = s->mat[k];
+            ue_process_event(s->comp, sm, p);
+        }
+        char b[96], c[64];
+        LOG("wlooks: %s %s back to its own mesh", ue_obj_name(s->item, b, sizeof b), ue_obj_name(s->comp, c, sizeof c));
+    }
+    memset(s, 0, sizeof *s);
+}
 // Components whose weapon no longer carries that look (only == item: that weapon's): their retail mesh back, before
 // the game applies the new skin (ApplyCustomization hook) so its material overrides stay.
 static void restore_stale(UObject *only) {
@@ -234,54 +256,66 @@ static void restore_stale(UObject *only) {
             RowHandle *r = row_of(mm_of(s->item));
             if (r && wrow_name(r->row, nm, sizeof nm) && !strcmp(nm, s->look) && look_by_name(nm)) continue;
         }
-        if (s->orig && alive(s->orig, s->oi)) {
-            classes();
-            set_comp_mesh(s->comp, s->orig, 0);
-            UFunction *sm = s->nmat ? fn_of(s->comp, "SetMaterial") : NULL;
-            int32_t pe = parm_off(sm, "ElementIndex"), pm = parm_off(sm, "Material");
-            int32_t om = ue_prop_offset(s->comp, "OverrideMaterials");
-            TArray *cur = om >= 0 ? (TArray *)((char *)s->comp + om) : NULL;
-            for (int k = 0; sm && pe >= 0 && pm >= 0 && k < s->nmat && UFN_PARMSSIZE(sm) <= 32; k++) {
-                if (cur && k < cur->num && ((UObject **)cur->data)[k]) continue;   // the new skin set this one
-                if (!s->mat[k] || !alive(s->mat[k], s->mi[k])) continue;
-                uint8_t p[32] = {0};
-                *(int32_t *)(p + pe) = k; *(UObject **)(p + pm) = s->mat[k];
-                ue_process_event(s->comp, sm, p);
-            }
-            char b[96], c[64];
-            LOG("wlooks: %s %s back to its own mesh", ue_obj_name(s->item, b, sizeof b), ue_obj_name(s->comp, c, sizeof c));
-        }
-        memset(s, 0, sizeof *s);
+        put_back(s);
     }
 }
-static void carried_note(UObject *item, UObject *pawn, Look *l);
+static float now;   // seconds since load (wlooks_tick)
+static void carried_note(UObject *item, UObject *pawn, const char *name, const char *code);
+static void code_of(UObject *item, char *out, size_t n) {   // AR02_1_BP_C -> AR02
+    char b[128];
+    ue_obj_name(U_CLASS(item), b, sizeof b);
+    char *u = strchr(b, '_');
+    if (u) *u = 0;
+    snprintf(out, n, "%s", b);
+}
 static void check_item(UObject *item, UObject *pawn) {
     UObject *mm = mm_of(item);
     RowHandle *r = row_of(mm);
-    char nm[40];
+    char nm[40], code[16];
     if (!r || !wrow_name(r->row, nm, sizeof nm)) return;
     Look *l = look_by_name(nm);
-    if (!l || !item_code(item, l->code)) return;
-    apply_look(item, mm, l);
-    carried_note(item, pawn, l);
+    if (l && !item_code(item, l->code)) return;
+    if (l) apply_look(item, mm, l);
+    // the host remembers every weapon wearing a look, add-on or not: it tells the clients where their pickups lie
+    if (l || !is_client()) { code_of(item, code, sizeof code); carried_note(item, pawn, nm, code); }
 }
 
 // ---- weapons on the floor ----
 // A dropped weapon is not the weapon actor: the host destroys the Item and spawns an ItemPickup (<Code>_N_Pickup_BP,
 // replicated) whose ItemRowsAndQuantities {row, quantity, attachments, ammo} carry no skin, showing 3P_<Code>_SM on its
-// StaticMeshComponent (so retail skins don't show on the floor either). Every machine with the add-on keeps a list of
-// the heroes' weapons wearing a look; when one leaves its hero's inventory, the new pickup of that weapon which the
-// hero dropped gets the look's 3P static mesh: the one whose Owner / Instigator / PreviousOwner (host: weak pointer
-// +0x320, GetPreviousOwner 0x142199930) is that hero, else the nearest one "dropped from player" within 3 m of where the
-// hero stood. Machines without the add-on show the pickup as the game does. Picking it up makes a new Item for the
-// new owner with no skin: their own choice (their skin, or their /model look) applies, like retail skins.
-typedef struct { UObject *item, *pawn; int32_t ii, pi; Look *l; float loc[3]; } Carried;
+// StaticMeshComponent (so retail skins don't show on the floor either). Every machine keeps a list of the heroes'
+// weapons wearing a look (clients: only looks they have); when one leaves its hero's inventory, the new pickup of that
+// weapon type gets the look's 3P static mesh.
+// - Host (add-on or not): the pickup whose PreviousOwner (weak pointer +0x320, GetPreviousOwner 0x142199930, not
+//   replicated) is that hero, else the nearest "dropped from player" one within 3 m. Once it lies still (or after 5 s)
+//   the host sends every client "wlook floor <look> <code> <x> <y> <z>" (a data line, chat.c CHAT_DATA_TYPE), and a
+//   player who joins later gets "wlook hello" plus every such pickup still lying there; "wlook gone ..." when it's
+//   picked up (a client still waiting for that pickup forgets it).
+// - Client with the add-on: right away its own guess (nearest pickup of that type within 3 m of where the hero stood);
+//   the host's line then puts the look on the pickup lying at that spot (±1 m, it may arrive before the pickup does),
+//   and takes it off a guessed pickup nearby. A guess the host never confirms goes back after 10 s once the host is
+//   known to send these (its "hello"); older hosts: the guess stays.
+// Machines without the add-on show the pickup as the game does. Picking it up makes a new Item for the new owner with
+// no skin: their own choice (their skin, or their /model look) applies, like retail skins. World pickups nobody dropped
+// (loot, context 1) stay retail.
+typedef struct { UObject *item, *pawn; int32_t ii, pi; char name[33], code[16]; float loc[3]; } Carried;
 #define MAX_CARRIED 32
 static Carried carried[MAX_CARRIED];
-typedef struct { UObject *pawn; int32_t pi; Look *l; float loc[3], left, next; } Drop;
+typedef struct { UObject *pawn; int32_t pi; char name[33], code[16]; float loc[3], left, next; } Drop;
 #define MAX_DROPS 8
 static Drop drops[MAX_DROPS];
 static int n_floor;
+// host: dropped weapons wearing a look, told to the clients once they lie still
+typedef struct { UObject *pk; int32_t pi; char name[33], code[16]; float loc[3], age; int still, sent; } FloorRec;
+#define MAX_RECS 32
+static FloorRec recs[MAX_RECS];
+static int n_sent;
+// client: the host's lines not matched to a pickup yet (it isn't replicated yet / still in the air here)
+typedef struct { int on; char name[33], code[16]; float loc[3], age; UObject *world; } Pending;
+#define MAX_PENDING 32
+static Pending pending[MAX_PENDING];
+static int host_speaks, n_host_lines;   // the host sends floor lines (it said hello / sent one) on this connection
+static UObject *host_conn;
 
 static int actor_loc(UObject *a, float out[3]) {
     UFunction *f = fn_of(a, "K2_GetActorLocation");
@@ -296,14 +330,17 @@ static float dist2(const float *a, const float *b) {
     float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
     return x * x + y * y + z * z;
 }
-static void carried_note(UObject *item, UObject *pawn, Look *l) {
+static int in_inventory(UObject *pawn, UObject *item);
+static void carried_note(UObject *item, UObject *pawn, const char *name, const char *code) {
     if (!pawn) pawn = ue_get_ptr(item, "Owner");
-    if (!is_live(pawn)) return;
+    // a weapon not (yet) in its hero's replicated inventory (e.g. just joined) would look dropped the next frame
+    if (!is_live(pawn) || !in_inventory(pawn, item)) return;
     Carried *c = NULL;
     for (int i = 0; i < MAX_CARRIED && !c; i++) if (carried[i].item == item && alive(item, carried[i].ii)) c = &carried[i];
     for (int i = 0; i < MAX_CARRIED && !c; i++) if (!carried[i].item) c = &carried[i];
     if (!c) return;
-    c->item = item; c->ii = U_INDEX(item); c->pawn = pawn; c->pi = U_INDEX(pawn); c->l = l;
+    c->item = item; c->ii = U_INDEX(item); c->pawn = pawn; c->pi = U_INDEX(pawn);
+    snprintf(c->name, sizeof c->name, "%s", name); snprintf(c->code, sizeof c->code, "%s", code);
     actor_loc(pawn, c->loc);   // where it stood last (a drop is looked for around the hero)
 }
 static int in_inventory(UObject *pawn, UObject *item) {
@@ -322,16 +359,17 @@ static void tick_carried(void) {
         if (item_ok && pawn_ok && in_inventory(c->pawn, c->item)) {
             char nm[40];
             RowHandle *r = row_of(mm_of(c->item));
-            if (!r || !wrow_name(r->row, nm, sizeof nm) || strcmp(nm, c->l->name)) memset(c, 0, sizeof *c);
+            if (!r || !wrow_name(r->row, nm, sizeof nm) || strcmp(nm, c->name)) memset(c, 0, sizeof *c);
             continue;
         }
         Drop *d = NULL;
         for (int k = 0; k < MAX_DROPS && !d; k++) if (drops[k].left <= 0) d = &drops[k];
-        if (d && pawn_ok) {
-            d->pawn = c->pawn; d->pi = c->pi; d->l = c->l; d->left = 4; d->next = 0;
+        if (d && pawn_ok && !models_off()) {
+            d->pawn = c->pawn; d->pi = c->pi; d->left = 4; d->next = 0;
+            snprintf(d->name, sizeof d->name, "%s", c->name); snprintf(d->code, sizeof d->code, "%s", c->code);
             if (!actor_loc(c->pawn, d->loc)) memcpy(d->loc, c->loc, sizeof d->loc);
             char b[96];
-            LOG("wlooks: %s (%s) left %s, looking for its pickup", c->l->name, item_ok ? "kept" : "gone",
+            LOG("wlooks: %s (%s, %s) left %s, looking for its pickup", c->name, c->code, item_ok ? "kept" : "gone",
                 ue_obj_name(c->pawn, b, sizeof b));
         }
         memset(c, 0, sizeof *c);
@@ -345,30 +383,47 @@ static UObject *pickup_mesh(UObject *pk, char *name, size_t n) {   // the pickup
     if (name) { name[0] = 0; if (m) ue_obj_name(m, name, n); }
     return m;
 }
+static int pickup_code(UObject *pk, const char *code) {   // <Code>_N_Pickup_BP_C
+    char b[128];
+    size_t n = strlen(code);
+    ue_obj_name(U_CLASS(pk), b, sizeof b);
+    return n && !_strnicmp(b, code, n) && b[n] == '_' && strstr(b, "Pickup");
+}
 static Swap *floor_of(UObject *pk) {
     for (int i = 0; i < MAX_SWAPS; i++)
         if (swaps[i].floor && swaps[i].item == pk && alive(pk, swaps[i].ii) && alive(swaps[i].comp, swaps[i].ci)) return &swaps[i];
     return NULL;
 }
-// The look's 3P static mesh on the pickup's mesh components that show the weapon's (by name, as on the weapon)
-static int floor_apply(UObject *pk, Look *l) {
+static FloorRec *rec_of(UObject *pk) {
+    for (int i = 0; i < MAX_RECS; i++) if (recs[i].pk == pk && alive(pk, recs[i].pi)) return &recs[i];
+    return NULL;
+}
+// The look's 3P static mesh on the pickup's mesh components that show the weapon's (by name, as on the weapon);
+// the number of components now showing it (0: nothing to put it on)
+static int floor_apply(UObject *pk, Look *l, int conf) {
     const char *base = strrchr(l->path[M_SM], '.');
     if (!base) return 0;
     classes();
-    int changed = 0;
+    int on = 0;
     for (int k = 0; k < 2; k++) {
         UObject *c = ue_get_ptr(pk, pk_comps[k]), *cur = is_live(c) && ue_is_a(c, c_smc) ? comp_mesh(c) : NULL;
         char cn[128];
         if (!cur || _stricmp(ue_obj_name(cur, cn, sizeof cn), base + 1)) continue;
         UObject *m = look_mesh(l, M_SM);
-        if (!m || m == cur) continue;
+        if (!m) continue;
         Swap *s = swap_of(c);
-        note_swap(c, s ? s->orig : cur, pk, l->name);
-        if ((s = swap_of(c))) s->floor = 1;
-        set_comp_mesh(c, m, 1);
-        changed++;
+        if (m != cur || !s || strcmp(s->look, l->name)) {
+            note_swap(c, s ? s->orig : cur, pk, l->name);
+            if (m != cur) set_comp_mesh(c, m, 1);
+            if ((s = swap_of(c))) s->t = now;
+        }
+        if (s) { s->floor = 1; s->conf |= conf; }
+        on++;
     }
-    return changed;
+    return on;
+}
+static void floor_put_back(UObject *pk) {
+    for (int i = 0; i < MAX_SWAPS; i++) if (swaps[i].floor && swaps[i].item == pk) put_back(&swaps[i]);
 }
 static int ctx_off = -2;
 static int pickup_ctx(UObject *pk) {   // EItemPickupCreationContext (replicated): 0 player, 1 loot, 2 kill, 3 player item
@@ -376,9 +431,19 @@ static int pickup_ctx(UObject *pk) {   // EItemPickupCreationContext (replicated
     return ctx_off >= 0 ? *((uint8_t *)pk + ctx_off) : -1;
 }
 static UObject *pickup_prev_owner(UObject *pk) { return ue_weak_get((char *)pk + 0x320); }
+// A looted pickup isn't destroyed: it stays (hidden, at 0,0,0) with quantity 0 (seen live), maybe to be used again
+static int pickup_looted(UObject *pk) {
+    static int32_t off = -2;
+    if (off == -2) off = ue_prop_offset(pk, "ItemRowsAndQuantities");
+    if (off < 0) return 0;
+    TArray *a = (TArray *)((char *)pk + off);
+    int q = 0;
+    for (int i = 0; a->data && i < a->num && i < 16; i++) q += *(int32_t *)((char *)a->data + i * 0x48 + 0x20);   // ItemRowAndQuantity.Quantity
+    return q <= 0;
+}
 // Pending drops: find their pickup (scanned 5x a second while one is pending, for 4 s)
 static void tick_drops(float dt) {
-    int any = 0;
+    int any = 0, host = !is_client();
     for (int k = 0; k < MAX_DROPS; k++) {
         Drop *d = &drops[k];
         if (d->left <= 0) continue;
@@ -393,18 +458,17 @@ static void tick_drops(float dt) {
     for (int k = 0; k < MAX_DROPS; k++) bd[k] = 300.f * 300.f;
     for (int32_t i = 0, n = ue_num_objects(); i < n; i++) {
         UObject *o = ue_object_at(i);
-        if (!is_live(o) || !ue_is_a(o, c_pickup) || floor_of(o)) continue;
-        char mn[128];
-        if (!pickup_mesh(o, mn, sizeof mn)) continue;
-        UObject *own = ue_get_ptr(o, "Owner"), *ins = ue_get_ptr(o, "Instigator"), *prev = NULL;
+        if (!is_live(o) || !ue_is_a(o, c_pickup) || floor_of(o) || rec_of(o) || pickup_looted(o)) continue;
+        UObject *own = NULL, *ins = NULL, *prev = NULL;
         int got_prev = 0, ctx = -1, have_loc = 0;
         float loc[3];
         for (int k = 0; k < MAX_DROPS; k++) {
             Drop *d = &drops[k];
-            if (d->left <= 0) continue;
-            const char *base = strrchr(d->l->path[M_SM], '.');
-            if (!base || _stricmp(mn, base + 1)) continue;
-            if (!got_prev) { prev = pickup_prev_owner(o); ctx = pickup_ctx(o); got_prev = 1; }
+            if (d->left <= 0 || !pickup_code(o, d->code)) continue;
+            if (!got_prev) {
+                own = ue_get_ptr(o, "Owner"); ins = ue_get_ptr(o, "Instigator"); prev = pickup_prev_owner(o);
+                ctx = pickup_ctx(o); got_prev = 1;
+            }
             if (own == d->pawn || ins == d->pawn || prev == d->pawn) { best[k] = o; bd[k] = -1; continue; }
             if (bd[k] < 0 || (ctx != 0 && ctx != 3)) continue;
             if (!have_loc) have_loc = actor_loc(o, loc);
@@ -414,13 +478,224 @@ static void tick_drops(float dt) {
     }
     for (int k = 0; k < MAX_DROPS; k++) {
         Drop *d = &drops[k];
-        if (d->left <= 0 || !best[k] || floor_of(best[k])) continue;
-        int n = floor_apply(best[k], d->l);
+        if (d->left <= 0 || !best[k] || floor_of(best[k]) || rec_of(best[k])) continue;
+        Look *l = look_by_name(d->name);
+        int n = l ? floor_apply(best[k], l, host) : 0;
+        if (host) {
+            FloorRec *r = NULL;
+            for (int i = 0; i < MAX_RECS && !r; i++) if (!recs[i].pk || !alive(recs[i].pk, recs[i].pi)) r = &recs[i];
+            if (r) {
+                memset(r, 0, sizeof *r);
+                r->pk = best[k]; r->pi = U_INDEX(best[k]);
+                snprintf(r->name, sizeof r->name, "%s", d->name); snprintf(r->code, sizeof r->code, "%s", d->code);
+                actor_loc(best[k], r->loc);
+            }
+        }
         char b[96];
-        LOG("wlooks: %s on the floor: %s (%s, %d mesh(es))", d->l->name, ue_obj_name(best[k], b, sizeof b),
-            bd[k] < 0 ? "its dropper" : "nearest", n);
+        LOG("wlooks: %s on the floor: %s (%s, %d mesh(es)%s)", d->name, ue_obj_name(best[k], b, sizeof b),
+            bd[k] < 0 ? "its dropper" : "nearest", n, host ? ", told once it lies still" : ", a guess until the host says");
         if (n) n_floor++;
         d->left = 0;
+    }
+}
+
+// ---- host: telling the clients ----
+static UClass *c_pc;
+static int remote_pcs(UObject **out, int max) {   // every remote player's controller
+    if (!c_pc) c_pc = ue_find_class("PlayerController");
+    UObject **pa, *me = ue_local_pc();
+    int n = admin_player_array(&pa), k = 0;
+    for (int i = 0; i < n && k < max; i++) {
+        UObject *pc = is_live(pa[i]) ? ue_get_ptr(pa[i], "Owner") : NULL;
+        if (pc && pc != me && is_live(pc) && c_pc && ue_is_a(pc, c_pc)) out[k++] = pc;
+    }
+    return k;
+}
+static void rec_line(FloorRec *r, const char *verb, char *b, size_t n) {
+    snprintf(b, n, "wlook %s %s %s %d %d %d", verb, r->name, r->code, (int)lroundf(r->loc[0]), (int)lroundf(r->loc[1]),
+             (int)lroundf(r->loc[2]));
+}
+typedef struct { UObject *pc; int32_t i; float wait; int done; } Peer;
+#define MAX_PEERS 16
+static Peer peers[MAX_PEERS];
+static float host_acc;
+// Every 0.25 s on the host: a pickup told once it lies still (moved < 2 cm twice) or after 5 s; a player first seen
+// gets "hello" and every pickup told so far after 2 s (joined late: those pickups were dropped before it came).
+static void tick_host(float dt) {
+    if ((host_acc += dt) < 0.25f) return;
+    float step = host_acc;
+    host_acc = 0;
+    UObject *pcs[MAX_PEERS];
+    int np = remote_pcs(pcs, MAX_PEERS);
+    for (int i = 0; i < MAX_PEERS; i++) if (peers[i].pc && !alive(peers[i].pc, peers[i].i)) memset(&peers[i], 0, sizeof peers[i]);
+    for (int k = 0; k < np; k++) {
+        Peer *p = NULL;
+        for (int i = 0; i < MAX_PEERS && !p; i++) if (peers[i].pc == pcs[k]) p = &peers[i];
+        for (int i = 0; i < MAX_PEERS && !p; i++) if (!peers[i].pc) { p = &peers[i]; p->pc = pcs[k]; p->i = U_INDEX(pcs[k]); p->wait = 2; p->done = 0; }
+        if (!p || p->done || (p->wait -= step) > 0) continue;
+        p->done = 1;
+        admin_data_to(p->pc, "wlook hello");
+        int sent = 0;
+        char b[160];
+        for (int i = 0; i < MAX_RECS; i++) {
+            FloorRec *r = &recs[i];
+            if (!r->pk || !r->sent || !alive(r->pk, r->pi) || pickup_looted(r->pk) || models_off()) continue;
+            actor_loc(r->pk, r->loc);   // where it lies now
+            rec_line(r, "floor", b, sizeof b);
+            admin_data_to(p->pc, b);
+            sent++;
+        }
+        char a[64] = "?";
+        UObject *ps = ue_get_ptr(p->pc, "PlayerState");
+        if (ps) admin_ps_name(ps, a, sizeof a);
+        LOG("wlooks: told %s the weapon looks on the floor (%d)", a, sent);
+    }
+    for (int i = 0; i < MAX_RECS; i++) {
+        FloorRec *r = &recs[i];
+        if (!r->pk) continue;
+        int gone = !alive(r->pk, r->pi) || pickup_looted(r->pk);
+        if (gone || models_off()) {   // picked up / gone: clients still waiting for it forget it
+            if (r->sent && !models_off()) {
+                char b[160];
+                rec_line(r, "gone", b, sizeof b);
+                for (int k = 0; k < np; k++) admin_data_to(pcs[k], b);
+            }
+            memset(r, 0, sizeof *r);
+            continue;
+        }
+        float cur[3];
+        if (!actor_loc(r->pk, cur)) continue;
+        if (r->sent) {   // it moved after it was told (seen: lay still 0.5 s, then fell 1.4 m): told again where it is
+            if (dist2(cur, r->loc) < 30.f * 30.f) continue;
+            char b[160];
+            rec_line(r, "gone", b, sizeof b);
+            for (int k = 0; k < np; k++) admin_data_to(pcs[k], b);
+            memcpy(r->loc, cur, sizeof cur);
+            r->sent = 0; r->still = 0; r->age = 0;
+            continue;
+        }
+        r->still = dist2(cur, r->loc) < 2.f * 2.f ? r->still + 1 : 0;
+        memcpy(r->loc, cur, sizeof cur);
+        if (r->still < 2 && (r->age += step) < 5) continue;
+        r->sent = 1;
+        char b[160];
+        rec_line(r, "floor", b, sizeof b);
+        for (int k = 0; k < np; k++) admin_data_to(pcs[k], b);
+        n_sent++;
+        LOG("wlooks: told %d player(s): %s", np, b);
+    }
+}
+
+// ---- client: the host's lines ----
+static int valid_name(const char *nm) {   // as wrow_name
+    size_t l = strlen(nm);
+    if (!l || l > 32 || !islower((unsigned char)*nm)) return 0;
+    for (const char *c = nm; *c; c++) if (!islower((unsigned char)*c) && !isdigit((unsigned char)*c) && *c != '_') return 0;
+    return 1;
+}
+void wlooks_host_data(const char *text) {
+    if (strncmp(text, "wlook ", 6)) return;
+    host_speaks = 1; n_host_lines++;
+    char name[40] = "", code[20] = "";
+    int x, y, z;
+    int gone = !strncmp(text, "wlook gone", 10);
+    if (sscanf(text + (gone ? 10 : 11), " %39s %19s %d %d %d", name, code, &x, &y, &z) != 5 || (!gone && strncmp(text, "wlook floor", 11)))
+        return;
+    if (!valid_name(name) || strlen(code) > 15 || models_off()) return;
+    Look *l = look_by_name(name);
+    if (!l || _stricmp(l->code, code)) return;   // not a look this machine has
+    float at[3] = {(float)x, (float)y, (float)z};
+    for (int i = 0; i < MAX_PENDING; i++)   // the same line twice (sent as it landed and again on joining)
+        if (pending[i].on && !strcmp(pending[i].name, name) && dist2(pending[i].loc, at) < 10.f * 10.f) {
+            if (gone) memset(&pending[i], 0, sizeof pending[i]);
+            return;
+        }
+    if (gone) return;
+    for (int i = 0; i < MAX_SWAPS; i++) {   // ... or already on its pickup
+        float a[3];
+        if (swaps[i].floor && swaps[i].conf && !strcmp(swaps[i].look, name) && alive(swaps[i].item, swaps[i].ii) &&
+            actor_loc(swaps[i].item, a) && dist2(a, at) < 100.f * 100.f) return;
+    }
+    Pending *p = NULL;
+    for (int i = 0; i < MAX_PENDING && !p; i++) if (!pending[i].on) p = &pending[i];
+    if (!p) { p = &pending[0]; for (int i = 1; i < MAX_PENDING; i++) if (pending[i].age > p->age) p = &pending[i]; }
+    memset(p, 0, sizeof *p);
+    p->on = 1; p->world = ue_world();
+    snprintf(p->name, sizeof p->name, "%s", name); snprintf(p->code, sizeof p->code, "%s", l->code);
+    memcpy(p->loc, at, sizeof at);
+}
+static float client_acc;
+// Every 0.25 s on a client: the host's lines onto the pickups lying there; guesses the host didn't confirm go back
+static void tick_client(float dt) {
+    UObject *w = ue_world(), *nd = w ? ue_get_ptr(w, "NetDriver") : NULL, *conn = nd ? ue_get_ptr(nd, "ServerConnection") : NULL;
+    if (conn && conn != host_conn) { host_conn = conn; host_speaks = 0; }   // another host: not known to send lines yet
+    if ((client_acc += dt) < 0.25f) return;
+    float step = client_acc;
+    client_acc = 0;
+    int any = 0;
+    for (int i = 0; i < MAX_PENDING; i++) {
+        Pending *p = &pending[i];
+        if (!p->on) continue;
+        if (p->world != w || (p->age += step) > 600 || models_off()) { memset(p, 0, sizeof *p); continue; }
+        any = 1;
+    }
+    if (any) {
+        if (!c_pickup) c_pickup = ue_find_class("ItemPickup");
+        UObject *best[MAX_PENDING] = {0};
+        float bd[MAX_PENDING];
+        for (int k = 0; k < MAX_PENDING; k++) bd[k] = 100.f * 100.f;
+        for (int32_t i = 0, n = c_pickup ? ue_num_objects() : 0; i < n; i++) {
+            UObject *o = ue_object_at(i);
+            if (!is_live(o) || !ue_is_a(o, c_pickup)) continue;
+            Swap *f = floor_of(o);
+            if ((f && f->conf) || pickup_looted(o)) continue;   // the host named it already / picked up
+            int have = 0, ctx = -2;
+            float loc[3];
+            for (int k = 0; k < MAX_PENDING; k++) {
+                Pending *p = &pending[k];
+                if (!p->on || !pickup_code(o, p->code)) continue;
+                if (ctx == -2) ctx = pickup_ctx(o);
+                if (ctx != 0 && ctx != 3) break;   // world loot
+                if (!have && !(have = actor_loc(o, loc))) break;
+                float q = dist2(loc, p->loc);
+                if (q < bd[k]) { bd[k] = q; best[k] = o; }
+            }
+        }
+        for (int k = 0; k < MAX_PENDING; k++) {
+            Pending *p = &pending[k];
+            if (!p->on || !best[k]) continue;
+            Swap *f = floor_of(best[k]);
+            if (f && f->conf) continue;   // two lines, one pickup: the first wins, the other waits for its own
+            Look *l = look_by_name(p->name);
+            int n = l ? floor_apply(best[k], l, 1) : 0;
+            char b[96];
+            LOG("wlooks: %s on the floor: %s (the host's, %.0f cm off, %d mesh(es))", p->name, ue_obj_name(best[k], b, sizeof b),
+                sqrtf(bd[k]), n);
+            if (n) n_floor++;
+            // the guess for this drop may sit on another pickup nearby (two heroes dropping the same type at once)
+            for (int i = 0; i < MAX_SWAPS; i++) {
+                Swap *s = &swaps[i];
+                if (!s->floor || s->conf || s->item == best[k] || strcmp(s->look, p->name) || !alive(s->item, s->ii)) continue;
+                float a[3], c[3];
+                int other = 0;   // another line of the same look (e.g. both dropped theirs) is for this guess: it stays
+                for (int j = 0; j < MAX_PENDING && !other; j++)
+                    other = j != k && pending[j].on && !strcmp(pending[j].name, p->name) && actor_loc(s->item, a) &&
+                            dist2(a, pending[j].loc) < 100.f * 100.f;
+                if (!other && actor_loc(s->item, a) && actor_loc(best[k], c) && dist2(a, c) < 500.f * 500.f) {
+                    LOG("wlooks: guess %s taken back (the host named another pickup)", ue_obj_name(s->item, b, sizeof b));
+                    floor_put_back(s->item);
+                }
+            }
+            memset(p, 0, sizeof *p);
+        }
+    }
+    if (!host_speaks) return;   // an older host: guesses stay
+    for (int i = 0; i < MAX_SWAPS; i++) {
+        Swap *s = &swaps[i];
+        if (!s->floor || s->conf || now - s->t < 10 || !alive(s->item, s->ii)) continue;
+        char b[96];
+        LOG("wlooks: guess %s not confirmed by the host, taken back", ue_obj_name(s->item, b, sizeof b));
+        floor_put_back(s->item);
     }
 }
 // Every second: the floor looks stay on (a pickup's mesh set again by the game gets ours again)
@@ -429,6 +704,7 @@ static void tick_floor(void) {
     for (int i = 0; i < MAX_SWAPS; i++) {
         Swap *s = &swaps[i];
         if (!s->floor || !alive(s->item, s->ii) || !alive(s->comp, s->ci)) continue;
+        if (pickup_looted(s->item)) { put_back(s); continue; }   // picked up: clean if the game uses it again
         Look *l = look_by_name(s->look);
         UObject *m = l ? look_mesh(l, M_SM) : NULL;
         if (m && comp_mesh(s->comp) != m) {
@@ -448,7 +724,7 @@ static void apply_detour(UObject *mm) {
     if (is_live(it)) restore_stale(it);
     orig_apply(mm);
     RowHandle *r = row_of(mm);
-    if (r && is_ours(r->row) && n_looks > 0) {
+    if (r && is_ours(r->row) && (n_looks > 0 || !is_client())) {
         UObject *item = U_OUTER(mm);
         if (is_live(item)) check_item(item, NULL);
     }
@@ -519,14 +795,17 @@ static void tick_wishes(float dt) {
 static float acc;
 void wlooks_tick(float dt) {
     if (n_looks < 0) build_looks();
-    if (n_looks > 0) { tick_carried(); tick_drops(dt); }
+    now += dt;
+    int host = !is_client();
+    if (n_looks > 0 || host) { tick_carried(); tick_drops(dt); }
+    if (host) tick_host(dt); else tick_client(dt);
     int any = 0;
     for (int w = 0; w < MAX_WISH; w++) any |= wish[w].on;
     if (any) tick_wishes(dt);
     if ((acc += dt) < 1.0f) return;   // safety net; the ApplyCustomization hook does it at once
     acc = 0;
     restore_stale(NULL);
-    if (!n_looks) return;
+    if (!n_looks && !host) return;
     tick_floor();
     UObject *p[32];
     int np = models_hero_pawns(p, 32);
@@ -801,6 +1080,45 @@ int wlooks_cmd(const char *verb, char *rest, Out *o) {
         out_printf(o, "dropped item %d\n", k);
         return 1;
     }
+    if (sub && !strcmp(sub, "drophero") && arg) {   // drophero <item#> <hero#>...: host, those heroes drop in one frame
+        int k = atoi(arg), done = 0;
+        UObject *p[32];
+        int np = models_hero_pawns(p, 32);
+        for (char *h = strtok(NULL, " "); h; h = strtok(NULL, " ")) {
+            int hi = atoi(h);
+            UObject **it, *hinv = hi >= 0 && hi < np ? ue_get_ptr(p[hi], "Inventory") : NULL;
+            int n = hi >= 0 && hi < np ? items_of(p[hi], &it) : 0;
+            UFunction *f = fn_of(hinv, "ServerDropItem");
+            int32_t pi = parm_off(f, "Item"), pm = parm_off(f, "bManuallyDropped"), pf = parm_off(f, "bForce");
+            if (!f || pi < 0 || k < 0 || k >= n || !it[k] || UFN_PARMSSIZE(f) > 64) { out_printf(o, "hero %d: no item %d\n", hi, k); continue; }
+            uint8_t q[64] = {0};
+            *(UObject **)(q + pi) = it[k];
+            if (pm >= 0) q[pm] = 1;
+            if (pf >= 0) q[pf] = 1;
+            ue_process_event(hinv, f, q);
+            done++;
+        }
+        out_printf(o, "%d hero(es) dropped item %d in this frame\n", done, k);
+        return 1;
+    }
+    if (sub && !strcmp(sub, "guess") && arg) {   // guess <x> <y> <look>: this client's guess on the pickup nearest x,y (tests)
+        char *ys = strtok(NULL, " "), *ln = ys ? strtok(NULL, " ") : NULL;
+        Look *l = ln ? look_by_name(ln) : NULL;
+        float at[3] = {(float)atof(arg), ys ? (float)atof(ys) : 0, 0}, bd = 1e30f;
+        UObject *best = NULL;
+        if (!c_pickup) c_pickup = ue_find_class("ItemPickup");
+        for (int32_t i = 0, n = l && c_pickup ? ue_num_objects() : 0; i < n; i++) {
+            UObject *x = ue_object_at(i);
+            float q[3];
+            if (!is_live(x) || !ue_is_a(x, c_pickup) || !pickup_code(x, l->code) || !actor_loc(x, q)) continue;
+            q[2] = 0;
+            if (dist2(q, at) < bd) { bd = dist2(q, at); best = x; }
+        }
+        char a[96];
+        if (!best) { out_printf(o, "usage: wlook guess <x> <y> <look> (a pickup of that look's weapon type)\n"); return 1; }
+        out_printf(o, "guess %s on %s: %d mesh(es)\n", l->name, ue_obj_name(best, a, sizeof a), floor_apply(best, l, 0));
+        return 1;
+    }
     if (sub && !strcmp(sub, "use")) {   // use [mesh substr]: press Use on the nearest weapon pickup (ForcePressUse)
         UObject *pawn = my_pawn(), *best = NULL;
         float me[3], bd = 1e30f;
@@ -840,11 +1158,18 @@ int wlooks_cmd(const char *verb, char *rest, Out *o) {
             float loc[3] = {0};
             actor_loc(x, loc);
             Swap *f = floor_of(x);
-            out_printf(o, "%s mesh=%s ctx=%d owner=%s instigator=%s prev=%s at %.0f %.0f %.0f look=%s\n", ue_obj_name(x, a, sizeof a),
-                       m, pickup_ctx(x), w[0], w[1], w[2], loc[0], loc[1], loc[2], f ? f->look : "-");
+            FloorRec *r = rec_of(x);
+            out_printf(o, "%s mesh=%s ctx=%d owner=%s instigator=%s prev=%s at %.0f %.0f %.0f look=%s%s%s\n", ue_obj_name(x, a, sizeof a),
+                       m, pickup_ctx(x), w[0], w[1], w[2], loc[0], loc[1], loc[2], f ? f->look : (r ? r->name : "-"),
+                       f ? (f->conf ? " (host)" : " (guess)") : "", r ? (r->sent ? " told" : " not told yet") : "");
             if (++k >= 40) break;
         }
-        out_printf(o, "%d pickup(s) shown, %d floor look(s) put on\n", k, n_floor);
+        int np = 0, nr = 0;
+        for (int i = 0; i < MAX_PENDING; i++) np += pending[i].on;
+        for (int i = 0; i < MAX_RECS; i++) nr += recs[i].pk && alive(recs[i].pk, recs[i].pi);
+        out_printf(o, "%d pickup(s) shown, %d floor look(s) put on; host: %d dropped with a look, %d told; client: host sends "
+                   "lines %s (%d received), %d waiting for their pickup\n", k, n_floor, nr, n_sent, host_speaks ? "yes" : "no",
+                   n_host_lines, np);
         return 1;
     }
     UObject *p[32];

@@ -14,7 +14,8 @@
 // Host notices (/say, "you were kicked"): APlayerController::ClientTeamMessage is a reliable client RPC, but Gobi's
 // override drops the chat types (Say/TeamSay) and passes the rest to the engine, which shows nothing. We send it with
 // our own Type name (CHAT_NOTICE_TYPE) and, on the receiving machine (clients run this agent too), hook the override
-// and show such messages as chat lines. A client without the agent ignores them.
+// and show such messages as chat lines. A client without the agent ignores them. A third Type (CHAT_DATA_TYPE) carries
+// data for the client's agent and is never shown; an agent that doesn't know it passes it on (the engine shows nothing).
 #include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -59,10 +60,12 @@ static void fstring_set(FString *s, const char *utf8, wchar_t *storage, int cap)
     s->data = storage; s->num = n + 1; s->max = cap;
 }
 
-FName chat_notice_type(int kick) {
-    static FName n[2];
-    if (!n[kick].idx) ((FNameCtorFn)ADDR_FNAME_CTOR)(&n[kick], kick ? CHAT_KICK_TYPE : CHAT_NOTICE_TYPE, 1);
-    return n[kick];
+FName chat_notice_type(int kind) {
+    static FName n[3];
+    static const wchar_t *const names[3] = {CHAT_NOTICE_TYPE, CHAT_KICK_TYPE, CHAT_DATA_TYPE};
+    if (kind < 0 || kind > 2) kind = 0;
+    if (!n[kind].idx) ((FNameCtorFn)ADDR_FNAME_CTOR)(&n[kind], names[kind], 1);
+    return n[kind];
 }
 
 // ---- local chat lines ----
@@ -177,8 +180,9 @@ static void ctm_detour(UObject *pc, UObject *sender, const FString *s, FName typ
     n_received++;
     ue_name(type, tn, sizeof tn);
     if (strcmp(tn, "Event")) LOG("chat: received %s message from %s: %s", tn, name, text);   // Event: game debug lines
-    FName nt = chat_notice_type(0), kt = chat_notice_type(1);
+    FName nt = chat_notice_type(0), kt = chat_notice_type(1), dt = chat_notice_type(2);
     if (type.idx == nt.idx && type.num == nt.num) { models_host_notice(text); show_text(name[0] ? name : "host", text); return; }
+    if (type.idx == dt.idx && type.num == dt.num) { wlooks_host_data(text); return; }   // data for this agent, not shown
     if (type.idx == kt.idx && type.num == kt.num) {
         // only honoured from the server we are connected to (a client RPC can only come from it)
         LOG("chat: the host removed us: %s", text);
