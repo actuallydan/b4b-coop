@@ -1207,8 +1207,15 @@ def secondary_motion(o, tpl, meshes):
         chains = [c.split(",") for c in o["hair_bones"].split(";") if c]
         dm.rig_hair(tpl, meshes, chains, is_hair, log, float(o.get("hair_swing", 1.0)))
     if o.get("cloth", "off") not in ("off", ""):
-        mats = dm.cloth_materials(meshes, tpl, o["cloth"], log)
-        pieces, sims = dm.cloth_regions(tpl, meshes, mats, log)
+        # --cloth_slots: the slots whose master material has bUsedWithClothing (b4bmodel reads it): a cloth section
+        # on any other slot renders the engine's default material (grey) and the game logs "missing bUsedWithClothing"
+        cloth_ok = None
+        if o.get("cloth_slots") is not None:
+            slot_of = dict(x.split("=", 1) for x in o.get("slot", []))
+            ok_slots = {x.lower() for x in o["cloth_slots"].split(",") if x}
+            cloth_ok = lambda mat: slot_of.get(mat, "").lower() in ok_slots if mat in slot_of else True
+        mats, objs = dm.cloth_materials(meshes, tpl, o["cloth"], log, cloth_ok)
+        pieces, sims = dm.cloth_regions(tpl, meshes, mats, log, objs)
         if sims:
             meshes = [m for m in meshes if len(m.data.polygons)] + pieces
             o.setdefault("extras", {})["cloth"] = sims
@@ -2101,10 +2108,127 @@ def weld_for_decimation(c):
     return len(target)
 
 
-def make_lods(o, meshes):
+LOD0_KEEP_GROUP = "b4b_keep"   # vertex group of the face: decimated less (Decimate's vertex group, inverted)
+LOD0_KEEP_WEIGHT = 0.5         # inverted to 0.5 (an inverted weight of 0 would never collapse: hair on the head stayed)
+LOD0_KEEP_FACTOR = 0.002       # Decimate vertex_group_factor (a cost per metre of edge): at ratio 0.5 the face keeps
+                               # ~0.65 of its triangles and the body ~0.4 (0.1+: the face untouched, the body at 0.2)
+
+
+def render_counts(meshes):
+    """(vertices as the game counts them: split where the UV changes, triangles) of meshes."""
+    nv = nt = 0
+    for m in meshes:
+        me = m.data
+        uv = me.uv_layers.active.data if me.uv_layers.active else None
+        seen = set()
+        for p in me.polygons:
+            nt += len(p.vertices) - 2
+            for li in p.loop_indices:
+                vi = me.loops[li].vertex_index
+                seen.add((vi, (round(uv[li].uv[0], 5), round(uv[li].uv[1], 5)) if uv else None))
+        nv += len(seen)
+    return nv, nt
+
+
+def lod0_ratio(o, tpl, meshes):
+    """How much LOD0 keeps: the template's own LOD0 is the budget (its vertices and triangles; --max_verts N instead;
+    --keep_density: no reduction). Cloth sections are left whole (their two-sided layers must stay together), the
+    rest takes the reduction. Returns (ratio for the non-cloth meshes, log line) or (1.0, None)."""
+    if o.get("keep_density") or not tpl or not tpl.meshes: return 1.0, None
+    mv, mt = render_counts(meshes)
+    tv, tt = render_counts(tpl.meshes)
+    if o.get("max_verts"):
+        bv, bt, what = int(o["max_verts"]), None, f"--max-verts {o['max_verts']}"
+    else:
+        bv, bt, what = tv, tt, f"the template's LOD0: {tv} vertices, {tt} triangles"
+    r = min(1.0, bv / max(1, mv), (bt / max(1, mt)) if bt else 1.0)
+    if r >= 0.98: return 1.0, None
+    cloth = [m for m in meshes if m.name.startswith("B4BCLOTH_")]
+    ct = render_counts(cloth)[1] if cloth else 0
+    rest = max(1, mt - ct)
+    rr = max(0.05, min(1.0, (r * mt - ct) / rest))
+    return rr, (f"LOD0: {mv} vertices, {mt} triangles is over the budget ({what}): decimated to ~{r:.2f} "
+                f"(face kept, cloth sections whole; --keep-density keeps every triangle, --max-verts N sets the budget)")
+
+
+def keep_face_group(tpl, m):
+    """Vertex group LOD0_KEEP_GROUP on the vertices skinned to the head and its face bones (decimated less)."""
+    head = {"head"}
+    for b in tpl.arm.data.bones:
+        if any(p.name == "head" for p in b.parent_recursive): head.add(b.name)
+    names = {g.index: g.name for g in m.vertex_groups}
+    idx = [v.index for v in m.data.vertices
+           if sum(g.weight for g in v.groups if names.get(g.group) in head) > 0.5 * (sum(g.weight for g in v.groups) or 1)]
+    g = m.vertex_groups.get(LOD0_KEEP_GROUP) or m.vertex_groups.new(name=LOD0_KEEP_GROUP)
+    if idx: g.add(idx, LOD0_KEEP_WEIGHT, "REPLACE")
+    return g
+
+
+def decimate(c, r, keep=False):
+    """Collapse-decimate object c (welded) to ratio r before its armature modifier; keep: the face goes last and UV
+    seams are kept as edges (no texture smearing across islands)."""
+    if keep:
+        select_only([c], c)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        try:
+            bpy.ops.uv.seams_from_islands(mark_seams=True, mark_sharp=False)
+        except RuntimeError:
+            pass
+        bpy.ops.object.mode_set(mode="OBJECT")
+    d = c.modifiers.new("Decimate", "DECIMATE"); d.ratio = r; d.use_collapse_triangulate = True
+    if keep and c.vertex_groups.get(LOD0_KEEP_GROUP):
+        # Decimate's vertex group: an edge costs more the lower its (inverted) weights; 0 would never collapse
+        d.vertex_group = LOD0_KEEP_GROUP; d.invert_vertex_group = True; d.vertex_group_factor = LOD0_KEEP_FACTOR
+    # keep the decimate before the armature modifier
+    while c.modifiers[0].name != "Decimate":
+        bpy.context.view_layer.objects.active = c
+        bpy.ops.object.modifier_move_up(modifier="Decimate")
+    select_only([c], c)
+    bpy.ops.object.modifier_apply(modifier="Decimate")
+    g = c.vertex_groups.get(LOD0_KEEP_GROUP)
+    if g: c.vertex_groups.remove(g)
+
+
+def make_lods(o, meshes, tpl=None):
     ratios = [float(x) for x in o.get("lods", "1").split(",")]
     lods, welded = [], {}
-    total = sum(len(m.data.polygons) for m in meshes)
+    r0, why = lod0_ratio(o, tpl, meshes)
+
+    def welded_of(m):                                        # the same welded base for every LOD
+        k = m.as_pointer()
+        if k not in welded:
+            w = m.copy(); w.data = m.data.copy(); w.name = f"{m.name}_welded"
+            bpy.context.scene.collection.objects.link(w)
+            n0 = len(w.data.vertices)
+            merged = weld_for_decimation(w)
+            welded[k] = w
+            if merged: log(f"  weld {m.name}: {n0} -> {len(w.data.vertices)} vertices")
+        return welded[k]
+    if r0 < 1.0:
+        # LOD0 over the budget (a 100k-vertex model): decimated like a distance LOD, the face kept, UV seams kept
+        log(why)
+        v0, t0 = render_counts(meshes)
+        out, reduced = [], set()
+        for m in meshes:
+            if m.name.startswith("B4BCLOTH_") or len(m.data.polygons) * r0 < 50:
+                out.append(m); continue
+            base = welded_of(m)
+            name = m.name
+            m.name = name + "_full"
+            c = m.copy(); c.data = base.data.copy(); c.name = name
+            bpy.context.scene.collection.objects.link(c)
+            keep_face_group(tpl, c)
+            reduced.add(name)
+            decimate(c, r0, keep=True)
+            out.append(c)
+        v1, t1 = render_counts(out)
+        log(f"LOD0: {v0} -> {v1} vertices, {t0} -> {t1} triangles")
+        src = dict(zip([m.name for m in out], meshes))
+        meshes = out
+    else:
+        src, reduced = {m.name: m for m in meshes}, set()
+    total = sum(len(m.data.polygons) for m in src.values())
     for li, r in enumerate(ratios):
         if li == 0:
             lods.append(meshes); continue
@@ -2113,23 +2237,11 @@ def make_lods(o, meshes):
         for m in meshes:
             c = m.copy(); c.data = m.data.copy(); c.name = f"{m.name}_LOD{li}"
             bpy.context.scene.collection.objects.link(c)
-            if r >= 0.999:
+            rm = r * r0 if m.name in reduced else r          # LOD ratios stay relative to LOD0
+            if rm >= 0.999:
                 copies.append(c); continue
-            if m.name not in welded:                         # the same welded base for every LOD
-                w = m.copy(); w.data = m.data.copy(); w.name = f"{m.name}_welded"
-                bpy.context.scene.collection.objects.link(w)
-                n0 = len(w.data.vertices)
-                merged = weld_for_decimation(w)
-                welded[m.name] = w
-                if merged: log(f"  weld {m.name}: {n0} -> {len(w.data.vertices)} vertices")
-            c.data = welded[m.name].data.copy()
-            d = c.modifiers.new("Decimate", "DECIMATE"); d.ratio = r; d.use_collapse_triangulate = True
-            # keep the decimate before the armature modifier
-            while c.modifiers[0].name != "Decimate":
-                bpy.context.view_layer.objects.active = c
-                bpy.ops.object.modifier_move_up(modifier="Decimate")
-            select_only([c], c)
-            bpy.ops.object.modifier_apply(modifier="Decimate")
+            c.data = welded_of(src[m.name]).data.copy()
+            decimate(c, rm)
             copies.append(c)
         lods.append(copies)
         log(f"LOD{li}: ratio {r}: {sum(len(c.data.polygons) for c in copies)} faces")
@@ -2160,7 +2272,7 @@ def finish(o, tpl, meshes):
         bpy.ops.mesh.quads_convert_to_tris()
         bpy.ops.object.mode_set(mode="OBJECT")
     mats = assign_slots(o, tpl, meshes, tex_dirs)
-    lods = make_lods(o, meshes)
+    lods = make_lods(o, meshes, tpl)
     files = []
     for li, lm in enumerate(lods):
         p = os.path.join(out, f"lod{li}.glb")

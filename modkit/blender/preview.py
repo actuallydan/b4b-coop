@@ -120,7 +120,9 @@ if opts["sim"]:
         me.from_pydata([tuple(v) for v in sd["verts"]], [], [tuple(t) for t in sd["tris"]])
         ob = bpy.data.objects.new(f"b4b_sim{k}", me); bpy.context.scene.collection.objects.link(ob)
         me.materials.append(red)
-        wf = ob.modifiers.new("wire", "WIREFRAME"); wf.thickness = 0.006
+        # no even offset: at the open panel's thin triangles it pushes the wire metres out (the framing then took
+        # those spikes in and drew the model tiny)
+        wf = ob.modifiers.new("wire", "WIREFRAME"); wf.thickness = 0.006; wf.use_even_offset = False
 meshes = [o for o in bpy.data.objects if o.type == "MESH" and (not opts["focus"] or opts["focus"] in o.name)]
 if opts["textures"]:
     import json, re
@@ -174,6 +176,7 @@ if arm is not None:
 dg = bpy.context.evaluated_depsgraph_get()
 pts = []
 for o in meshes:
+    if o.name.startswith("b4b_sim"): continue    # frame the model; the simulation wire is drawn over it
     ev = o.evaluated_get(dg)
     m = ev.to_mesh()
     pts += [o.matrix_world @ v.co for v in m.vertices]

@@ -79,12 +79,13 @@ A survivor outfit (details and a weapon: [docs/meshes.md](docs/meshes.md)):
 b4bmod find "Heroes/Mom/Meshes/Elite/.*_SKM$"                                          1. pick the outfit to replace
 b4bmod mesh info /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM         2. its slots
 b4bmod survivor mymodel.fbx --outfit /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/3P_Mom_Elite_04_SKM
-    --fp /Game/TU11/Characters/Heroes/Mom/Meshes/Elite/Elite_04/FP_Mom_Elite_04_SKM
     -o mymod --title "My survivor" --zip --install                                                          3.
 ```
 (one command on one line.) Step 3 extracts what it needs from the game, fits your model (FBX, glTF, VRM, OBJ ...;
 rigged with Mixamo, Rigify, VRoid, UE4 names ... or not rigged) onto the game's skeleton in Blender, puts your
-materials on the outfit's slots (printed; `--slot <material>=<slot>` to choose), makes the LODs and the textures,
+materials on the outfit's slots (printed; `--slot <material>=<slot>` to choose), makes the first-person arms from the
+outfit's own `FP_` mesh (`--fp none`: the game's arms), the LODs (a model denser than the survivor's is reduced to its
+budget; `--keep-density`) and the textures,
 and writes `mymod.pak` (the add-on), `mymod.zip` (to share) and installs it. Start the game and wear the outfit. Weapons: `b4bmod weapon mygun.fbx --fp-mesh ...`.
 Add `--as <name>` to add an outfit instead of replacing Mom's (players wear it with `/model <name>`).
 
@@ -100,7 +101,7 @@ Add `--as <name>` to add an outfit instead of replacing Mom's (players wear it w
 | `export <texture> <out.png>`, `texture <texture> <in.png> -o <moddir>` | texture to PNG and back |
 | `mi <material instance> [set <param> <value>...] -o <moddir>` | material parameters |
 | `rename <asset> </Game/new/path> -o <moddir> [--ref old=new]...` | a copy of an asset under a new path (textures, materials, meshes); experimental, see docs/textures.md |
-| `survivor <model> --outfit ... [--fp ...] -o <moddir>`, `weapon <model> --fp-mesh <FP mesh or code> -o <moddir>` | your model, fitted in Blender, to a survivor outfit or a weapon, packed (`--install` installs it) |
+| `survivor <model> --outfit ... [--fp ...\|none] -o <moddir>`, `weapon <model> --fp-mesh <FP mesh or code> -o <moddir>` | your model, fitted in Blender, to a survivor outfit or a weapon, packed (`--install` installs it) |
 | `survivor ... --as <name>` | the same, as an **added** outfit players wear with `/model <name>` (nothing of the game replaced; docs/meshes.md "Add an outfit") |
 | `mesh info / export / import / edit` | skeletal meshes: slots and LODs; to glTF; your own fitted FBX/glTF back; quick edits |
 | `pack <moddir> -o <name>.pak [--title ...] [--zip]` | the add-on |
