@@ -216,15 +216,16 @@ command (type it in the game's chat box; a message starting with `/` is never se
 
 **The rules:**
 - **Off until the host turns them on** with `/cheats on`. `/cheats off` turns them off again, and they switch off by
-  themselves when the game goes back to Fort Hope (camp) or the menus. Moving on to the next chapter keeps them on.
+  themselves when a mission starts from Fort Hope (camp), and when the game goes back to Fort Hope or the menus: cheats
+  used in camp never carry into the mission. Moving on to the next chapter keeps them on (the chat says so again).
 - **Host only.** Every cheat command works only on the host (the player whose game the others joined, or your own
   offline game). Typed by someone who joined, it only replies `host only` and does nothing.
 - **Everyone is told.** Turning cheats on or off, and every cheat that affects another player or the whole game, shows
   a `[b4bcoop] host ...` line in everyone's chat (for example `[b4bcoop] host gave god mode to Mellon`).
 - **Nobody else's save is touched.** Cheats change the running game, or the host's own save (`/supply`, `/unlockall`).
   From the moment cheats are turned on, the rest of that map gives the other players **no supply points, skull
-  totem points, unlocks, stats or achievements** (the host keeps its own). Their own burn cards are still charged as
-  usual. The chat says so when cheats are turned on.
+  totem points, unlocks, stats or achievements** (the host keeps its own), so their post-round summary shows 0 kills
+  and stats for that map. Their own burn cards are still charged as usual. The chat says so when cheats are turned on.
 - Cheats that change a hero (god, fly, infinite ammo, speed, freeze) last until the map changes; `/cheats off` undoes
   them.
 
