@@ -997,3 +997,38 @@ rewrote the same package: "being used by another process" / an empty read); one 
 whose skin image is 4096x2048 now gets at most the template's 2048 arms texture (`--max-texture 4096` keeps more).
 Open: auto slots can't know that an unnamed image is skin. (The coat's cloth: done in §14b, open panel on a new
 clothing asset.)
+
+## 17. Character regression suite (`tools/charsuite.py`, 2026-09-26)
+The model-mods counterpart of `tools/e2e.py`: every test character built, previewed and worn in game, one command.
+- **Manifest** (models can't be committed): `~/.local/share/b4b-coop/characters/suite.json` (or `--manifest`,
+  `$B4B_CHARSUITE`); format in the tool's docstring, CC0 example with sources/licences `tools/charsuite-example.json`.
+  Entry: `name` (outfit, `/model <name>`), `model`, `outfit` (`Hero/Elite_NN`, `TU11/Hero/Elite_NN` or a `/Game/...`
+  3P path; FP next to it unless `fp`), `flags` (extra b4bmod args; the table counts them), `expect`, `mission`.
+- **Run**: `B4B_LANE=2 B4B_GPU=4090 tools/charsuite.py --twice --vanilla --install` (~28 min builds for 13 characters
+  with `--twice`, ~6 min game). `--only a,b`, `--no-build` (reuse `--build-dir`), `--no-preview`, `--no-game`,
+  `--mission N`, `--no-lock`. Builds run one at a time in their own extract folder
+  (`~/.local/share/b4b-coop/charsuite/extract`, `B4B_EXTRACT`), so they never collide with another build.
+- **Checks**: build exit + add-on's `outfit=` name + size, `--twice` byte-identical paks, preview.py stills (3P + face);
+  game: add-ons into the lane's game folder (the lock's backup restores the player's own), host `addons_policy=any`,
+  `multi.sh 2` (+ `addons=0` 3rd with `--vanilla`); each add-on's content class from the host log (anything but
+  cosmetic = FAIL: a default host refuses such a joiner); per outfit host `model <name>`, `models: hero slot N wears
+  outfit <name>` on host and client, the outfit mesh on the host's hero in both `face` lists, the vanilla client
+  shows the survivor and no "wears" line; new Fatal / `b4bcoop/` / skeletal-mesh / material / cloth / add-on / pak
+  errors since the first swap (startup lines are the baseline), all instances answering. Mission: `mission Easy`,
+  `ready` (ends the character select), the `mission` entries worn again (host FP with a weapon, 3P, client view).
+- **Framing**: a client can't teleport its own pawn (the server corrects it), so the host stands in front of each
+  client's hero (`face look <idx>` on the host) and the client's camera sees the host full body (260 cm) and face
+  (70 cm). Dev `face` now lists each hero's position and `(you)` to pair heroes across machines.
+- **Output**: table, `contact.png` (one row per character: previews, host 3P, client face/body, no add-ons, mission),
+  `results.json`, build/preview logs, `notes.txt` (build warnings), game logs, agent transcript in
+  `/tmp/b4b-charsuite[-l2]-<time>/`; exit 1 on any failure.
+
+First run (models tip 868015a, lane 2, Proton; builds `/tmp/b4b-charsuite-l2-20260926-050615`, game
+`/tmp/b4b-charsuite-l2-20260926-054405`): 13 characters (the 11 of the example + the two game-rip outfits of §15), all
+built with **0 flags**, all **deterministic**, 3.6-52.9 MB, all worn and seen by host and client in Fort Hope, vanilla
+client sees the survivor, Evansburgh for shino + rip outfit 1, **0 new log errors**. The smaller textures (§16) look
+right in game. One failure: `avatar_e` (Mom E00) is classed **gameplay** by the game (`DrenchAssetUserData` on the
+copied `Mom_Elite_00_A_FP_Skin_MI`), so a host with the default `addons_policy=cosmetic` refuses a joiner with it
+("Host allows cosmetic add-ons only"); found because it blocked the first session. Next: the classification (native
+`addons.c` content scan) or the pipeline's copy of that MI should treat the Drench user data on an outfit's own MI as
+cosmetic.

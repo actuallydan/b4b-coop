@@ -48,7 +48,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
     never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
     (hand a pickup, e.g. a duffel bag, to a hero; `giveitem <slot> row <DataTable> <Row>` any item row, e.g. a weapon),
-    `duffelreward <slot> <product guid> [delta]`, `face` (custom heads' face bones, `face comm` speaks, `face look`
+    `duffelreward <slot> <product guid> [delta]`, `face` (heroes with mesh, position, `(you)`; custom heads' face bones, `face comm` speaks, `face look`
     frames a face, `face walk` makes a bot run somewhere), `fnprobe <va>` (count
     a native function's calls/return values, for investigations).
   - `paks.c` (model mods #23) the engine's pak layer. Both builds: mounts our unsigned paks right after the retail
@@ -147,7 +147,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   `steam_appid.txt`), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test instances, below), `gamelock.sh`,
   `lane.sh`/`lane-restore.sh` (live-test lanes, below),
   `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
-- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
+- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `e2e.py` / `charsuite.py` (regression suites), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
 - `modkit/` — the mod maker's kit (#21), a separate deliverable (players never need it; nothing of it is in the player
   zip or the agent): `b4bmod.py` (one command: setup/status/config, find/extract (offline, `dotnet/pakx` = CUE4Parse
@@ -276,6 +276,15 @@ N --golden|--restore`; logged `profile testN: ...`; `--keep-profiles` skips it),
 breaks the next run; the profile checks still diff that run's before/after. A client joining during its own sign-in
 used to get its profile reset ("HydraPublicId mismatch"); joins now wait for the sign-in
 (docs/investigations/test-profiles.md).
+**Model mods (`models` branch): `tools/charsuite.py`**, the character suite (mesh-mods.md §17): builds every test
+character of a local manifest (models can't be committed: `~/.local/share/b4b-coop/characters/suite.json`, format +
+CC0 example `tools/charsuite-example.json`) with `b4bmod survivor --as` one at a time in its own extract folder
+(`--twice`: byte-identical paks), preview.py stills, then (lock `charsuite`, `--install`, add-ons into the lane's game
+folder) `multi.sh 2` (`--vanilla`: + a 3rd with `addons=0`): per outfit host `model <name>`, "wears outfit" in both
+logs, the mesh on the host's hero on both, screenshots with the host placed in front of each client (`face look`),
+new mesh/material/cloth/add-on log errors; `--mission N` wears N again in Evansburgh. Table + `contact.png` in
+`/tmp/b4b-charsuite[-l2]-<time>/`, exit 1 on failure. Full run: `B4B_LANE=2 B4B_GPU=4090 tools/charsuite.py --twice
+--vanilla --install` (~35 min for 13 characters).
 
 ## Branches
 - `main`: shippable. Releases are tagged from here.
