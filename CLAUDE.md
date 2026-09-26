@@ -48,7 +48,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
     never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
     (hand a pickup, e.g. a duffel bag, to a hero; `giveitem <slot> row <DataTable> <Row>` any item row, e.g. a weapon),
-    `duffelreward <slot> <product guid> [delta]`, `fnprobe <va>` (count
+    `duffelreward <slot> <product guid> [delta]`, `face` (custom heads' face bones, `face comm` speaks, `face look`
+    frames a face), `fnprobe <va>` (count
     a native function's calls/return values, for investigations).
   - `paks.c` (model mods #23) the engine's pak layer. Both builds: mounts our unsigned paks right after the retail
     ones, exempted by identity from the three signature paths (player builds hook nothing when there is no add-on).

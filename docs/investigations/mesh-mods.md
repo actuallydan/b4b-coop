@@ -439,9 +439,75 @@ What broke and was fixed (all in `modkit/`):
      the engine computes the inverse bind matrices from it at load). The poses are additive, so they add
      rotations/offsets around the new positions; needs a live check of the skeleton's per-bone translation
      retargeting (base animations keying face bones in "Animation" mode would pull them back to Holly's positions).
-  Both need eyelids closed by rotation about the eye centre: the model's eyeballs must sit where `eye_l/r` are (or be
+  (Built as a combination, §11.) Both need eyelids closed by rotation about the eye centre: the model's eyeballs must sit where `eye_l/r` are (or be
   moved there), and lids must be real geometry (VRoid/anime faces often draw eyes and lashes as textures and blink with
   shape keys: those would need the lids modelled, or stay static).
 - Cheapest useful step: jaw. Rigs with a jaw bone (Rigify, many game rigs) already get the jaw re-weighted (bind-only
   mapping); `lip`/`jaw` weights from the template on a warped mouth region (way 1, mouth only) would make heads talk.
 
+
+## 11. Faces: talking and blinking (models-faces, 2026-09-26)
+Custom heads now follow the game's face animation (lip-sync, blinks, expressions). Code: `modkit/blender/b4bface.py`
+(called from `b4bfit.py` for `character --mode 3p`, `--face auto|off`), bind positions written by `skmgltf.py`
+(`set_bone_positions`, now hierarchy-correct), face poses read by `modkit/poseasset.py`, preview `blender/preview.py
+--face`.
+
+**Game side (static + live):**
+- `FacePoses_<Hero>_PoseAsset` (names vary: `FacePoses_Doc_PoseAsset_NEW`, `Faceposes_Karlee_PoseAsset`): additive,
+  22 poses = expressions (Anger, Disgust, Fear, Joy, Sad, Surprise, Wounded, Relaxed, Interested, Caring, Concerned,
+  Playful, MouthOpen_TEMP) + visemes (AH, CH, E, EH, ER, L, N, MBP, OW); `PoseContainer` tagged: PoseNames (FSmartName =
+  FName), Tracks (157 bone names), Poses[].LocalSpacePose sparse via `TrackToBufferIndex` (int->int map). Holly: AH =
+  jaw 12 deg + lip_lower_l/r 12 deg + lip corners 0.6 cm; MBP = lip_lower 46 deg, lip_upper 20 deg; E = jaw 13 deg;
+  eyelids 3-16 deg in expressions. No blink pose: blinks are `3P_M_Blink_ADD_AS`; live the upper lids turn up to
+  ~28 deg (`eyelid_upper_l` sampled every ~30 ms, retail and custom heroes alike).
+- `3P_Biped_SK` BoneTree (179 nodes, same order as its ref skeleton): all face bones `OrientAndScale`, spine/limbs
+  `Skeleton`, root/ik/hair `Animation`. So a face bone's translation comes from the mesh's own reference pose; moving
+  the face bones' bind positions per mesh is honoured, and the additive poses rotate them in place. No
+  `RetargetBasePose` in cooked meshes; the engine recomputes inverse bind matrices from the ref skeleton.
+- Face bones (`face_master` children, 57): eye_l/r and eyelid parents at the eye centre with eyelid_*_01..03 children on
+  the lids, jaw hinge 7 cm behind the lips (Holly/Doc share the same female head skeleton positions), lip bones on the
+  lip surface, cheeks, brows, nose, ears, teeth, tongue.
+- Speech: `DialogueComponent.SayLine(SpokenLineParams{ResponseName})` builds the Wwise event `DX_<Voice>_<Response>`,
+  which doesn't match the real events (`Dx_B_Walker_Ping_Affirmative_01`): no line plays. The comm wheel does:
+  `PlayerWaypointsComponent.ServerSpawnCommWheelPing(pc, transform, action)` with Approve=2, GoHere=4, Warning=7,
+  Ready=8, Wait=9 makes the hero speak (Thank=10: "Failed to find comm wheel action definition"); per-line cooldowns.
+  The lip-sync plays on the host and on clients (host's hero, jaw up to 4.4 deg / lip_lower 25 deg on both machines).
+
+**Modkit (b4bface.py):**
+1. Before the fit changes the model: per-vertex displacement of a mouth-open and a blink shape key (names via
+   `gltf_morph_names`: Blender 5.1 imports primitive-level targetNames as `target_N`; VRM 0.x blendShapeGroups /
+   VRM 1.0 expressions give the presets a/aa, blink, blink_l/r), the rig's jaw-side weights (jaw, chin, lip.B,
+   lower teeth, tongue), and the fitted positions of the source bones (rest joint x the fit transform; the evaluated
+   pose is skewed by Rigify constraints).
+2. Landmarks on the model in a face frame (forward, left, up at the head joint): eyes (source eye bones, else eye
+   material islands, else ball-shaped eye-sized islands; painted eyes get their centre pushed back), lips/corners/
+   crease (Rigify lip bones, else the mouth-open key: top of the moved region at the front = lower lip, first static
+   vertex above = upper lip, sides of the moved band = corners; else the middle profile: deepest dent between the lip
+   bumps), chin/nose from the profile. The template's landmarks are its bones (crease from its profile).
+3. Warp model->template (uniform scale + offset, Gaussian RBF residual, sigma 0.35 x eye distance) for the weights, the
+   inverse for the bones. Each head vertex takes the template's face weights at its warped place (4 nearest template
+   vertices of the same class: skin, mouth interior; eyeball islands go whole to eyeball_l/r); upper/lower lip is
+   decided on each side separately (template: its own jaw weights; model: mouth-open key, else vertex normals at the
+   crease, else the rig's jaw weights, else the lip line), so no weights are interpolated across the lips. The
+   vertex's head weight is split into face bones; a blink key's moved vertices go to eyelid_upper/lower_<side>.
+4. All 57 face bones move to the warped template positions (jaw hinge by the uniform part only; a per-axis scale put
+   Doc's hinge 7.6 cm back); the importer writes them into the mesh's reference skeleton (`manifest.extras.face_bones_m`
+   -> `skmgltf.import_gltf(bones=...)`).
+
+**Results (offline preview with the hero's poses, `preview.py --face`):** Rigify MPFB "shorty" on Doc: AH opens the
+mouth cleanly (first tries: a hanging centre flap from upper-lip vertices with jaw weights, fixed by per-side lip
+classification), OW rounds, MBP presses, Joy smiles, a 30 deg blink closes the lids. VRoid Shino on Holly: mouth from
+the `A` key, lids from `Blink` (big anime eyes close about halfway at 40 deg). MPFB game-engine "bulky" and the Mixamo
+monster: eyes/mouth from geometry and the profile (monster eyes not found: scaled from the template).
+
+**Live (lane 2, Proton, `multi.sh 2`, both instances with the add-ons, Evansburgh B):** `face` dev command
+(testing.c): face bone deltas from the ref pose (`GetDeltaTransformFromRefPose`), ref positions
+(`GetRefPosePosition`), `face comm <action>`, `face look <hero#>` (camera in front of a hero's face). The custom
+heroes' ref poses carry the moved bones; host's shorty speaking (comm wheel): jaw 4-10 deg, lip_lower 25 deg, seen
+on host and client; blinks 17-28 deg on the custom heads. Screenshots (presented frames, client looking at the host,
+not committed): `~/.local/share/b4b-coop/faces/shots/` (`t_*`, `seq_*` talking with subtitles, `b_1` open /
+`b_24` blinking, `faces_live_summary.png`).
+
+Open: the lower lip pouts a lot on 25 deg lip_lower curls (the curl moves a large lower-lip region on MPFB heads);
+models without a mouth interior show a hole; painted anime eyes only half close; no eyelid detection without a blink key
+beyond the template's lid weights. `face say` (SayLine) doesn't find events (naming above).

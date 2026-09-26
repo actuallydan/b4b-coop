@@ -6,7 +6,7 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
   blender -b --python blender/b4bfit.py -- character --template T.glb --source model.fbx --out DIR
         [--mode 3p|fp] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05] [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
-        [--drop_mat MATERIAL]...
+        [--drop_mat MATERIAL]... [--face auto|off]
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
   blender -b --python blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
         [--forward +x] [--up +z] [--scale fit|<factor>] [--anchor trigger|grip|none] [--part REGEX=BONE]...
@@ -526,12 +526,18 @@ def fit_character(o):
             if not x.data.polygons:
                 log("dropping", x.name, "(only dropped materials)"); bpy.data.objects.remove(x); src_objs.remove(x)
     keyed = [x.name for x in src_objs if x.type == "MESH" and x.data.shape_keys]
+    face_on = o.get("mode", "3p") == "3p" and o.get("face", "auto") != "off"
+    face_src = None
+    if face_on and keyed:                           # face rig: what the mouth-open / blink keys move, before removal
+        fm = face_module()
+        fk = fm.capture_shape_keys([x for x in src_objs if x.type == "MESH"], fm.gltf_morph_names(o["source"]))
+        if fk: log("face: shape keys used as landmarks: " + ", ".join(f"{r} {n}" for r, ns in fk.items() for n in ns))
     for x in src_objs:
         if x.type == "MESH" and x.data.shape_keys:
             x.shape_key_clear()                     # the base shape stays
     if keyed:
         log(f"shape keys (face expressions, morphs) removed from {keyed}: survivors have no morph targets; the face "
-            f"follows the head (and jaw) bones")
+            + ("is rigged to the survivor's face bones instead" if face_on else "follows the head (and jaw) bones"))
     arms = [x for x in src_objs if x.type == "ARMATURE"]
     meshes = [x for x in src_objs if x.type == "MESH"]
     if not meshes: raise SystemExit("no mesh in the model (after --drop)")
@@ -693,6 +699,7 @@ def fit_character(o):
         # (helper bones parented outside the deform chain, e.g. MakeHuman elbow/knee helpers)
         owner = own_bones(sarm, bmap, inv, tp)
         # phase 2: pose every bone, root first (a pose is stored relative to the parent's)
+        D_used = {}
         for pb in order:
             t = bmap.get(pb.name)
             if t is not None and t not in BIND_ONLY:
@@ -701,6 +708,7 @@ def fit_character(o):
                 ob = owner.get(pb.parent.name) if (t in BIND_ONLY and pb.parent) else owner.get(pb.name)
                 D = D_of.get(ob, Matrix.Identity(4)) if ob else Matrix.Identity(4)
             pb.matrix = D @ pb.bone.matrix_local
+            D_used[pb.name] = D
             bpy.context.view_layer.update()
         log(f"pose fit: max joint error {worst * 100:.2f} cm")
         bpy.ops.object.mode_set(mode="OBJECT")
@@ -714,8 +722,12 @@ def fit_character(o):
         def target_of(name):
             ob = owner.get(name)
             return bmap[ob] if ob in bmap else "pelvis"
+        if face_on:                                 # face rig: which vertices the rig's jaw/lower lip moves
+            face_module().capture_jaw_weights(smeshes)
         for m in smeshes:
             rename_groups(m, {g.name: target_of(g.name) for g in m.vertex_groups})
+        if face_on:
+            face_src = face_module().capture_source_bones(sarm, D_used)
         bpy.data.objects.remove(sarm)
     else:
         # unrigged: stand it like the template (the model faces --facing, default -y = Blender's front view), scale to
@@ -755,6 +767,8 @@ def fit_character(o):
         transfer_weights(tpl, smeshes, all_groups=True)
     elif o.get("twist", "template") == "template":
         transfer_weights(tpl, smeshes, all_groups=False)
+    if face_on and not o.get("probe"):
+        rig_face_bones(o, tpl, smeshes, face_src)
     if mode == "fp":
         for m in smeshes:
             keep_arms(m)
@@ -778,6 +792,22 @@ def fit_character(o):
         m.matrix_parent_inverse = tpl.arm.matrix_world.inverted()
         md = m.modifiers.new("Armature", "ARMATURE"); md.object = tpl.arm
     finish(o, tpl, smeshes)
+
+
+def face_module():
+    """blender/b4bface.py (face bones: talking, blinking), next to this script."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    if d not in sys.path: sys.path.insert(0, d)
+    import b4bface
+    return b4bface
+
+
+def rig_face_bones(o, tpl, meshes, src_bones):
+    """3P: skin the face to the template's face bones and record their new bind positions for the importer
+    (manifest extras face_bones_m: {bone: [x, y, z]} Blender world metres)."""
+    moved = face_module().rig_face(tpl, meshes, src_bones, log)
+    if moved:
+        o.setdefault("extras", {})["face_bones_m"] = {b: [p.x, p.y, p.z] for b, p in moved.items()}
 
 
 def used_materials(m):

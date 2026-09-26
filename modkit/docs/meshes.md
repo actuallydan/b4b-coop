@@ -6,7 +6,8 @@ animations, material slots and physics, and takes your geometry and textures. Se
 Commands are written as `b4bmod ...` (Windows: `b4bmod.cmd`, Linux: `./b4bmod.sh`).
 
 - [Blender](#blender) · [What goes where](#what-goes-where)
-- [Make a survivor model](#make-a-survivor-model) · [Survivor troubleshooting](#survivor-troubleshooting) ·
+- [Make a survivor model](#make-a-survivor-model) · [Talking and blinking](#talking-and-blinking) ·
+  [Survivor troubleshooting](#survivor-troubleshooting) ·
   [Make a weapon model](#make-a-weapon-model)
 - [Doing the fitting yourself](#doing-the-fitting-yourself-mesh-import) · [Lower level](#lower-level) · [Limits](#limits)
 
@@ -95,6 +96,32 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
 6. **Install and test**: `b4bmod install mymod.pak`, start the game, wear the outfit (customization screen, or chat
    `/model mom_elite_04`). Other players see it only if they have the add-on too.
 
+## Talking and blinking
+The survivors' faces are moved by face bones (jaw, lips, lids, brows ...): lip-sync while they speak, blinks,
+expressions. The survivor pipeline rigs your model's face to those bones automatically, so your character talks and
+blinks in game like the survivor it replaces (and everyone with the add-on sees it). It prints where it found the face:
+```
+b4bfit: face: eye_l, eye_in_l, eye_out_l from bone ORG-eye.L
+b4bfit: face: mouth_l, mouth_r, lip_up, lip_lo, crease from mouth-open shape key
+b4bfit: face: chin, nose from face profile
+b4bfit: face: 1947 vertices skinned to face bones (575 jaw/lower lip, 681 eyelids, 200 eyeballs); 57 face bones moved onto the model's face
+```
+What helps it (best first): face bones in your rig (Rigify `DEF-`/`ORG-` lip, eye, chin bones; VRoid eye bones; a
+`jaw` or eye bone in other rigs), shape keys for an open mouth and a blink (VRM/VRoid `A` and `Blink`, ARKit `jawOpen`
+and `eyeBlinkLeft`, names with `mouth open`, `jaw open`, `blink`, `eyes closed`), eyes as their own mesh or material
+(`eye`, `iris`, `sclera`), and otherwise the shape of the face seen from the side (nose, lip line, chin). What it
+can't find is guessed from the survivor's face scaled to yours (`scaled from the template` in the log).
+- **Check it before the game**: step 4 prints a preview command; `--face-pose` takes one of the survivor's mouth
+  shapes (`AH`, `E`, `OW`, `MBP`, `CH`, `L`) or expressions (`Joy`, `Anger`, `Surprise`, `Sad`, `Fear` ...),
+  `--face-blink 28` closes the lids like the game's blink:
+  ```
+  blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb face.png --face <work>/face_preview.json --face-pose AH --textures <work>/preview_textures_3p.json
+  ```
+- A mouth without an inside (no teeth, tongue or mouth cavity in your model) shows a hole when it opens.
+- Painted anime eyes blink as far as the lid rotation reaches (the game turns the lids about 28 degrees): big eyes
+  close about halfway. Lashes/eyeliner meshes that the blink shape key moves follow the lids.
+- `--face off` leaves the face on the head bone (no talking or blinking), as before.
+
 ## Add an outfit
 The survivor pipeline above **replaces** the template: everyone with your add-on sees your model instead of Mom's
 Elite 04. Add `--as <name>` and it **adds** an outfit instead (Left 4 Dead style): nothing of the game is replaced, and
@@ -132,7 +159,9 @@ What the survivor pipeline prints, and what to do about it.
 | `orient: ... scale 0.01` or `scale 100` with a warning | the file's units are off (centimetres read as metres, or a scaled armature). The fit still works; if the model looks wrong, apply the scale in Blender (Ctrl+A > All Transforms) and export again |
 | `proportions: segments stretched ... calf x1.80` | your model's limbs are longer/shorter than the survivor's: they are stretched onto the survivor's skeleton so the animations fit. Big factors (a chibi, a giant) look stretched; pick a survivor with similar proportions (heroes differ a little) |
 | `torso ... fitted as one piece, stretched x0.6` | the same for the torso and neck (fitted as one piece each, so they don't bulge in bands) |
-| `shape keys ... removed` | face expressions / morphs: survivors have none; the face follows the head (and a jaw bone if your rig has one) |
+| `shape keys ... removed` | face expressions / morphs: survivors have none; a mouth-open and a blink key are used to rig the face first ([Talking and blinking](#talking-and-blinking)) |
+| `face: ... from scaled from the template` | that part of the face wasn't found on your model (see [Talking and blinking](#talking-and-blinking)); check the mouth with the face preview |
+| The lip line opens in the wrong place (upper lip moves with the jaw) | give the model a mouth-open shape key or lip bones, or `--face off` |
 | `unrigged: left arm is 50 deg from the template's pose` | an unrigged model not in an A-pose: it is un-posed automatically. If the arms come out bent or stuck to the body, rig the model (Mixamo auto-rigger, Blender Rigify) and try again |
 | `materials -> slots (auto ...)` table | where each material went. Wrong? `--slot <material>=<slot>` or `=drop` |
 | `material x: its basecolor image 'y' is not next to the model` | the file references a texture on its author's disk: copy the images next to the model, or `--tex x=<folder or file prefix>` |
@@ -240,8 +269,8 @@ The scripts next to b4bmod, each with `-h` / a usage header; run them with the s
 ## Limits
 - The skeleton, animations, hitboxes (physics asset) and material slots stay the template's. No new bones.
 - No cloth simulation for your mesh (the template's cloth is left unused), no morph targets (face shapes: templates
-  with morph targets are refused). The face is skinned to `head` (and the jaw if your rig has one): it doesn't blink
-  or talk (the game's faces are animated by face bones: docs/investigations/mesh-mods.md §10).
+  with morph targets are refused). The face is rigged to the survivor's face bones (talks, blinks, expressions:
+  [Talking and blinking](#talking-and-blinking)); your own face shapes are not kept.
 - Hair: on the Hair slot, one colour from root to tip (the game's hair material has no colour texture); on any other
   slot alpha cards render as solid cards.
 - Skirts, long hair and other dangling parts move stiffly with the bone they hang from (no physics bones).

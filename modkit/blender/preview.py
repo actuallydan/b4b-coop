@@ -7,16 +7,21 @@ Cycles on the CPU (works without a GPU). For checking a model before and after t
   --textures: {"<material / slot name>": "<base colour png>"}, e.g. <work>/preview_textures.json written by
   `b4bmod survivor` (the fitted model with the textures made for the game). Views follow the model's own facing when
   it has a B4B skeleton (front = the face).
+  --face <work>/face_preview.json [--face-pose AH|Joy|...] [--face-blink DEG]: close-up of the head with the face bones
+  where the game will have them (moved onto the model's face) and one of the survivor's face poses applied the way the
+  game adds it (lip-sync visemes AH, E, OW, MBP ...; expressions Joy, Anger, Surprise ...), and/or the upper eyelids
+  rotated shut by DEG degrees (a blink). Without a pose: the face at rest.
 """
 import bpy, math, os, sys
 from mathutils import Vector
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out = argv[0], argv[1]
-opts = {"size": "512", "views": "front,side,back", "zoom": "1.0", "focus": "", "pose": "", "textures": ""}
+opts = {"size": "512", "views": "front,side,back", "zoom": "1.0", "focus": "", "pose": "", "textures": "", "face": "",
+        "face_pose": "", "face_blink": "0"}
 i = 2
 while i < len(argv):
-    opts[argv[i].lstrip("-")] = argv[i + 1]; i += 2
+    opts[argv[i].lstrip("-").replace("-", "_")] = argv[i + 1]; i += 2
 size = int(opts["size"])
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -40,6 +45,60 @@ if opts["pose"] == "test":
                 pb.rotation_mode = "XYZ"
                 pb.rotation_euler = (_m.radians(x), _m.radians(y), _m.radians(z))
     bpy.context.view_layer.update()
+
+
+def face_pose(fj, pose_name, blink_deg):
+    """Move the face bones to the mesh's bind positions (face_preview.json "moved") and pose them like the game: each
+    face pose is additive in bone-local (parent) space: rotation = delta * rest, translation = rest + delta."""
+    import json as _j
+    from mathutils import Matrix as M4, Quaternion as Q
+    d = _j.load(open(fj))
+    arm = next(a for a in bpy.data.objects if a.type == "ARMATURE")
+    C = M4.Diagonal((0.01, -0.01, 0.01, 1.0))                 # UE cm -> Blender m (y flipped)
+    Ci = C.inverted()
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    Mw = arm.matrix_world
+    for n, p in d["moved"].items():
+        eb = next((e for e in arm.data.edit_bones if e.name.lower() == n), None)
+        if eb is None: continue
+        dv = Mw.inverted() @ (C @ Vector(p).to_4d()).to_3d() - eb.head
+        eb.head += dv; eb.tail += dv
+    bpy.ops.object.mode_set(mode="POSE")
+    rest = d["rest"]
+    def ue_q(q): return Q((q[3], q[0], q[1], q[2]))
+    def local(n, delta=None):
+        par, q, t = rest[n]
+        R = ue_q(q).to_matrix().to_4x4()
+        tt = Vector(t)
+        if delta:
+            R = ue_q(delta[0:4]).to_matrix().to_4x4() @ R
+            tt = tt + Vector(delta[4:7])
+        return M4.Translation(tt) @ R
+    deltas = dict(d["poses"].get(pose_name, {})) if pose_name else {}
+    if pose_name and pose_name not in d["poses"]:
+        print("no face pose", pose_name, "- poses:", ", ".join(d["poses"]))
+    a = math.radians(float(blink_deg))
+    if a:
+        for sd in ("l", "r"):
+            deltas[f"eyelid_upper_{sd}"] = [0.0, math.sin(a / 2), 0.0, math.cos(a / 2), 0, 0, 0]
+    G, Gp = {}, {}
+    for n in rest:                                           # parents come first (reference skeleton order)
+        par = rest[n][0]
+        G[n] = (G[par] @ local(n)) if par else local(n)
+        Gp[n] = (Gp[par] @ local(n, deltas.get(n))) if par else local(n, deltas.get(n))
+    order = sorted(arm.pose.bones, key=lambda pb: len(pb.parent_recursive))
+    for pb in order:
+        if pb.name not in G: continue
+        S = C @ Gp[pb.name] @ G[pb.name].inverted() @ Ci
+        pb.matrix = Mw.inverted() @ S @ Mw @ pb.bone.matrix_local
+        bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return arm
+
+
+FACE_ARM = face_pose(opts["face"], opts["face_pose"], opts["face_blink"]) if opts["face"] else None
+
 for o in list(bpy.data.objects):                  # glTF importer bone-shape helpers
     if o.type == "MESH" and (o.name.startswith("Icosphere") or not o.users_scene or o.hide_render):
         bpy.data.objects.remove(o)
@@ -86,6 +145,10 @@ lo = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)
 hi = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
 c = (lo + hi) / 2
 ext_ = max(hi - lo) / float(opts["zoom"])
+if FACE_ARM is not None:                          # close-up of the face
+    hb = FACE_ARM.matrix_world @ FACE_ARM.data.bones["head"].head_local
+    c = hb + (face_rot @ Vector((0, -0.09, 0.015)) if face_rot is not None else Vector((0, 0, 0.015)))
+    ext_ = 0.26 / float(opts["zoom"])
 print("bounds", tuple(round(x, 3) for x in lo), tuple(round(x, 3) for x in hi))
 
 scene = bpy.context.scene
