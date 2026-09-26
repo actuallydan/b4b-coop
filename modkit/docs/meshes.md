@@ -6,7 +6,8 @@ animations, material slots and physics, and takes your geometry and textures. Se
 Commands are written as `b4bmod ...` (Windows: `b4bmod.cmd`, Linux: `./b4bmod.sh`).
 
 - [Blender](#blender) · [What goes where](#what-goes-where)
-- [Make a survivor model](#make-a-survivor-model) · [Hair](#hair) · [Talking and blinking](#talking-and-blinking) ·
+- [Make a survivor model](#make-a-survivor-model) · [How materials are placed](#how-materials-are-placed) ·
+  [Texture sizes](#texture-sizes) · [Hair](#hair) · [Talking and blinking](#talking-and-blinking) ·
   [Swinging hair and skirts](#swinging-hair-and-skirts) ·
   [Survivor troubleshooting](#survivor-troubleshooting) ·
   [Make a weapon model](#make-a-weapon-model)
@@ -63,13 +64,15 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    ```
    b4bmod find "Heroes/Mom/Meshes/Elite/.*_SKM$"
    ```
-3. **Slots** (optional): your materials are put on the outfit's slots automatically, and the pipeline prints what
-   went where: skin, face and eyes on the skin (head) slot, hair, alpha cards, lashes and brows on the **Hair** slot
-   (masked by the texture's alpha, in your texture's own colours: see [Hair](#hair)), clothes on the outfit's cloth slots by body zone (tops,
-   trousers/shoes, gear), eye highlights (transparent overlays) left out. To choose yourself: `b4bmod mesh info
-   <outfit>` lists the slots (`mat 4 ... Head`, `mat 5 ... Torso`), then `--slot <your material>=<slot>` or
-   `--slot <your material>=drop`; the rest stays automatic. Objects without a material are called `none`: they are
-   left out unless you place them (`--slot none=<slot>`, and a texture with `--tex none=<image>`).
+3. **Slots** (optional, normally not needed): your materials are put on the outfit's slots automatically, and the
+   pipeline prints what went where and why: face, eyes and skin on the skin (head) slot (skin away from the head, such
+   as bare arms, on the outfit's body skin slot when it has one, e.g. Walker's `ArmSkin`), hair, alpha cards, lashes and
+   brows on the **Hair** slot (masked by the texture's alpha, in your texture's own colours: see [Hair](#hair)),
+   clothes on the cloth slot that covers the same part of the body (sleeves and gloves on `Arms`, trousers and shoes on
+   the legs' slot, hats on `Gear`), eye highlights (transparent overlays) left out. This works without meaningful
+   names too (game rips with `Material #25` ...): see [How materials are placed](#how-materials-are-placed). To choose
+   yourself: `b4bmod mesh info <outfit>` lists the slots (`mat 4 ... Head`, `mat 5 ... Torso`), then
+   `--slot <your material>=<slot>` or `--slot <your material>=drop`; the rest stays automatic.
 4. **Run the pipeline** (3P + FP arms + textures, then the add-on):
    ```
    b4bmod survivor mymodel.fbx ^
@@ -92,7 +95,7 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
      DirectX style (two-channel BC5 and DXT5nm normal maps are understood).
    - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole),
      `--bonemap map.json` (your bone names -> the game's), `--weights transfer` (take the game mesh's weights),
-     `--max-texture 2048` (smaller textures: an add-on about 4x smaller), `--proportions fit|0.5` (third person:
+     `--max-texture 2048|4096` (largest texture made, see [Texture sizes](#texture-sizes)), `--proportions fit|0.5` (third person:
      stretch onto the survivor's skeleton instead of keeping the model's proportions), `--hair tint` (the game's hair shader, one
      colour: [Hair](#hair)), `--work DIR` (keep the intermediate
      glTF/PNGs there). All of them: `b4bmod model help`.
@@ -106,6 +109,33 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
    the path `b4bmod status` shows. Step 4 prints the command with `<work>` filled in (or give `--work DIR` there).
 6. **Install and test**: `b4bmod install mymod.pak`, start the game, wear the outfit (customization screen, or chat
    `/model mom_elite_04`). Other players see it only if they have the add-on too.
+
+### How materials are placed
+Without `--slot`, every material is placed from what the model says about it, most telling first:
+1. **Names**: the material's name and its images' file names (`hair`, `lash`, `eye`, `skin`/`face`/`body`, `pants`,
+   `shoes`, `gear`/`hat` ...), and the name of an object that has only that material (`TheHat`, `Backpack` -> gear).
+2. **What its texels look like**, on the parts of the images its faces actually use (not the whole image): partly
+   see-through -> hair cards; mostly skin colours -> skin. An image wired to the colour input that is really a normal
+   map (blue ~1) is used as the normal map.
+3. **Where it sits on the body**: a quick fit (a few seconds) tells, for every material, which part of the survivor's
+   skeleton moves it (head, torso, arms, hands, legs, feet), and the same for each of the outfit's slots. Skin away
+   from the head goes on the outfit's body skin slot, clothes on the cloth slot covering the same parts (the gear slot
+   takes head-worn things and what is named like gear).
+4. **Shared images**: a material placed by its look joins the materials that draw the same image; objects without a
+   material take the image their UVs fit (painted texels no material uses: teeth and tongue on the body's image).
+
+The log's table says which rule placed each material. `--slot` always wins, for the materials you name.
+
+### Texture sizes
+Each texture the pipeline writes is as big as your images need, never bigger: a 1024 image stays 1024 on a survivor
+slot whose own texture is 2048, a model without normal or roughness maps gets small flat ones (256). Materials that
+share one of the survivor's textures (an atlas) each get a part the size of their own image, packed into the smallest
+power-of-two texture that holds them (square or 2:1). No texture is bigger than the survivor's own one it replaces
+(retail hero heads and arms: 2048, bodies: 4096; hair: 2048): when the parts don't fit, the one with the most texels
+for the area it covers gives way first (eyeball textures before the body, faces last), so faces keep their detail.
+`--max-texture 1024|2048|4096` sets the largest size instead (4096 also above the survivor's own sizes). The log
+prints each atlas (`texture set Head: atlas 2048x2048: body 1024x1024, face 1024x1024 ...`) and each texture's size.
+The same model and options always give a byte-identical add-on.
 
 ## Talking and blinking
 The survivors' faces are moved by face bones (jaw, lips, lids, brows ...): lip-sync while they speak, blinks,
@@ -218,11 +248,13 @@ What the survivor pipeline prints, and what to do about it.
 | The lip line opens in the wrong place (upper lip moves with the jaw) | give the model a mouth-open shape key or lip bones, or `--face off` |
 | `unrigged: left arm is 50 deg from the template's pose` | an unrigged model not in an A-pose: it is un-posed automatically. If the arms come out bent or stuck to the body, rig the model (Mixamo auto-rigger, Blender Rigify) and try again |
 | `materials -> slots (auto ...)` table | where each material went. Wrong? `--slot <material>=<slot>` or `=drop` |
-| Materials named `Material #25`, `Material #26` ... (a model from a game rip with generic material names) | the textures are found through the materials' image nodes, and the automatic placement reads the images' file names (`hair.png` -> Hair, `eye.png` -> the skin slot). A name that says nothing (`all_color.png` for the arms' skin) lands on a cloth slot: check the table and place those with `--slot` |
-| `none -> dropped (objects without a material ...)` | objects without a material (often teeth, tongue, the inside of the mouth). Keep them: `--slot none=<slot>`; if they use the same image as another material, give it: `--tex none=<folder>/<image name without extension>` (they then share its tile) |
+| Materials named `Material #25`, `Material #26` ... (a model from a game rip with generic material names) | placed by what they look like and where they sit ([How materials are placed](#how-materials-are-placed)); the table says why (`skin colours`, `clothes on the hands ...`, `object TheHat named like gear`) |
+| `none (objects without a material ...): their UVs land on all_color.png where no material draws` | objects without a material (often teeth, tongue, the inside of the mouth) take the image their UVs fit: painted texels no other material uses. `none -> dropped`: no image fits; keep them with `--slot none=<slot> --tex none=<image>` |
+| `draws the same image as Material #30` | a material placed by its look goes where the other materials with the same image went (one place in the texture instead of two) |
 | `material x: maps named after head.png: head_n.dds (normal), head_ao.dds (ao)` | maps next to the colour image with its name and a suffix (`_n`, `_normal`, `_ao`, `_rough`, `_orm`, `_mask`, `_alpha` ...) are used with it |
 | `... shares Material #30's tile (same textures)` | several materials draw the same image: they get one place in the texture, not one each |
-| `hair.png has no cut-out alpha; the strands' mask is the alpha of hair_n.dds` | some games keep the hair's opacity in the normal map's alpha: it is used as the hair mask. A hat or other solid part that uses the hair image too would get holes on the Hair slot: put it on a cloth slot (`--slot <its material>=Gear`) |
+| `hair.png has no cut-out alpha; the strands' mask is the alpha of hair_n.dds` | some games keep the hair's opacity in the normal map's alpha: it is used as the hair mask. A hat that uses the hair image too goes on Gear when its object is named like one (`TheHat`); else `--slot <its material>=Gear` |
+| `... is linked as the colour but its texels are a normal map's` | an image wired to the colour input that is a normal map (blue ~1): used as the normal map |
 | `hair_n.dds: not a normal map (blue channel 0.50 ...): left out` | a file named like a normal map that isn't one (a flow or specular map): the slot gets a flat normal map instead |
 | `two-channel (BC5) normal map, Z rebuilt` / `DXT5nm (X in alpha)` | compressed normal map layouts of game files: read correctly |
 | `Blender can't read this image` | an image format Blender doesn't know (rare DDS variants): convert it to PNG and point `--tex` at it |
@@ -240,7 +272,8 @@ What the survivor pipeline prints, and what to do about it.
 | Eyes look flat | eyes go on the skin slot (the game's eye shader has no texture for yours); a transparent iris layer goes on the hair slot, masked, in its own colours (`--hair tint`: in the hair colour); highlights are left out |
 | Skirts, long hair, capes don't swing | pick a survivor/outfit that supports it (swinging is on by default there) ([Swinging hair and skirts](#swinging-hair-and-skirts)); capes and coats: not supported |
 | A low-poly model turns into triangles at a distance | fixed: models under ~1500 triangles keep every LOD whole (older kits: `--lods 1,1,1,1,1`) |
-| The add-on is 150-200 MB | 4096 textures (several materials packed into one texture set): `--max-texture 2048` |
+| `texture set Head: atlas 2048x2048: body 1024x1024, ...` | how the materials sharing one texture were packed and how big each one's part is ([Texture sizes](#texture-sizes)) |
+| The add-on is big | textures are as big as your images (at most the survivor's own texture sizes); `--max-texture 2048` or `1024` for a smaller add-on, smaller images in your model do the same |
 | The first-person arms are the old ones | give `--fp` (the outfit's `FP_..._SKM`): the arms are cut from your own model (faces skinned to the arms) |
 
 ## Make a weapon model

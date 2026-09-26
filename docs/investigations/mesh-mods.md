@@ -308,7 +308,8 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
   are DirectX), PBR = R AO, G roughness, B metallic (retail convention, checked on weapon and hero PBR textures), A and
   any other owned texture (hair multimask ...) = the retail texture's average; microtile masks = 0 (no retail fabric
   detail on our UVs). Only textures in the template's own folder are replaced; shared ones never. Encoded by
-  `b4bmod texture` (format and sRGB of the original; size = source size x grid, max 4096).
+  `b4bmod texture` (format and sRGB of the original; size since §16: what the tiles' images need, packed, at most
+  the retail texture's size).
 - **LODs**: Blender Decimate (collapse) per LOD ratio (`--lods 1,0.5,0.3,0.15,0.06`), weights kept. `skmgltf.py import`
   writes them as real LODs, keeps the template's `LODInfo` (screen sizes) for as many LODs as written and sets every
   `LODMaterialMap` entry to -1 (retail LOD3/4 remap sections to `*_LOD` materials by section index, which would
@@ -828,3 +829,60 @@ during a voice line (up to 1.1 deg measured on one line; under the hat brim noth
 errors. `e2e.py --quick --no-lock`: 14/14. Screenshots stay local (`~/.local/share/b4b-coop/characters/`).
 Open: the coat has no cloth (open front: `--cloth` would close it; the Walker template has no clothing asset anyway); auto slots can't know that an unnamed image is
 skin.
+
+## 16. Hands-off builds: texture sizes, placement without names, determinism (models-determinism, 2026-09-26)
+Goal: an FBX in, one `b4bmod survivor` run, no `--slot`/`--tex`, small add-ons, same bytes every time. Test set: the 8
+models of §10/§15's regression (4 VRoid, Horror Monster, two MPFB, CesiumMan) on varied templates (Holly E00, Walker
+E00/E01, Mom E00, Karlee E02, Hoffman E00, Doc E00) plus the two game-rip outfits of §15 (Walker E00).
+
+Texture sizes (the old rule was `source x grid`, capped 4096: two 2048 tiles -> a 4096 atlas, a 2x2 grid for 2-3 tiles,
+constant normal/PBR maps at 4096, 1024 images enlarged):
+- Retail sizes (`b4bmod info`): hero Head/Arms/Gear 2048, Body 4096 (Walker, Holly, Hoffman E00); hair masks <= 2048.
+- b4bmodel packs each atlas before the fit (`tiles.json` `layout`: canvas + rects per material; b4bfit uses the rects,
+  the FP run gets the same layout): tile = its images' pow2 size (non-square kept: 4096x2048 stays 2:1), guillotine
+  packing tallest first into the smallest square/2:1 canvas where the tiles keep >= 85 % of their size, at most the
+  retail texture's size. Over the cap the tile with the highest texel density (image texels its UVs use / area on
+  the fitted model, head materials /4) is halved first, halved tiles that fit again are grown back; equal tiles scale
+  together. Each role then gets its own size: halved from the canvas while every tile's image of that role keeps its
+  resolution (no normal/PBR images -> 256 flat). `--max-texture N` overrides the cap (also above retail).
+- compose (Blender numpy) and `b4bmod texture` handle non-square textures (pow2 sides).
+
+Placement without names (`auto_slots`; the log gives the reason per material):
+- inspect: per material, rasterized UV coverage (128^2) of its colour image -> `look` {cover, clear (see-through
+  share of the texels it uses), skin (skin-colour share), color}; `own_objects` (objects with only that material).
+  Objects without a material: the image where their UVs land on painted texels no material uses (`none -> all_color.png
+  98 %` on the rip; teeth/tongue region). A colour-linked image with normal-map texels is used as the normal map.
+- `--probe regions` (3P fit without face/cloth, ~7-15 s): per material and per template slot the area share by body
+  region (dominant template bone -> head/torso/arms/hands/legs/feet), plus each material's area.
+- Rules after the name rules: alpha cards need see-through texels where the faces draw (`look.clear >= 0.05`: VRoid
+  shoes with 40 % transparent image but 4 % under their UVs were on the hair slot before); skin by look (>= 50 % skin
+  texels, not on the feet: brown leather); skin with < 10 % head -> the template's non-head skin slot (Walker
+  `ArmSkin`, Holly `Arm`); clothes -> the non-gear cloth slot with the best region overlap (Walker E00: Arms 68 % arms
+  29 % hands, Body torso/legs/feet); head-worn -> gear; cloth slots with the same colour texture count once (Holly's
+  flannel1-3); a material placed by look joins the slot of other materials with the same image.
+- Result: every model builds with zero flags; the rip outfits get exactly the `--slot` mapping they needed before
+  (all_color skin -> ArmSkin, arm accessories -> Arms, TheHat -> Gear, bare teeth/tongue -> ArmSkin with all_color);
+  the VRoid/MPFB/monster/Cesium assignments are unchanged except body skin -> Holly's Arm slot (Shino) and AvatarSample
+  E's shoes -> Body. Preview renders (front/back/side + face, `preview.py --textures`) of old and new builds match.
+
+Determinism: b4bfit iterated sets of bone names; Blender's Python randomizes string hashes per process (and ignores
+PYTHONHASHSEED without `--python-use-system-env`), so equal-weight influences came out in another order (2 vertices of
+the rip's LOD0: JOINTS_0/1 swapped -> a different pak). `run_blender` now passes `--python-use-system-env` with
+`PYTHONHASHSEED=0` (other PYTHON* variables dropped). Two full builds of the 10 models: byte-identical paks.
+
+| Model (template) | before | after |
+|---|---|---|
+| Sendagaya Shino (Holly E00) | 182.9 MB | 31.8 MB |
+| Base Male (Walker E01) | 165.9 MB | 18.8 MB |
+| AvatarSample E (Mom E00) | 161.4 MB | 19.5 MB |
+| Sakurada Fumiriya (Karlee E02) | 168.9 MB | 24.7 MB |
+| Horror Monster (Walker E00, one 2048 set) | 37.6 MB | 37.6 MB |
+| MPFB bulky (Hoffman E00) | 150.0 MB | 38.5 MB |
+| MPFB short Rigify (Doc E00) | 200.7 MB | 34.5 MB |
+| CesiumMan (Walker E00) | 32.9 MB | 4.6 MB |
+| game-rip outfit 1 (Walker E00) | 144.9 MB, 12 `--slot`/`--tex` | 51.3 MB, no flags |
+| game-rip outfit 2 (Walker E00) | 97.3 MB, 8 `--slot` | 40.0 MB, no flags |
+
+Open: the pipeline's extraction isn't safe for several builds at once on one extract folder (two parallel runs
+rewrote the same package: "being used by another process" / an empty read); one build at a time is fine. A game rip
+whose skin image is 4096x2048 now gets at most the template's 2048 arms texture (`--max-texture 4096` keeps more).
