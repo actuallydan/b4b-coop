@@ -1,6 +1,6 @@
 # Mesh mods: B4B skeletal mesh format, writer and glTF import (#18, #21, epic #23)
 
-Status 2026-09-26, build 14216215. Branches `models-meshes`, `models-fullmodel`, `models-proportions` (§12). Tools: `modkit/upkg.py` (package
+Status 2026-09-26, build 14216215. Branches `models-meshes`, `models-fullmodel`, `models-proportions` (§13). Tools: `modkit/upkg.py` (package
 reader/writer, property dump, MI reader), `modkit/skm.py` (SKM render data parse/edit/write),
 `modkit/skmgltf.py` (glTF/FBX export/import), `modkit/sm.py` (static meshes), `modkit/b4bmodel.py`
 (model -> survivor / weapon pipeline, `b4bmod survivor|weapon`), `modkit/blender/b4bfit.py` (headless Blender fitting),
@@ -40,7 +40,7 @@ reader/writer, property dump, MI reader), `modkit/skm.py` (SKM render data parse
 - **Characters found online** (§10): VRM, Rigify, Mixamo, UE-named and unrigged-in-parts models with no hand-made
   settings (bone maps, slots, shared textures, T-pose all automatic), live on 5 survivors; faces follow head/jaw only
   (the game animates faces with face bones driven by a PoseAsset, §10).
-- **Own proportions** (§12): `3P_Biped_SK` takes body bone translations from each mesh's bind skeleton (retail female
+- **Own proportions** (§13): `3P_Biped_SK` takes body bone translations from each mesh's bind skeleton (retail female
   heroes use it), so 3P models keep their own limb/torso/neck lengths (mesh bind skeleton rewritten); FP arms stay
   fitted (FP skeleton: all bones animated). Live: short-legged monster vs the old stretched fit side by side.
 - No retail survivor, FP-arms or weapon mesh has morph targets (0 of 320 hero/weapon SKMs): faces are bone-driven, so
@@ -282,7 +282,7 @@ settings `r.SkeletalMeshLODBias=1`, so edits must cover LOD1+ (both tools write 
   MakeHuman's Rigify helpers `DEF-elbow-helper.L`, `DEF-knee-helper.L` hang off ORG bones and stayed behind before:
   detached upper arms, jagged knees, the mouth left under the chin). Jaw: re-weighted only (joint not moved).
   Result: 0.00 cm joint error on all test rigs. The armature modifier is then applied: the mesh sits in the template's
-  bind pose (A-pose), which is what the game skins against. Since §12 this full fit is `--proportions fit` (and
+  bind pose (A-pose), which is what the game skins against. Since §13 this full fit is `--proportions fit` (and
   always used for FP arms); the 3P default only turns the segments and gives the mesh a bind skeleton with the
   model's own joints.
 - **Weights**: source groups renamed to template bones; unmapped source bones (twist, extra face bones) go to the
@@ -387,9 +387,9 @@ and FP arms, no `--slot` given.
 | Model | Source rig | Survivor | Worked | Still off |
 |---|---|---|---|---|
 | Shino (VRoid, 17 materials, alpha hair, 42 shape keys) | VRM `J_Bip_*` + 100 hair/skirt joints | Holly Elite 00 | bones 52/158 mapped (VRoid table), auto slots: skin/face/mouth/eyewhite -> Head atlas, clothes -> Body atlas + Gear, hair + lashes/brows/eyeline + iris -> Hair (masked), highlights dropped; live: 3P (host, others with add-on), FP arms, idle/run | hair one colour (fixed in §11: the "light blue" was a grey texture without its MToon colour), skirt and hair rigid, no eyelid/mouth animation |
-| Horror Monster (2.4 m, one material) | Mixamo, 2-chain fingers | Walker Elite 00 | 34/41 mapped; textures: FBX linked the mask map as base colour -> reclassified by name, Unity mask map -> PBR; live: 3P idle/run, FP claws holding a bat | legs stretched x1.7-1.8 (short legs on the survivor skeleton; kept since §12) |
+| Horror Monster (2.4 m, one material) | Mixamo, 2-chain fingers | Walker Elite 00 | 34/41 mapped; textures: FBX linked the mask map as base colour -> reclassified by name, Unity mask map -> PBR; live: 3P idle/run, FP claws holding a bat | legs stretched x1.7-1.8 (short legs on the survivor skeleton; model proportions kept since §13) |
 | "bulky" (MPFB, 2.15 m, afro, overalls) | UE4 mannequin names | Hoffman Elite 00 | 53/53; live as a bot: run, aim, shoot | afro hair renders as one grey-brown colour |
-| "shorty" (MPFB, 1.27 m, ponytail) | Rigify full rig (DEF- + ORG/MCH/face) | Doc Elite 00 | 54 mapped (Rigify table); after `own_bones`: no detached arms/knees/mouth; live: 3P, FP arms | neck squashed (x0.39: Rigify neck starts below the shoulders); thighs x1.5 (both kept since §12) |
+| "shorty" (MPFB, 1.27 m, ponytail) | Rigify full rig (DEF- + ORG/MCH/face) | Doc Elite 00 | 54 mapped (Rigify table); after `own_bones`: no detached arms/knees/mouth; live: 3P, FP arms | neck squashed (x0.39: Rigify neck starts below the shoulders); thighs x1.5 (the model's own since §13) |
 | Blocky (Kenney, parts: head/torso/arm-left/...) | none, arms hanging down | Karlee Elite 00 | un-posed 53 deg into the A-pose, parts keep their limb; live: 3P after the LOD fix | boxes deform like boxes; arms offset from the survivor's shoulders |
 | CesiumMan | `Skeleton_arm_joint_L__4_`, `leg_joint_R_2` | Walker | 19/19 mapped by the generic reader (numbered chains, neck_2 = head) | not taken into the game (logo texture) |
 
@@ -445,7 +445,7 @@ What broke and was fixed (all in `modkit/`):
      the engine computes the inverse bind matrices from it at load). The poses are additive, so they add
      rotations/offsets around the new positions; needs a live check of the skeleton's per-bone translation
      retargeting (base animations keying face bones in "Animation" mode would pull them back to Holly's positions).
-  Both need eyelids closed by rotation about the eye centre: the model's eyeballs must sit where `eye_l/r` are (or be
+  (Built as a combination, §12.) Both need eyelids closed by rotation about the eye centre: the model's eyeballs must sit where `eye_l/r` are (or be
   moved there), and lids must be real geometry (VRoid/anime faces often draw eyes and lashes as textures and blink with
   shape keys: those would need the lids modelled, or stay static).
 - Cheapest useful step: jaw. Rigs with a jaw bone (Rigify, many game rigs) already get the jaw re-weighted (bind-only
@@ -523,7 +523,73 @@ Limits: cloth shading instead of the hair shader (no anisotropic hair highlight,
 the texture's alpha at the 0.333 clip, dithered (soft alpha falls into a dither pattern that TAA smooths); hair
 strands still move rigidly with the head (no dangle bones).
 
-## 12. Characters keep their own proportions (models-proportions, 2026-09-26)
+## 12. Faces: talking and blinking (models-faces, 2026-09-26)
+Custom heads now follow the game's face animation (lip-sync, blinks, expressions). Code: `modkit/blender/b4bface.py`
+(called from `b4bfit.py` for `character --mode 3p`, `--face auto|off`), bind positions written by `skmgltf.py`
+(`set_bone_positions`, now hierarchy-correct), face poses read by `modkit/poseasset.py`, preview `blender/preview.py
+--face`.
+
+**Game side (static + live):**
+- `FacePoses_<Hero>_PoseAsset` (names vary: `FacePoses_Doc_PoseAsset_NEW`, `Faceposes_Karlee_PoseAsset`): additive,
+  22 poses = expressions (Anger, Disgust, Fear, Joy, Sad, Surprise, Wounded, Relaxed, Interested, Caring, Concerned,
+  Playful, MouthOpen_TEMP) + visemes (AH, CH, E, EH, ER, L, N, MBP, OW); `PoseContainer` tagged: PoseNames (FSmartName =
+  FName), Tracks (157 bone names), Poses[].LocalSpacePose sparse via `TrackToBufferIndex` (int->int map). Holly: AH =
+  jaw 12 deg + lip_lower_l/r 12 deg + lip corners 0.6 cm; MBP = lip_lower 46 deg, lip_upper 20 deg; E = jaw 13 deg;
+  eyelids 3-16 deg in expressions. No blink pose: blinks are `3P_M_Blink_ADD_AS`; live the upper lids turn up to
+  ~28 deg (`eyelid_upper_l` sampled every ~30 ms, retail and custom heroes alike).
+- `3P_Biped_SK` BoneTree (179 nodes, same order as its ref skeleton): all face bones `OrientAndScale`, spine/limbs
+  `Skeleton`, root/ik/hair `Animation`. So a face bone's translation comes from the mesh's own reference pose; moving
+  the face bones' bind positions per mesh is honoured, and the additive poses rotate them in place. No
+  `RetargetBasePose` in cooked meshes; the engine recomputes inverse bind matrices from the ref skeleton.
+- Face bones (`face_master` children, 57): eye_l/r and eyelid parents at the eye centre with eyelid_*_01..03 children on
+  the lids, jaw hinge 7 cm behind the lips (Holly/Doc share the same female head skeleton positions), lip bones on the
+  lip surface, cheeks, brows, nose, ears, teeth, tongue.
+- Speech: `DialogueComponent.SayLine(SpokenLineParams{ResponseName})` builds the Wwise event `DX_<Voice>_<Response>`,
+  which doesn't match the real events (`Dx_B_Walker_Ping_Affirmative_01`): no line plays. The comm wheel does:
+  `PlayerWaypointsComponent.ServerSpawnCommWheelPing(pc, transform, action)` with Approve=2, GoHere=4, Warning=7,
+  Ready=8, Wait=9 makes the hero speak (Thank=10: "Failed to find comm wheel action definition"); per-line cooldowns.
+  The lip-sync plays on the host and on clients (host's hero, jaw up to 4.4 deg / lip_lower 25 deg on both machines).
+
+**Modkit (b4bface.py):**
+1. Before the fit changes the model: per-vertex displacement of a mouth-open and a blink shape key (names via
+   `gltf_morph_names`: Blender 5.1 imports primitive-level targetNames as `target_N`; VRM 0.x blendShapeGroups /
+   VRM 1.0 expressions give the presets a/aa, blink, blink_l/r), the rig's jaw-side weights (jaw, chin, lip.B,
+   lower teeth, tongue), and the fitted positions of the source bones (rest joint x the fit transform; the evaluated
+   pose is skewed by Rigify constraints).
+2. Landmarks on the model in a face frame (forward, left, up at the head joint): eyes (source eye bones, else eye
+   material islands, else ball-shaped eye-sized islands; painted eyes get their centre pushed back), lips/corners/
+   crease (Rigify lip bones, else the mouth-open key: top of the moved region at the front = lower lip, first static
+   vertex above = upper lip, sides of the moved band = corners; else the middle profile: deepest dent between the lip
+   bumps), chin/nose from the profile. The template's landmarks are its bones (crease from its profile).
+3. Warp model->template (uniform scale + offset, Gaussian RBF residual, sigma 0.35 x eye distance) for the weights, the
+   inverse for the bones. Each head vertex takes the template's face weights at its warped place (4 nearest template
+   vertices of the same class: skin, mouth interior; eyeball islands go whole to eyeball_l/r); upper/lower lip is
+   decided on each side separately (template: its own jaw weights; model: mouth-open key, else vertex normals at the
+   crease, else the rig's jaw weights, else the lip line), so no weights are interpolated across the lips. The
+   vertex's head weight is split into face bones; a blink key's moved vertices go to eyelid_upper/lower_<side>.
+4. All 57 face bones move to the warped template positions (jaw hinge by the uniform part only; a per-axis scale put
+   Doc's hinge 7.6 cm back); the importer writes them into the mesh's reference skeleton (`manifest.extras.face_bones_m`
+   -> `skmgltf.import_gltf(bones=...)`).
+
+**Results (offline preview with the hero's poses, `preview.py --face`):** Rigify MPFB "shorty" on Doc: AH opens the
+mouth cleanly (first tries: a hanging centre flap from upper-lip vertices with jaw weights, fixed by per-side lip
+classification), OW rounds, MBP presses, Joy smiles, a 30 deg blink closes the lids. VRoid Shino on Holly: mouth from
+the `A` key, lids from `Blink` (big anime eyes close about halfway at 40 deg). MPFB game-engine "bulky" and the Mixamo
+monster: eyes/mouth from geometry and the profile (monster eyes not found: scaled from the template).
+
+**Live (lane 2, Proton, `multi.sh 2`, both instances with the add-ons, Evansburgh B):** `face` dev command
+(testing.c): face bone deltas from the ref pose (`GetDeltaTransformFromRefPose`), ref positions
+(`GetRefPosePosition`), `face comm <action>`, `face look <hero#>` (camera in front of a hero's face). The custom
+heroes' ref poses carry the moved bones; host's shorty speaking (comm wheel): jaw 4-10 deg, lip_lower 25 deg, seen
+on host and client; blinks 17-28 deg on the custom heads. Screenshots (presented frames, client looking at the host,
+not committed): `~/.local/share/b4b-coop/faces/shots/` (`t_*`, `seq_*` talking with subtitles, `b_1` open /
+`b_24` blinking, `faces_live_summary.png`).
+
+Open: the lower lip pouts a lot on 25 deg lip_lower curls (the curl moves a large lower-lip region on MPFB heads);
+models without a mouth interior show a hole; painted anime eyes only half close; no eyelid detection without a blink key
+beyond the template's lid weights. `face say` (SayLine) doesn't find events (naming above).
+
+## 13. Characters keep their own proportions (models-proportions, 2026-09-26)
 Goal: a model with other proportions than the survivor (short legs, long neck, a giant torso) looks like itself in
 third person instead of being stretched onto the survivor's joints (§10: monster legs x1.8, shorty neck x0.39).
 
@@ -553,8 +619,8 @@ of the segment lengths):
   unmapped bones with their mapped ancestor, IK bones with their FK bone, `weapon` z by the shoulder-height ratio) and
   that becomes their rest pose, so twist weights and the face step compare against a template of the same shape.
   Bind rotations are unchanged (animations need them).
-- The moved bones go to manifest `extras.bind_bones_m`; `skmgltf.import_gltf(bones=)` writes them into the mesh's
-  `FReferenceSkeleton` (positions only, rotations kept; parents first) before reading the glTF, so the joint check
+- The moved bones go to manifest `extras.bind_bones_m`; `skmgltf.import_gltf(bind_bones=)` writes them into the mesh's
+  `FReferenceSkeleton` (positions only, rotations kept; parents first) before reading the glTF (face bones after), so the joint check
   compares against the new bind pose (0.000 cm on all test models).
 - Log: `proportions (model / survivor, same height): legs x0.67, torso x1.64, neck x0.70, arms x0.94 ...` then pelvis
   and head joint heights and the ground shift; `bind skeleton: N bones moved`.
@@ -588,6 +654,11 @@ Live (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host and client 2 with the a
 - Client 3 without the add-on: `mdl dump` shows the survivors' base pieces (`3P_Walker_Torso_02` ...), screenshot
   `c3_noaddon.png`.
 - No `LogSkeletalMesh`/`LogAnimation`/Fatal lines in the three logs. `tools/e2e.py --quick --no-lock`: 14/14.
+
+- After merging the face rig (§12, same run of `b4bfit`: body bind skeleton first, face bones after, both in the
+  mesh's reference skeleton; joint check 0.000 cm): Fort Hope, client as `shino` (face rigged, own proportions) and
+  `monster` seen by the host (`fh_merged_shino.png`; `before_after_monster_forthope.png`: the old stretched fit from
+  §10 left, now right). `e2e.py --quick --no-lock` 14/14 on the merged build.
 
 Tradeoffs / limits: the hitboxes are the template's physics bodies on the moved bones (sizes unchanged); very long or
 short arms keep their own length, so the 3P hands may sit off the weapon's grips (the test set's arms are within 6 % of

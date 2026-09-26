@@ -6,6 +6,7 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
   b4bmodel.py survivor <model> --outfit <3P outfit SKM> [--fp <FP arms SKM>] -o <moddir>
         [--slot MAT=SLOT|drop]... [--tex MAT=<file prefix|dir>]... [--lods 1,0.5,0.3,0.15,0.06] [--fp-lods 1,0.5]
         [--bonemap map.json] [--drop REGEX] [--weights source|transfer] [--twist template|none] [--facing -y]
+        [--face auto|off]    auto: the face is skinned to the survivor's face bones (talks, blinks; mesh-mods.md §12)
         <model>: FBX, glTF/glb, VRM, OBJ, DAE, .blend. Rigs: UE4 mannequin, Mixamo, 3ds Max Biped, VRoid/VRM, Rigify
         (DEF- bones) and most others by bone name (else --bonemap); unrigged in an A-pose, T-pose or arms down.
         Materials without --slot are placed automatically (skin, hair/alpha cards, lashes, eyes, clothes; printed).
@@ -427,7 +428,7 @@ def textures_for(manifest, mesh_file, tt, static=False):
 
 # ---- survivor -------------------------------------------------------------------------------------------------------
 
-def fit_args(o, keys=("bonemap", "drop", "weights", "twist", "facing")):
+def fit_args(o, keys=("bonemap", "drop", "weights", "twist", "facing", "face")):
     a = []
     for k in keys:
         if o.get(k): a += ["--" + k, o[k]]
@@ -590,7 +591,9 @@ def survivor(o):
     # (the cultist's hair is white, the default)
     hair = {x: (0, 0, 0, 0) for x, mi, tex, master in s3 if master and HAIR_MASTER_RX.search(master)} \
         if o.get("hair", "texture") == "tint" else {}
-    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair, bones=bind_bone_moves(man3))
+    skmgltf.import_gltf(tp, man3["lods"], out_file(tp, moddir), slot_colors=hair,
+                        bind_bones=bind_bone_moves(man3), bones=face_bone_moves(man3))
+    face_preview(o.o, tp, man3, work)
     mans = [(man3, tp)]
     if fp:
         df = os.path.join(work, "fitfp")
@@ -891,6 +894,49 @@ def retarget_skins(fp_mesh, tt, o):
 def bind_bone_moves(man):
     """Bind skeleton of a model fitted with its own proportions (b4bfit rebind_template): {bone: UE cm} for skmgltf."""
     return {b.lower(): blender_to_ue(p) for b, p in man.get("extras", {}).get("bind_bones_m", {}).items()}
+
+
+def face_bone_moves(man):
+    """Face bones' new bind positions (b4bfit's face rig, blender/b4bface.py) for skmgltf: {bone: UE cm}."""
+    return {b.lower(): blender_to_ue(p) for b, p in man.get("extras", {}).get("face_bones_m", {}).items()}
+
+
+def face_preview(o, skm_file, man, work):
+    """<work>/face_preview.json for `blender/preview.py --face`: the mesh's bind skeleton (UE, face bones moved) and
+    the survivor's face poses (visemes, expressions), when its pose asset can be extracted."""
+    moves = face_bone_moves(man)
+    if not moves: return
+    s = skm.SkeletalMesh(skm_file)
+    skmgltf.set_bone_positions(s, {**bind_bone_moves(man), **moves})       # in memory: the rest pose as written
+    rs = s.m["refskel"]
+    names = [s.name(b[:2]) for b in rs["bones"]]
+    rest = {n: [names[b[2]] if b[2] >= 0 else None, list(p[0:4]), list(p[4:7])] for n, b, p in
+            zip(names, rs["bones"], rs["pose"])}
+    hero = re.search(r"/Heroes/([^/]+)/", upkg.file_to_game_path(skm_file) or "")
+    poses = {}
+    f = face_pose_asset(o, hero.group(1)) if hero else None
+    if f:
+        import poseasset
+        poses = poseasset.read(f)["poses"]
+    out = os.path.join(work, "face_preview.json")
+    json.dump({"rest": rest, "moved": moves, "poses": poses}, open(out, "w"))
+    log(f"face: {len(moves)} face bones on the model's face; preview: blender -b --python blender/preview.py -- "
+        f"{man['lods'][0]} face.png --face {out} --face-pose AH")
+
+
+def face_pose_asset(o, hero):
+    """The survivor's face pose asset file (FacePoses_<Hero>_PoseAsset; names vary), extracted if needed."""
+    import glob
+    def look():
+        d = os.path.join(src_dir(o), "Gobi", "Content", "Characters", "Heroes", hero, "Animations")
+        return next(iter(sorted(glob.glob(os.path.join(d, "[Ff]ace[Pp]oses_*PoseAsset*.uasset")))), None)
+    f = look()
+    if not f and find_b4bmod():
+        subprocess.run([sys.executable, find_b4bmod(), "extract", "--regex",
+                        f"(?i)/Heroes/{hero}/Animations/FacePoses_[^/]*PoseAsset", "-o", src_dir(o)],
+                       capture_output=True, text=True)
+        f = look()
+    return f
 
 
 def blender_to_ue(p):
