@@ -189,7 +189,7 @@ or until you close the game.
 
 **`/teamsize <N>`**: survivors per team, from the next map load (next mission, chapter or Fort Hope). The game's
 normal size is 4. `5` is tested and works (5 players, or 4 players + a bot); up to `8` is accepted but untested.
-Only the host's setting decides the team size. Same as the `teamsize` ini option, for this game session only.
+Only the host's setting decides the team size (friends don't need it). Same as the `teamsize` ini option, for this game session only.
 `/teamsize 4` goes back to normal. Numbers below 4 change nothing.
 
 **`/bots`**: `off` = empty survivor slots stay empty (e.g. play a mission with just 2 heroes). `on` = fill them with
@@ -447,9 +447,10 @@ host=0
 ```
 
 **`teamsize`**: `5` = 5 survivors (tested: 5 players, or fewer players + bots; alone you get 4 bots). Up to `8` is
-accepted but untested. Values of 4 or less change nothing. Only the host's setting decides the team size (5-player
-games were tested with `teamsize=5` on every PC; setting it on a client does no harm). More players than survivor
-slots get `Server full.`.
+accepted but untested. Values of 4 or less change nothing. Only the host needs it: friends joining with no
+`teamsize` see all 5 survivors (HUD, post-round lineup), and a friend who has it set while the host doesn't just
+plays in a normal 4-survivor game. More players than survivor slots get `Server full.`. The character-select list
+at the start of a mission shows 4 names; the 5th player still gets a survivor.
 ```ini
 teamsize=5
 ```
