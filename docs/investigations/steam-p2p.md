@@ -228,3 +228,5 @@ the no-launch-option install (`X3DAudio1_7.dll` + `b4bcoop.ini` with `join=steam
 - Rewards with distinct identities: host `rewards: forwarding AdjustSupplyPoints (73) to remote player
   offline.76561198994546085`; B's own (fresh) profile `supplyPoints.acquired` 0 → 73.
 - Not covered: relay path across networks (same machine → direct), Steam "Join Game" click and overlay invites (#10).
+- Caveat (2026-09-26): Flathub's Steam shares the host's SysV IPC with the native client; a game can register with the
+  wrong client (flatpak-steam.md), so identities in a one-machine run must be checked in the agent `status`.
