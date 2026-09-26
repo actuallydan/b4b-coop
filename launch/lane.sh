@@ -9,6 +9,18 @@
 # B4B_DIR, B4B_TEST_ROOT, B4B_GAME_PORT, B4B_PORT_BASE still override the lane's values.
 # B4B_GPU=<part of the GPU name, e.g. 4090>: test instances render on that GPU inside a headless gamescope (no window;
 # the display GPU stays free for Dan). launch/shot.sh then takes an engine screenshot through the agent. Either lane.
+# B4B_STEAM=flatpak: the instances' Steam API talks to the Flatpak Steam client (account dreamsofants) instead of the
+# native one (Dan's account): launch/run.sh starts Proton inside the running Flatpak Steam's sandbox. Lane 2 only, and
+# the lane default when set. B4B_STEAM=native (default) = the native Steam client; refused while
+# ~/.local/share/b4b-coop/native-steam-in-use exists (Dan plays on his native account then).
+B4B_STEAM="${B4B_STEAM:-native}"
+case "$B4B_STEAM" in
+  native) ;;
+  flatpak) [[ ${B4B_LANE:-2} == 2 ]] || { echo "B4B_STEAM=flatpak runs on lane 2 only (the Flatpak Steam's game copy)" >&2; exit 2; }
+           export B4B_LANE=2 ;;
+  *) echo "B4B_STEAM must be native or flatpak" >&2; exit 2 ;;
+esac
+export B4B_STEAM
 B4B_LANE="${B4B_LANE:-1}"
 case "$B4B_LANE" in
   1) lane_game="$HOME/.local/share/Steam/steamapps/common/Back 4 Blood"
