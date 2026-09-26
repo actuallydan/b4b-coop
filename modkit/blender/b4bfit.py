@@ -71,6 +71,14 @@ def import_any(path):
     before = set(bpy.data.objects)
     ext = os.path.splitext(path)[1].lower()
     if ext == ".fbx":
+        # Blender 5.x's FBX importer still sets Light.cycles.cast_shadow, which Cycles no longer has: an FBX with a
+        # light in it (character exports often carry their scene lights) fails to import. Lights are dropped anyway.
+        try:
+            from cycles import properties as cycles_props
+            if "cast_shadow" not in cycles_props.CyclesLightSettings.bl_rna.properties:
+                cycles_props.CyclesLightSettings.cast_shadow = bpy.props.BoolProperty()
+        except Exception:
+            pass
         bpy.ops.import_scene.fbx(filepath=path, use_anim=False, ignore_leaf_bones=False, automatic_bone_orientation=False)
     elif ext in (".glb", ".gltf", ".vrm"):                # VRM 0.x/1.0 = glTF 2.0 with extensions (ignored)
         bpy.ops.import_scene.gltf(filepath=path)
