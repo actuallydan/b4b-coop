@@ -587,7 +587,7 @@ Live (lane 1, Proton, `B4B_GPU=4090`, `multi.sh 3`: host and client 2 with the a
   `c2_fp_primary.png`, `c2_fp_pistol.png`), grips as before.
 - Client 3 without the add-on: `mdl dump` shows the survivors' base pieces (`3P_Walker_Torso_02` ...), screenshot
   `c3_noaddon.png`.
-- No `LogSkeletalMesh`/`LogAnimation`/Fatal lines in the three logs.
+- No `LogSkeletalMesh`/`LogAnimation`/Fatal lines in the three logs. `tools/e2e.py --quick --no-lock`: 14/14.
 
 Tradeoffs / limits: the hitboxes are the template's physics bodies on the moved bones (sizes unchanged); very long or
 short arms keep their own length, so the 3P hands may sit off the weapon's grips (the test set's arms are within 6 % of
