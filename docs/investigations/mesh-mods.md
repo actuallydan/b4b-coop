@@ -1162,10 +1162,10 @@ the same way is the reference (charsuite now adds it to the previews: column "pr
 - Not fixed: the rigged model's inner upper lip hangs slightly into an opened mouth (AH), the unrigged model's lips
   part at the corners in a smile (its mouth interior is the generated one); both small at talking strength.
 - Live (lane 2, isolated Flatpak Steam account, `B4B_STEAM=flatpak B4B_GPU=4090`; native gameprocess_log unchanged,
-  2545 `AppID 924970` lines before and after): `charsuite.py --only marika,rainy --vanilla --mission 2 --motion`
+  2545 `AppID 924970` lines before and after): `charsuite.py --only <two new test models> --vanilla --mission 2 --motion`
   2/2 PASS, 0 new log errors, no `missing usage flag` / `bUsedWithClothing` line (dress cloth on the Body slot);
   host FP holds the SMG with the model's own hands and bracelets; black dress with gold vines, gold circlet in game.
   Full suite (15 characters, all with 0 flags but the rigged model's `--normal-dx`, all deterministic): 15/15 PASS
-  (`/tmp/b4b-charsuite-l2-marikafinal-final`, after merging models 1b25e15); `e2e.py --quick` 14/14
-  (`/tmp/b4b-e2e-l2-marikafinal2`). New charsuite `--motion`: talking face (client view while the host's
+  (`/tmp/b4b-charsuite-l2-final`, after merging models 1b25e15); `e2e.py --quick` 14/14
+  (`/tmp/b4b-e2e-l2-final`). New charsuite `--motion`: talking face (client view while the host's
   hero says a line) and the outfit on a bot running across the host's view.
