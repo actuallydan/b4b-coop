@@ -431,9 +431,42 @@ The scripts next to b4bmod, each with `-h` / a usage header; run them with the s
 - `sm.py from-skinned <SM> <3P SKM> <out> lod0.glb ... [--only-bone mag]`, `sm.py import <SM> model.glb <out>`
 - `b4bmod model textures <manifest.json> --mesh <SKM> -o mymod`; `skm.py info|edit`, `upkg.py props <x.uasset>`
 
+## What can trip it up
+Every modeller builds and exports differently, so no pipeline can anticipate every file. These are the patterns that
+cause trouble in practice, and what to do. Always check `preview.py` renders before packing, and the in-game look
+before sharing.
+
+- **Rigs made for a specific tool.** Auto-Rig Pro, MustardUI and similar `.blend` rigs carry control bones, drivers and
+  custom properties. Export a plain FBX of the deform skeleton (many packs include one), or use `--bonemap`.
+- **A saved pose instead of the rest pose.** Some files store bones posed (mouth open, eyes closed, fingers curled).
+  The pipeline resets what it maps and moves jaw children with the jaw, but a face or hand can still come out posed.
+  Fix: in Blender, set the armature to its rest pose, apply it, export again.
+- **Misleading or empty names.** Materials called `Material #25`, textures linked only to opacity, an accessory named
+  `..._Dress_Necklace`, boots named `dress`. Placement works from the texture content and where a part sits on the
+  body, but a wrong guess happens: `--slot MAT=SLOT`, `--tex MAT=image`, `--cloth off` / `--cloth MAT` override it.
+- **Extra eye layers.** A clear cornea or wet layer over the iris can hide the eyes. Known ones are dropped; if eyes
+  look white or empty, `--slot <layer>=drop`.
+- **Normal maps in DirectX style.** They look lit from below. `--normal-dx` flips them (the model's readme usually
+  says which style it uses).
+- **Very dense or odd meshes.** Meshes denser than the survivor's are reduced to its budget (`--keep-density` to keep
+  yours); faces that exist twice back to back, flat shading and split UV seams are handled, but a broken source mesh
+  (holes, flipped faces, loose parts) stays broken.
+- **Proportions far from a person.** Very long arms can leave the hands off the gun grips in third person
+  (`--proportions 0.5` or `fit`); a non-human face (a monster, a helmet) has no mouth or eyes to find, so talking and
+  blinking are guesses (`--face off`, or `--face-eyes` to place the eyes).
+- **Garments the cloth can't express.** Open coats, capes, skirts and long dresses swing; layered garments, scarves,
+  straps and loose accessories move stiffly with their bone. Cloth that clips or spikes: `--cloth off`.
+- **Hair without alpha.** Hair cards need a transparency mask (in the colour texture's alpha, or the normal map's);
+  without one they render as solid strips.
+- **File quirks.** Scene lights, embedded textures, absolute Windows texture paths and odd unit scales are handled; if
+  a file still won't import, open it in Blender and export a fresh FBX or glb.
+
+If a model still looks wrong, the build log names each decision (bones, slots, cloth, face). That is the place to
+start, and the troubleshooting table above lists the common messages.
+
 ## Limits
 - The skeleton, animations, hitboxes (physics asset) and material slots stay the template's. No new bones.
-- Cloth only for a skirt/dress, and only on outfits that have cloth in the game; no morph targets (face shapes:
+- Cloth for skirts, dresses, long coats and capes on any outfit; no morph targets (face shapes:
   templates with morph targets are refused). The face is rigged to the survivor's face bones (talks, blinks, expressions:
   [Talking and blinking](#talking-and-blinking)); your own face shapes are not kept.
 - Hair: on the Hair slot, masked by the texture's alpha, lit like cloth (no anisotropic hair shine); on any other slot
