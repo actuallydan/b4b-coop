@@ -1,11 +1,13 @@
 // Dev/test commands for unattended local testing (launch/multi.sh). Dev builds only: the whole file is compiled
 // out of player builds (native/build.sh --release). Sign-in automation lives in signin.c.
 // Commands: `signin` (one step by hand), `mission [raw] [map] [Easy|Normal|Hard|VeryHard]`, `ready [vote]`,
-// `endmission [1|0]`, `burncard list|map|status|charge|[row] [table]`, `callp <Class> <Func> [args]`, `tp`, `takeover`.
+// `endmission [1|0]`, `burncard list|map|status|charge|[row] [table]`, `callp <Class> <Func> [args]`, `tp`, `takeover`,
+// `face` (face bones of custom heads, make a hero speak).
 #ifndef B4B_RELEASE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
@@ -420,6 +422,7 @@ static void cmd_takeover(char *rest, Out *o) {
 //                          real RewardSurvivorsForSuccess STP award for every human. Hooked on first use.
 // items [substr]           host: live ItemPickup actors in this world and their item rows (duffel bag = Duffel)
 // giveitem <slot> <pickup> [entry]   host: that pickup's item row into hero slot <slot>'s inventory
+// giveitem <slot> row <DataTable> <RowName>   host: an explicit item row (e.g. a weapon from Weapons_DT)
 //                          (InventoryComponent::ServerAddItemsOfHandle, the server side of a pickup)
 // duffelreward <slot> <ProductsRowGuid> [delta]      host: the per-player duffel-bag reward issuer (0x141BD7610)
 //                          directly: consumable -> AdjustConsumableQuantity(delta), else UnlockProduct
@@ -487,13 +490,23 @@ static UObject *nth_pickup(int want, const char *filter, Out *o) {
 
 static void cmd_giveitem(char *rest, Out *o) {
     char *a = rest ? strtok(rest, " ") : NULL, *b = a ? strtok(NULL, " ") : NULL, *c = b ? strtok(NULL, " ") : NULL;
-    if (!b) { out_printf(o, "usage: giveitem <slot> <pickup#> [entry]\n"); return; }
+    if (!b) { out_printf(o, "usage: giveitem <slot> <pickup#> [entry] | giveitem <slot> row <DataTable> <RowName>\n"); return; }
     UObject *slot = slot_at(atoi(a)), *pawn = slot ? ue_get_ptr(slot, "AssignedPawn") : NULL;
-    UObject *pk = nth_pickup(atoi(b), NULL, NULL);
+    RowHandle byrow = {0};
+    if (!strcmp(b, "row")) {   // an explicit item row, e.g. giveitem 0 row Weapons_DT DF038C6A4ED79AB7FDCF9CAB8D742DC7
+        char *rn = c ? strtok(NULL, " ") : NULL;
+        static wchar_t wrow[128];
+        int k = 0;
+        for (; rn && rn[k] && k < 127; k++) wrow[k] = (wchar_t)rn[k];
+        wrow[k] = 0;
+        if (!c || !rn || !(byrow.table = find_named(c))) { out_printf(o, "no table %s / row\n", c ? c : "-"); return; }
+        byrow.row = make_name(wrow);
+    }
+    UObject *pk = byrow.table ? NULL : nth_pickup(atoi(b), NULL, NULL);
     int32_t off = pk ? ue_prop_offset(pk, "ItemRowsAndQuantities") : -1;
     TArray *rows = off >= 0 ? (TArray *)((char *)pk + off) : NULL;
-    int e = c ? atoi(c) : 0;
-    if (!pawn || !rows || e < 0 || e >= rows->num) { out_printf(o, "no pawn in slot %s / no pickup %s entry %d\n", a, b, e); return; }
+    int e = c && !byrow.table ? atoi(c) : 0;
+    if (!pawn || (!byrow.table && (!rows || e < 0 || e >= rows->num))) { out_printf(o, "no pawn in slot %s / no pickup %s entry %d\n", a, b, e); return; }
     UFunction *gi = ue_find_function(U_CLASS(pawn), "GetInventoryComponent");
     uint8_t p0[16] = {0};
     if (gi) ue_process_event(pawn, gi, p0);
@@ -502,7 +515,7 @@ static void cmd_giveitem(char *rest, Out *o) {
     int32_t oh = f ? param_off(f, "ItemHandle") : -1, on = f ? param_off(f, "NumItems") : -1;
     if (oh < 0 || on < 0 || UFN_PARMSSIZE(f) > 64) { out_printf(o, "no inventory / ServerAddItemsOfHandle\n"); return; }
     uint8_t p[64] = {0};
-    RowHandle *src = (RowHandle *)((char *)rows->data + e * 0x48), *h = (RowHandle *)(p + oh);
+    RowHandle *src = byrow.table ? &byrow : (RowHandle *)((char *)rows->data + e * 0x48), *h = (RowHandle *)(p + oh);
     h->table = src->table; h->row = src->row;   // display string left empty
     *(int32_t *)(p + on) = 1;
     char nm[160];
@@ -583,7 +596,198 @@ show:
     out_printf(o, "%d probe(s)\n", n_fnp);
 }
 
+// ---- faces (model mods #23: custom heads on the survivors' face bones; docs/investigations/mesh-mods.md §12) ----
+// face                          list heroes (index, mesh)
+// face <hero#> [bone...]        each face bone's current rotation/offset from the mesh's reference pose (parent space)
+//                               and its reference-pose position (the bind pose the mesh brought: moved face bones)
+// face say <hero#> <Response> [test]   make the hero speak a response group (Ping_Affirmative, Ping_Ammo ...):
+//                               DialogueComponent SayLine (or TestLine); the line drives lip-sync on every machine
+// face comm [action] | face ping     the local player's comm wheel action (Thank=10) / a ping: the survivor speaks
+// face look <hero#> [dist] [dz]  stand dist cm (45) in front of that hero's face and look at it (screenshots; host)
+// face walk <hero#> <x> <y> <z>  host: a bot runs there (AIBlueprintHelperLibrary.SimpleMoveToLocation on its controller;
+//                               its behaviour tree takes over again later): hair/cloth tests while moving
+static UObject *face_hero(int idx) {
+    static UClass *hc;
+    if (!hc) hc = ue_find_class("HeroCharacter");
+    UObject *w = ue_world();
+    int32_t n = ue_num_objects(); int k = 0;
+    for (int32_t i = 0; hc && w && i < n; i++) {
+        UObject *x = ue_object_at(i);
+        if (!x || (U_FLAGS(x) & 0x30) || !ue_is_a(x, hc)) continue;
+        UObject *lvl = U_OUTER(x);
+        if (!lvl || U_OUTER(lvl) != w) continue;
+        if (k++ == idx) return x;
+    }
+    return NULL;
+}
+
+static UObject *face_component(UObject *actor, const char *cls) {
+    UClass *c = ue_find_class(cls);
+    int32_t n = ue_num_objects();
+    for (int32_t i = 0; c && i < n; i++) {
+        UObject *x = ue_object_at(i);
+        if (x && !(U_FLAGS(x) & 0x30) && U_OUTER(x) == actor && ue_is_a(x, c)) return x;
+    }
+    return NULL;
+}
+
+static FName face_name(const char *s) {
+    wchar_t w[128]; int k = 0;
+    for (; s[k] && k < 127; k++) w[k] = (wchar_t)(unsigned char)s[k];
+    w[k] = 0;
+    return make_name(w);
+}
+
+static void cmd_face(char *rest, Out *o) {
+    static const char *DEF[] = {"jaw", "lip_lower", "lip_upper", "lip_corner_upper_l", "eyelid_upper_l", "eyelid_lower_l",
+                                "eyeball_l", "eyebrow_l", NULL};
+    char *a = rest ? strtok(rest, " ") : NULL;
+    char nm[160], b[300];
+    if (!a) {   // #i actor mesh=<path> at=(x y z) [(you)]: position and the local pawn, to pair heroes across machines
+        UObject *pc = ue_local_pc(), *me = pc ? ue_get_ptr(pc, "Pawn") : NULL;
+        for (int i = 0; ; i++) {
+            UObject *h = face_hero(i);
+            if (!h) break;
+            UObject *m = ue_get_ptr(h, "Mesh"), *sk = m ? ue_get_ptr(m, "SkeletalMesh") : NULL;
+            static uint8_t p[64];
+            float at[3] = {0, 0, 0};
+            UFunction *gl = ue_find_function(U_CLASS(h), "K2_GetActorLocation");
+            if (gl) { memset(p, 0, sizeof p); ue_process_event(h, gl, p); memcpy(at, p + param_off(gl, "ReturnValue"), 12); }
+            out_printf(o, "#%d %s mesh=%s at=(%.0f %.0f %.0f)%s\n", i, ue_obj_name(h, nm, sizeof nm),
+                       sk ? ue_full_path(sk, b, sizeof b) : "-", at[0], at[1], at[2], h == me ? " (you)" : "");
+        }
+        return;
+    }
+    if (!strcmp(a, "say")) {
+        char *hs = strtok(NULL, " "), *resp = strtok(NULL, " "), *mode = strtok(NULL, " ");
+        UObject *h = hs ? face_hero(atoi(hs)) : NULL, *dc = h ? face_component(h, "DialogueComponent") : NULL;
+        UFunction *f = dc ? ue_find_function(U_CLASS(dc), mode && !strcmp(mode, "test") ? "TestLine" : "SayLine") : NULL;
+        if (!resp || !f) { out_printf(o, "usage: face say <hero#> <Response> [test] (%s)\n", h ? "no DialogueComponent" : "no hero"); return; }
+        static uint8_t p[128];
+        memset(p, 0, sizeof p);
+        int32_t po = param_off(f, "Params");
+        uint8_t *sp = p + (po < 0 ? 0 : po);            // SpokenLineParams (0x24)
+        *(FName *)sp = face_name(resp);
+        sp[0x0C] = 1;                                    // bShowSubtitles
+        *(float *)(sp + 0x18) = 2000.0f;                 // AttenuationRadius
+        sp[0x20] = 1;                                    // bShouldReplicate
+        ue_process_event(dc, f, p);
+        out_printf(o, "face: %s.%s(%s) on %s\n", ue_obj_name(dc, nm, sizeof nm), mode ? "TestLine" : "SayLine", resp,
+                   ue_obj_name(h, b, sizeof b));
+        return;
+    }
+    if (!strcmp(a, "comm") || !strcmp(a, "ping")) {   // face comm <action 1-10> | face ping: the local player's comm
+        char *as = strtok(NULL, " ");                    // wheel (Approve=2, Thank=10 ...) or ping (the survivor says it)
+        UObject *pc = ue_local_pc(), *pw = pc ? ue_get_ptr(pc, "PlayerWaypoints") : NULL, *me = pc ? ue_get_ptr(pc, "Pawn") : NULL;
+        if (!pw || !me) { out_printf(o, "no PlayerWaypoints / pawn\n"); return; }
+        static uint8_t p[256];
+        memset(p, 0, sizeof p);
+        UFunction *f;
+        if (!strcmp(a, "ping")) {
+            f = ue_find_function(U_CLASS(pw), "SpawnPing");
+            ue_process_event(pw, f, p);
+            out_printf(o, "face: SpawnPing -> %d\n", p[param_off(f, "ReturnValue")]);
+            return;
+        }
+        f = ue_find_function(U_CLASS(pw), "ServerSpawnCommWheelPing");
+        UFunction *gl = ue_find_function(U_CLASS(me), "K2_GetActorLocation");
+        static uint8_t q[64]; memset(q, 0, sizeof q); ue_process_event(me, gl, q);
+        *(UObject **)(p + param_off(f, "OwnerController")) = pc;
+        float *t = (float *)(p + param_off(f, "Transform"));
+        t[3] = 1.f; memcpy(t + 4, q + param_off(gl, "ReturnValue"), 12); t[8] = t[9] = t[10] = 1.f;
+        p[param_off(f, "Action")] = (uint8_t)(as ? atoi(as) : 10);
+        ue_process_event(pw, f, p);
+        out_printf(o, "face: ServerSpawnCommWheelPing(action %d)\n", as ? atoi(as) : 10);
+        return;
+    }
+    if (!strcmp(a, "walk")) {
+        char *hs = strtok(NULL, " "), *xs = strtok(NULL, " "), *ys = strtok(NULL, " "), *zs = strtok(NULL, " ");
+        UObject *h = hs ? face_hero(atoi(hs)) : NULL, *ctl = h ? ue_get_ptr(h, "Controller") : NULL;
+        UClass *lc = ue_find_class("AIBlueprintHelperLibrary");
+        UObject *cdo = lc ? UC_CDO(lc) : NULL;
+        UFunction *f = cdo ? ue_find_function(lc, "SimpleMoveToLocation") : NULL;
+        if (!zs || !ctl || !f) { out_printf(o, "usage: face walk <hero#> <x> <y> <z> (%s)\n", !h ? "no hero" : !ctl ? "no controller" : "no function"); return; }
+        static uint8_t p[64];
+        memset(p, 0, sizeof p);
+        *(UObject **)(p + param_off(f, "Controller")) = ctl;
+        float g[3] = {(float)atof(xs), (float)atof(ys), (float)atof(zs)};
+        memcpy(p + param_off(f, "Goal"), g, 12);
+        ue_process_event(cdo, f, p);
+        out_printf(o, "face walk: %s -> (%.0f %.0f %.0f)\n", ue_obj_name(ctl, nm, sizeof nm), g[0], g[1], g[2]);
+        return;
+    }
+    if (!strcmp(a, "look")) {        // face look <hero#> [dist] [dz]: stand in front of that hero's face, looking at it
+        char *hs = strtok(NULL, " "), *ds = strtok(NULL, " "), *zs = strtok(NULL, " ");
+        UObject *h = hs ? face_hero(atoi(hs)) : NULL, *m = h ? ue_get_ptr(h, "Mesh") : NULL;
+        UObject *pc = ue_local_pc(), *me = pc ? ue_get_ptr(pc, "Pawn") : NULL;
+        if (!m || !me || me == h) { out_printf(o, "usage: face look <hero#> [dist] [dz] (not your own hero)\n"); return; }
+        static uint8_t p[512];
+        float hd[3], fw[3], el[3];
+        UFunction *f = ue_find_function(U_CLASS(m), "GetSocketLocation");
+        memset(p, 0, sizeof p); *(FName *)(p + param_off(f, "InSocketName")) = face_name("head");
+        ue_process_event(m, f, p); memcpy(hd, p + param_off(f, "ReturnValue"), 12);
+        f = ue_find_function(U_CLASS(h), "GetActorForwardVector");
+        memset(p, 0, sizeof p); ue_process_event(h, f, p); memcpy(fw, p + param_off(f, "ReturnValue"), 12);
+        float d = ds ? (float)atof(ds) : 45.f, dz = zs ? (float)atof(zs) : 3.f;
+        hd[2] += dz;
+        // eyes stand `d` in front of the face; the pawn's origin is BaseEyeHeight below its eyes
+        f = ue_find_function(U_CLASS(me), "GetActorEyesViewPoint");
+        float at[3];
+        memset(p, 0, sizeof p); ue_process_event(me, f, p); memcpy(el, p + param_off(f, "OutLocation"), 12);
+        UFunction *gl = ue_find_function(U_CLASS(me), "K2_GetActorLocation");
+        memset(p, 0, sizeof p); ue_process_event(me, gl, p); memcpy(at, p + param_off(gl, "ReturnValue"), 12);
+        float eye_h = el[2] - at[2];
+        float np[3] = {hd[0] + fw[0] * d, hd[1] + fw[1] * d, hd[2] - eye_h};
+        f = ue_find_function(U_CLASS(me), "K2_SetActorLocation");
+        memset(p, 0, sizeof p); memcpy(p + param_off(f, "NewLocation"), np, 12); p[param_off(f, "bTeleport")] = 1;
+        ue_process_event(me, f, p);
+        float v[3] = {hd[0] - np[0], hd[1] - np[1], hd[2] - (np[2] + eye_h)}, n = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        float r[3] = {n > 0 ? asinf(v[2] / n) * 57.29578f : 0.f, atan2f(v[1], v[0]) * 57.29578f, 0.f};
+        f = ue_find_function(U_CLASS(pc), "SetControlRotation");
+        memset(p, 0, sizeof p); memcpy(p + param_off(f, "NewRotation"), r, 12); ue_process_event(pc, f, p);
+        out_printf(o, "face look: %.0f cm in front of %s's head (%.0f %.0f %.0f), pitch %.1f yaw %.1f\n", d,
+                   ue_obj_name(h, nm, sizeof nm), hd[0], hd[1], hd[2], r[0], r[1]);
+        return;
+    }
+    UObject *h = face_hero(atoi(a)), *m = h ? ue_get_ptr(h, "Mesh") : NULL;
+    if (!m) { out_printf(o, "no hero %s\n", a); return; }
+    UFunction *fd = ue_find_function(U_CLASS(m), "GetDeltaTransformFromRefPose");
+    UFunction *fi = ue_find_function(U_CLASS(m), "GetBoneIndex");
+    UFunction *fr = ue_find_function(U_CLASS(m), "GetRefPosePosition");
+    if (!fd || !fi || !fr) { out_printf(o, "mesh functions missing\n"); return; }
+    const char *list[32]; int nl = 0;
+    for (char *t = strtok(NULL, " "); t && nl < 31; t = strtok(NULL, " ")) list[nl++] = t;
+    if (!nl) for (; DEF[nl]; nl++) list[nl] = DEF[nl];
+    UObject *sk = ue_get_ptr(m, "SkeletalMesh");
+    out_printf(o, "%s mesh=%s\n", ue_obj_name(h, nm, sizeof nm), sk ? ue_obj_name(sk, b, sizeof b) : "-");
+    for (int k = 0; k < nl; k++) {
+        static uint8_t p[256];
+        memset(p, 0, sizeof p);
+        FName bn = face_name(list[k]);
+        *(FName *)(p + param_off(fi, "BoneName")) = bn;
+        ue_process_event(m, fi, p);
+        int32_t bi = *(int32_t *)(p + param_off(fi, "ReturnValue"));
+        if (bi < 0) { out_printf(o, "  %-20s (no bone)\n", list[k]); continue; }
+        memset(p, 0, sizeof p);
+        *(int32_t *)(p + param_off(fr, "BoneIndex")) = bi;
+        ue_process_event(m, fr, p);
+        float *ref = (float *)(p + param_off(fr, "ReturnValue"));
+        float rx = ref[0], ry = ref[1], rz = ref[2];
+        memset(p, 0, sizeof p);
+        *(FName *)(p + param_off(fd, "BoneName")) = bn;
+        ue_process_event(m, fd, p);
+        float *t = (float *)(p + param_off(fd, "ReturnValue"));    // FTransform: quat xyzw, translation (+16)
+        float w = t[3] < 0 ? -t[3] : t[3];
+        if (w > 1.0f) w = 1.0f;
+        double ang = 2.0 * acos(w) * 57.29578;
+        double tl = sqrt((double)t[4] * t[4] + (double)t[5] * t[5] + (double)t[6] * t[6]);
+        out_printf(o, "  %-20s rot=%6.2fdeg off=%5.2fcm  q=(%.3f %.3f %.3f %.3f)  ref=(%.2f %.2f %.2f)\n", list[k], ang, tl,
+                   t[0], t[1], t[2], t[3], rx, ry, rz);
+    }
+}
+
 int testing_cmd(const char *verb, char *rest, Out *o) {
+    if (!strcmp(verb, "face")) { cmd_face(rest, o); return 1; }
     if (!strcmp(verb, "fnprobe")) { cmd_fnprobe(rest, o); return 1; }
     if (!strcmp(verb, "stp")) { cmd_stp(rest, o); return 1; }
     if (!strcmp(verb, "items")) { nth_pickup(-1, rest && *rest ? rest : NULL, o); return 1; }

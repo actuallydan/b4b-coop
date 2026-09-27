@@ -55,6 +55,7 @@ typedef struct { void *data; int32_t num, max; } TArray;
 int ue_init(char *err, size_t errlen);             // verify build; returns 0 on success
 int32_t ue_num_objects(void);
 UObject *ue_object_at(int32_t i);
+UObject *ue_weak_get(const void *weak_ptr);        // FWeakObjectPtr -> object, NULL if stale
 const char *ue_name(FName n, char *buf, size_t len); // ASCII-folded
 const char *ue_obj_name(UObject *o, char *buf, size_t len);
 const char *ue_full_path(UObject *o, char *buf, size_t len);   // Outer.Chain.Name

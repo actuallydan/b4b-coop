@@ -1,0 +1,28 @@
+{
+ "comment": "Example manifest for tools/charsuite.py (format: its docstring). The models are not in the repo: download them (licence + source below), put them under 'root' and copy this file to ~/.local/share/b4b-coop/characters/suite.json. Per entry: name (outfit name, /model <name>), model (relative to root), outfit (base outfit: Hero/Elite_NN, TU11/Hero/Elite_NN or a /Game/.../3P_*_SKM path), optional fp (default: the FP_ mesh next to it; false = none), title, flags (extra b4bmod arguments the model needs; ideally none), expect (outfit name the add-on must declare; default name), mission (also worn in Evansburgh), license/source (documentation only).",
+ "root": "~/.local/share/b4b-coop/characters",
+ "characters": [
+  {"name": "shino", "model": "src/sendagaya_shino/Sendagaya Shino.vrm", "outfit": "Holly/Elite_00", "title": "Sendagaya Shino", "flags": [], "mission": true,
+   "license": "CC0", "source": "VRoid Studio sample models, https://opengameart.org/content/vroid-studio-cc0-models"},
+  {"name": "base_male", "model": "src/base_male/Base_Male.vrm", "outfit": "Walker/Elite_01", "title": "Base Male", "flags": [],
+   "license": "CC0", "source": "https://opengameart.org/content/vroid-studio-cc0-models"},
+  {"name": "avatar_e", "model": "src/avatarsample_e/AvatarSample_E.vrm", "outfit": "Mom/Elite_00", "title": "AvatarSample E", "flags": [],
+   "license": "CC0", "source": "https://opengameart.org/content/vroid-studio-cc0-models"},
+  {"name": "sakurada", "model": "src/sakurada_fumiriya/Sakurada Fumiriya.vrm", "outfit": "Karlee/Elite_02", "title": "Sakurada Fumiriya", "flags": [],
+   "license": "CC0", "source": "https://opengameart.org/content/vroid-studio-cc0-models"},
+  {"name": "monster", "model": "src/horror_monster/Monster_Rigged_2chainFingers.fbx", "outfit": "Walker/Elite_00", "title": "Horror Monster", "flags": [], "mission": true,
+   "license": "CC0", "source": "https://opengameart.org/content/horror-monster-0 (FBX + PBR PNGs in one folder)"},
+  {"name": "blocky", "model": "src/kenney_blocky/Models/FBX format/character-a.fbx", "outfit": "Karlee/Elite_00", "title": "Kenney blocky", "flags": [],
+   "license": "CC0", "source": "Kenney Blocky Characters 2.0, https://opengameart.org/content/3d-rigged-characters"},
+  {"name": "cesium", "model": "src/CesiumMan.glb", "outfit": "Walker/Elite_00", "title": "CesiumMan", "flags": [],
+   "license": "CC-BY 4.0 (Cesium); logo texture is a trademark: test only", "source": "Khronos glTF-Sample-Assets, Models/CesiumMan"},
+  {"name": "bulky", "model": "gen/bulky_ue/survivor.fbx", "outfit": "Hoffman/Elite_00", "title": "MPFB bulky", "flags": [],
+   "license": "CC0", "source": "tools/modkit/testassets/mpfb_survivor.py (MPFB 2 + MakeHuman CC0 assets), --rig game_engine --format fbx"},
+  {"name": "shorty", "model": "gen/short_rigify/survivor.glb", "outfit": "Doc/Elite_00", "title": "MPFB short Rigify", "flags": [],
+   "license": "CC0", "source": "tools/modkit/testassets/mpfb_survivor.py, --rig rigify.human --format glb"},
+  {"name": "coattest", "model": "gen/coats/bulky_coat.glb", "outfit": "Hoffman/Elite_00", "title": "Coat test", "flags": [],
+   "license": "CC0", "source": "tools/modkit/testassets/garments.py gen/bulky_ue/survivor.fbx bulky_coat.glb coat"},
+  {"name": "capetest", "model": "gen/coats/shino_cape.glb", "outfit": "TU11/Mom/Elite_04", "title": "Cape test", "flags": [],
+   "license": "CC0", "source": "tools/modkit/testassets/garments.py on Sendagaya Shino.vrm, cape"}
+ ]
+}

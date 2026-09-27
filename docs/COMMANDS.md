@@ -6,7 +6,7 @@ chat commands, and `b4bcoop.ini`. You don't need any of it to play: install, pre
 
 Contents: [The ~ window](#the--window) · [Chat commands](#how-to-use-chat-commands) ·
 [Commands for everyone](#commands-for-everyone) · [Host-only commands](#host-only-commands) ·
-[Cheats](#cheats-sandbox) · [b4bcoop.ini options](#b4bcoopini-options) ·
+[Cheats](#cheats-sandbox) · [Add-ons](#add-ons) · [b4bcoop.ini options](#b4bcoopini-options) ·
 [Launch options & troubleshooting](#launch-options--troubleshooting)
 
 ## The ~ window
@@ -18,8 +18,8 @@ of the window, and also in your chat.
 
 - While it is open, the mouse moves the window's own cursor and your hero doesn't move, shoot or react to keys
   (your flashlight and third-person keys too). `~` or `Esc` closes it.
-- Settings you change here (camera, keys, flashlight, who may join, the window's text size) apply at once and are
-  saved to `b4bcoop.ini`: only the settings you touched. Editing `b4bcoop.ini` while the game runs updates the window.
+- Settings you change here (camera, keys, flashlight, who may join, add-ons policy, the window's text size) apply at
+  once and are saved to `b4bcoop.ini`: only the settings you touched. Editing `b4bcoop.ini` while the game runs updates the window.
 - A key binding: click the key's button, then press the new key (`Esc` cancels, `Backspace` = no key). Mouse buttons
   4/5 and the middle button work too.
 
@@ -30,6 +30,8 @@ of the window, and also in your chat.
 | **Camera** | Third person on/off, start the game in third person, its key, sliders for distance, side, height and FOV (Ctrl+click a slider to type a number), Swap shoulder, Reset camera, aim correction | `/thirdperson ...`; ini `thirdperson*` |
 | **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky` |
 | **Cheats** | Host: **Cheats on**, a player picker (`me`, everyone, a player) for the buttons marked `*`, then every cheat: god, heal, revive, infinite ammo, copper, cards, fly, noclip, walk, teleport, free camera, size, horde, kill all ridden, freeze, director phases, spawn, game speed, win, lose, and your own save's supply points / unlock all | every `/cheats` command |
+| **Models** | Your look now and your pick, the host's refusal when it said no, **Reset my look**; lists to wear with a search box (click a name): **Survivors** (per survivor: whole survivor, outfits, heads, torsos, legs), **NPC bodies** (Fort Hope NPCs, other survivors, cultists), **Add-on outfits** (by add-on); **Weapon looks** per weapon type (**Use**, which add-on it comes from, **Reset** for that weapon type); **Everyone's look** (every player and bot); host: **Change the look of** a player or bot (then click a look), their **Reset**, **Model swaps allowed** (greyed on a client, with the host's last announced state) | `/model`, `/model list ...`, `/model <name>`, `/model reset`, `/model <player> <name>\|reset`, `/models on\|off` |
+| **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`), every player's add-ons | `/addons`, `/addons on\|off`, `/addons info`, `/addons players`, `/addons policy`; ini `addons`, `addons_policy` |
 | **Settings** | The window's text size and key, the flashlight and third-person keys | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key` |
 | **Help** | Your version, a box to run any chat command (without the `/`) | `/help` |
 
@@ -62,6 +64,12 @@ points, Unban all) need a second click within 3 seconds ("Sure?"). `overlay=0` i
 | `/join steam:<id>` | Joins a friend by their Steam ID | `/join steam:7656119XXXXXXXXXX` |
 | `/leave` | Leaves the host's game, back to your own Fort Hope | `/leave` |
 | `/host` | Starts hosting your Fort Hope (only needed with `host=0`) | `/host` |
+| `/model <name>` | Changes how your survivor looks, this game session only | `/model karlee_elite_03`, `/model holly` |
+| `/model list [survivor\|npc\|outfits\|weapons]` | The looks you can use (`outfits`, `weapons`: those your add-ons add) | `/model list`, `/model list walker` |
+| `/model reset` | Back to your own look | `/model reset` |
+| `/addons` | Lists your add-ons, on/off, and conflicts | `/addons` |
+| `/addons on\|off <#>` | Switches an add-on on or off from the next game start | `/addons off 2` |
+| `/addons info <#>` | Title, author, version, description, cosmetic or gameplay, id of an add-on | `/addons info 1` |
 
 **`/help`**: the first line is your version, e.g. `b4bcoop 0.3.0 (protocol 1)`. The host also sees the host-only
 commands; a client sees `(/kick /ban /lock ... are for the host)`.
@@ -116,6 +124,13 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
 - Joining by IP address (`/join 1.2.3.4`) works only with `host_ip=1` (advanced, see below). Without it the reply
   is `Joining by IP address is off. Join through Steam instead: ...`.
 
+**`/model`**: wear another survivor's outfit (`/model walker_elite_07`), a whole survivor's look (`/model holly`),
+single pieces (`/model holly_head_03`), a Fort Hope NPC (`/model vanessa`) or an outfit one of your add-ons adds
+(`/model list outfits`), or put an add-on's model on your weapon (`/model list weapons`, e.g. `/model ak47` for your
+AR02). The `~` window's **Models** tab has all of it as lists (click to wear). Everyone sees survivor outfits; NPC looks only players with b4bcoop; add-on
+outfits and weapon looks only players with the same add-on (the others see your survivor, the normal weapon). Kept through map changes, death and respawn; nothing is saved. `/model` alone shows
+what you wear. All names, examples and limits: `docs/commands-models.md`.
+
 **`/leave`**: only while in someone else's game (else `you are not in someone else's session`).
 
 **`/host`**: you host automatically by default, so you only need this after setting `host=0`. Works only from your
@@ -150,6 +165,10 @@ sent to the host.
 | `/ready vote` | Readies everyone for the post-round vote | `/ready vote` |
 | `/restart` | Restarts the current chapter (counts as a wipe) | `/restart` |
 | `/say <message>` | A message every player sees in their chat | `/say back in 5 min` |
+| `/model <player> <name\|reset>` | Changes a player's or a bot's look; everyone is told | `/model 2 doc_elite_03` |
+| `/models on\|off` | Allows or stops model swaps for everyone (on by default) | `/models off` |
+| `/addons players` | Which add-ons each player runs (cosmetic/gameplay, ids) | `/addons players` |
+| `/addons policy [any\|cosmetic\|none\|match]` | Shows or sets (this session) which add-ons joiners may have | `/addons policy none` |
 
 **`<player>`** is the number from `/players` (`2` or `#2`), or a name: exact (any case) or the start of a name, if
 only one player matches. Bots and yourself can't be kicked or banned (`Holly is a bot`, `that's you`).
@@ -183,6 +202,10 @@ session only.
 **`/restart`**: only in a mission. Fails the mission on purpose, like a team wipe, and the game restarts the chapter
 (or goes back to the last checkpoint) for everyone. It counts as a failed attempt, like a real wipe. If a wipe would
 end your run, it refuses: `restart refused: failing now would end the run (GameOver)`.
+
+**`/models off`**: resets every look that uses another survivor's outfit or an NPC, and refuses new ones (the player
+sees `The host turned model swaps off (/models).`). Players can still wear their own survivor's outfits. `/models on`
+allows swaps again. `/model <player> reset` puts one player or bot back to their own look.
 
 **`/say`**: every player with b4bcoop sees `<your name>: [host] back in 5 min` in their chat, you too.
 
@@ -281,6 +304,87 @@ copy the backup over `PlayerProfileSettings.sav`. If the backup can't be made, n
 - **Reviving dead heroes**: dead heroes are rescued from the rescue closets as usual; `/revive` gets downed heroes up.
 - **Spawning bosses** (the Abomination, sleepers): they are scripted into their maps and don't work spawned anywhere.
 
+## Add-ons
+
+Add-ons change how the game looks (textures, models, UI), Left 4 Dead style: drop a file in a folder, restart. There
+is no in-game browser. Add-ons are **only on your PC**: other players don't need them and don't see them. If you have
+a survivor skin add-on, you see it on every survivor wearing that outfit; players without it see the normal outfit.
+Some add-ons **add** outfits instead of replacing one: `/model list outfits` lists them, `/model <name>` puts one on;
+players with the same add-on see it on you, the others your survivor. A host with `addons_policy=none` refuses them.
+
+**Install:** an add-on is one `.pak` file. Put it in the `b4bcoop-addons` folder in the game folder (next to
+`Back4Blood.exe`; create the folder if it isn't there). An add-on zip already contains that folder: extract it into
+the game folder. Restart the game. **Remove:** delete the `.pak` file.
+
+**On/off and load order:** the game writes `b4bcoop-addons\addonlist.txt`, one line per add-on:
+```
+holly_magenta.pak=1
+holly_green.pak=0
+```
+`=1` on, `=0` off. New add-ons are added at the bottom, switched on. The game loads them top to bottom: when two
+add-ons change the same file, **the one further down wins**. Move lines to change that. The `~` window's **Add-ons**
+tab (checkbox, **Up**/**Down**) and `/addons on|off` edit this file for you; editing it by hand while the game runs is
+picked up too. All changes apply the next time the game starts.
+
+**`/addons`**: the list with numbers (in `addonlist.txt` order), the state of each (`on`, `off`, `on after restart`, `off after restart`,
+`on, NOT LOADED`) and conflicts:
+```
+2 add-on(s), load order (a later one wins):
+1. Holly magenta portrait 1.0 [on] holly_magenta.pak
+2. Holly green portrait 1.0 [on] holly_green.pak
+conflict: holly_green.pak overrides holly_magenta.pak (2 file(s))
+```
+`<#>` in `/addons on|off|info` is that number, the file name or the title (or a unique part of it).
+
+**Cosmetic or gameplay:** b4bcoop looks at the files in every add-on and sorts it into one of two kinds (what the
+add-on says about itself doesn't count):
+- **cosmetic**: textures, materials, character, weapon and prop models (characters on the game's own skeleton),
+  animations, cloth, sounds, UI, effects. Changes only what you see and hear.
+- **gameplay**: anything else, e.g. physics assets, data tables, blueprints, skeletons, maps, config files. Could
+  change how the game plays, so hosts refuse these by default.
+
+`/addons` shows the kind of each add-on, `/addons info <#>` the first file that made it "gameplay".
+
+**Joining someone with add-ons:** when you join, your game tells the host how many cosmetic and gameplay add-ons you
+run and their ids (plus the titles of gameplay ones). The host's `addons_policy` decides:
+
+| `addons_policy=` | Who may join |
+|---|---|
+| `cosmetic` (default) | Everyone with cosmetic add-ons only. Gameplay add-ons are refused, by name |
+| `any` | Everyone, whatever they run |
+| `none` | Only players with no add-ons at all |
+| `match` | Cosmetic add-ons are free; gameplay add-ons must be exactly the host's (same ids) |
+
+Refused, you see `Could not join: Host allows cosmetic add-ons only; you have gameplay add-ons: <titles>. Switch them
+off (/addons off <#>) and restart the game.` (or the `none`/`match` version); the host sees `<name> could not join:
+they have gameplay add-ons (<titles>); addons_policy=cosmetic.` Add-ons apply at game start, so switch them off and
+restart before joining again. The host's own add-ons don't matter under `cosmetic`, `any` and `none`.
+
+**`/addons players`** (host): every player's add-ons, e.g.
+```
+add-ons policy: cosmetic
+you (host): 0 cosmetic, 0 gameplay
+#1 Bob:
+  1 cosmetic, 0 gameplay
+  cosmetic 33c6d9d8 Walker checker outfit (you have it too)
+```
+Titles show for gameplay add-ons and for ones you have too; others show their id (`/addons info` on Bob's side shows
+the same id). **`/addons policy <x>`** changes the policy until the host quits; `addons_policy=` in `b4bcoop.ini`
+keeps it (the `~` window's Add-ons tab sets both).
+
+Messages (in your chat after the game starts):
+- `Add-on conflict: "B" overrides "A". /addons`: both change the same files; B wins (it is further down the list).
+  Fine if that's what you want; otherwise switch one off or reorder `addonlist.txt`.
+- `Add-ons "A" and "B" mix parts of one asset (may crash): switch one off.`: each add-on replaces a different part of
+  the same asset, which can crash the game. Switch one off.
+- `N add-on(s) could not be loaded`: `/addons info <#>` says why: `damaged ... download it again`, `not a Back 4
+  Blood add-on pak` (made for another game, or not with b4bcoop's tool), `rename it ... to plain letters` (file or
+  folder name with accents or other special characters).
+- `Add-ons are off: unsupported game build`: your Back 4 Blood version isn't the one this b4bcoop supports.
+
+Only install add-ons from people you trust. Making add-ons: the mod maker's kit (`b4bcoop-modkit-<version>.zip` from
+the releases, `modkit/` in the source repository); players don't need it.
+
 ## b4bcoop.ini options
 
 **Where:** `Gobi\Binaries\Win64\b4bcoop.ini` in the game folder (Steam → right-click **Back 4 Blood** → **Manage** →
@@ -304,7 +408,7 @@ Rules:
 - **Applied while the game runs:** `thirdperson`, `thirdperson_key`, `thirdperson_distance`, `thirdperson_side`,
   `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `flashlight_key`, `flashlight_sticky`,
   `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
-  `overlay_scale`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
+  `overlay_scale`, `addons_policy`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
   session. Deleting or commenting out a line = back to its default.
 - **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
   `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.
@@ -429,6 +533,9 @@ join=steam:7656119XXXXXXXXXX
 | `presence_addr` | your LAN address | With `host_ip=1`: the address friends' **Join Game** connects to, e.g. `presence_addr=203.0.113.5:7777` (your public IP) |
 | `netguard_eos` | `1` | `0`: don't switch off the Epic Online Services network layer (troubleshooting only) |
 | `netguard_allow` | none | With `netguard=block`: host names to let through anyway, comma-separated, `*.example.com` for a whole domain (troubleshooting only) |
+| `addons` | `1` | `0`: load no add-ons at all (troubleshooting) |
+| `addons_dir` | `<game>\b4bcoop-addons` | Another add-ons folder, a full Windows path, e.g. `addons_dir=D:\b4b-addons` |
+| `addons_policy` | `cosmetic` | Host: which add-ons joiners may have: `cosmetic`, `any`, `none`, `match` (see Add-ons) |
 
 ## Launch options & troubleshooting
 
@@ -465,6 +572,7 @@ your chat as `Could not join: ...` once the popup is closed.
 | Message | Meaning | What to do |
 |---|---|---|
 | `Host runs b4bcoop X (protocol N); you have Y (protocol M). Everyone needs the same version.` | You and the host have different b4bcoop versions | Everyone installs the latest release (extract the zip again). Both versions are in the message; the host sees `<name> could not join: they have ...` |
+| `Host allows cosmetic add-ons only; you have gameplay add-ons: ...` (or `no add-ons`, `the same gameplay add-ons`) | The host's `addons_policy` refuses some of your add-ons | `/addons off <#>` for the ones named, restart the game, join again; or the host sets `/addons policy any` |
 | `Server full.` | Every survivor slot is taken by a player (bot slots count as free) | Wait for a free slot, or the host sets `teamsize=5` |
 | `This host only accepts their Steam friends. ...` | You're not on the host's Steam friends list | Become Steam friends, or the host adds you with `allow_steamids=` |
 | `Could not reach the host over Steam. Is it still hosting? ...` | The host quit, or refused you (not friends) | Check the host is in Fort Hope or a mission; see the line above |

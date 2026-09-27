@@ -47,8 +47,21 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`,
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
     never gives: `stp <N>` (forces the skull-totem count for the next `endmission 1`), `items` / `giveitem <slot> <#>`
-    (hand a pickup, e.g. a duffel bag, to a hero), `duffelreward <slot> <product guid> [delta]`, `fnprobe <va>` (count
+    (hand a pickup, e.g. a duffel bag, to a hero; `giveitem <slot> row <DataTable> <Row>` any item row, e.g. a weapon),
+    `duffelreward <slot> <product guid> [delta]`, `face` (heroes with mesh, position, `(you)`; custom heads' face bones, `face comm` speaks, `face look`
+    frames a face, `face walk` makes a bot run somewhere), `fnprobe <va>` (count
     a native function's calls/return values, for investigations).
+  - `paks.c` (model mods #23) the engine's pak layer. Both builds: mounts our unsigned paks right after the retail
+    ones, exempted by identity from the three signature paths (player builds hook nothing when there is no add-on).
+    Dev only: `dumpassets <glob> [outdir]` extracts files as the engine reads them (IterateDirectory + OpenRead on
+    FPakPlatformFile), `paks`, `mountpak <path> [order]`, ini `modpaks=<windows dir>` (raw paks, order 3000+). Pak
+    writer: `modkit/b4bpak.py` (`tools/b4bpak.py` forwards). docs/investigations/model-mods-paks.md.
+  - `addons.c` add-ons (#20): `<game>\b4bcoop-addons\*.pak` (ini `addons_dir=`, `addons=0`), read in DllMain:
+    `addonlist.txt` on/off + load order (later wins, read order 1000+), embedded `b4bcoop-addoninfo.txt`, index SHA1
+    checked, conflicts (same file; "mixed" = one package from two add-ons) logged + one chat notice; chat
+    `/addons [on|off|info <#>]` (applies on restart); `~` Add-ons tab (on/off, Up/Down load order = `ord[]` + file,
+    details, host `addons_policy` + players; addons.md §8). Packer `modkit/addon.py pack|info|check`.
+    Client-side only, no protocol bump. docs/investigations/addons.md.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
   - `lineup.c` post-round/pre-round/character-select lineup with 5+ heroes (#8): spawns an extra mannequin when the
@@ -62,12 +75,14 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `overlay_key`, `overlay_scale`. Panels: `overlay.h` (`overlay_add_panel` from a module's init + C `ov_*` widgets;
     actions `ov_run` = the chat path `admin_slash`, settings `ov_setting` = ini live handler + writer; `ov_begin_perm`
     greys out host/cheat controls). Tabs live next to their module (presence.c Session, admin.c Players,
-    thirdperson.c Camera, flashlight.c Flashlight, cheats.c Cheats). Dev `overlay open|close|status|tab|press|set|
-    locate|mouse|log`, `screenshot <path>` (presented frame as PNG, launch/shot.sh); e2e has a smoke check.
-    docs/investigations/overlay.md (parity checklist). **It replaces the chat commands:** port every chat command into it; once it has them all, new features get overlay controls (+ ini keys)
+    thirdperson.c Camera, flashlight.c Flashlight, cheats.c Cheats, addons.c Add-ons, models.c Models). Dev `overlay
+    open|close|status|tab|press|set|locate|mouse|wheel|log`, `screenshot <path>` (presented frame as PNG,
+    launch/shot.sh); e2e has a smoke check. docs/investigations/overlay.md (parity checklist). **It replaces the chat
+    commands:** port every chat command into it; once it has them all, new features get overlay controls (+ ini keys)
     only, not new chat commands. Don't remove existing chat commands (keep `/say`).
   - `chat.c` in-game chat commands: hooks the local player's Say/SayTeam, `/cmd` is run locally and never sent;
-    replies as local chat lines; host notices via ClientTeamMessage with our own type. Test: `type <text>` (real key
+    replies as local chat lines; host notices via ClientTeamMessage with our own type (a third type `b4bcoopdata`:
+    silent data lines for the client's agent, `admin_data_to`). Test: `type <text>` (real key
     presses), `click <x> <y>` (mouse click, e.g. post-round Continue), `chat status`, `popup [close]` (dev builds).
     `admin.c` the commands (`/help join host leave players ping kick ban lock bots restart say ready ...`, same verbs
     on the dev CLI) and the host's PreLogin gate (join policy first, then the b4bcoop protocol (`?b4bcoop=` login
@@ -76,6 +91,19 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     {FString key, value} (`options_str`), not one FString. Every chat command has a permission (`cmds.h`: `CMD_ANYONE`
     own game only / `CMD_HOST` / `CMD_CHEAT` host + cheats on; admin.c `CMDS`, cheats.c `VERBS` via `cheats_perm()`),
     checked once in `admin_slash` before any handler. docs/investigations/chat-commands.md.
+  - `models.c` `/model` runtime model swaps (#19, `models` branch): another survivor's outfits/pieces through the
+    game's own replicated `PlayerSlot.CurrentCustomizationSet` (`ServerSelectCustomizationSet`, no validation), NPC
+    bodies as a made-up row `b4bcoop.npc.<name>` put on by every b4bcoop machine; host `/model <player>`,
+    `/models off` (hook on the RPC implementation), campaign-run save keeps own looks; add-on outfits (addoninfo
+    `outfit=`, `b4bmod survivor --as`) as made-up row `b4bcoop.outfit.<name>`, 3P + FP arms, others see the
+    survivor (new-assets.md §8). Dev `mdl ...`. `weaponlooks.c`: add-on weapon looks (addoninfo `weapon=`,
+    `b4bmod weapon --as`), made-up skin row `b4bcoop.weapon.<name>` in the weapon's replicated
+    `ItemMeshManagementComponent.CustomizationRow`, meshes swapped by every machine with the add-on, others see the
+    default weapon; a dropped weapon keeps its look on the floor (pickup's `3P_<Code>_SM`; the host pairs it by
+    PreviousOwner, add-on or not, and names it to clients and late joiners in `wlook floor|gone|hello` data lines;
+    clients guess by position until then), the next owner's own choice applies; world pickups and the dropped magazine
+    stay retail; `~` Models tab; dev `wlook dump|swap|select|drop|drophero|row|pickups|use|guess` (new-assets.md §9).
+    docs/investigations/model-swap.md, player page docs/commands-models.md.
   - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
     /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
     own save `/supply /unlockall`); off when a mission starts from camp and back in camp (next chapter keeps them);
@@ -111,7 +139,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     steamclient.so in the game process; dev `steamnet ping 0` triggers them) are outside that promise: steam-p2p.md
     "Loopback binding". USteamNetDriver can't work here (no STEAM socket subsystem).
     docs/investigations/steam-p2p.md (incl. "Loopback binding", "Two-account result").
-  - `cmds.c` dev commands: `status players host join leave exec find call peek`; config = `b4bcoop.ini` next to the DLL
+  - `cmds.c` dev commands: `status players host join leave exec find call peek poke`; config = `b4bcoop.ini` next to the DLL
     or `B4B_COOP_CONFIG=<windows path>` (`cmds_config_path()`; no ini = defaults; keys `host` (default 1, 0 when
     `join=` is set) `join host_ip steam_p2p allow_joins allow_steamids flashlight_*`, dev `offline allow_self
     b4bcoop_protocol_override`). `coop_join(target)` = join entry point (`steam:<id64>`; `ip[:port]` only 127.x unless
@@ -124,8 +152,20 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   `steam_appid.txt`), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test instances, below), `gamelock.sh`,
   `lane.sh`/`lane-restore.sh`/`flatpak-steam.sh` (live-test lanes, below),
   `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
-- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `pe.py` static analysis, `memprobe.py` +
+- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `e2e.py` / `charsuite.py` (regression suites), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
+- `modkit/` — the mod maker's kit (#21), a separate deliverable (players never need it; nothing of it is in the player
+  zip or the agent): `b4bmod.py` (one command: setup/status/config, find/extract (offline, `dotnet/pakx` = CUE4Parse
+  from NuGet with its managed Oodle decoder), info/tree/export/texture/mi (`dotnet/b4bmod`, UAssetAPI), mesh
+  info/export/import/edit (`skm.py`, `skmgltf.py`, `upkg.py`), survivor/weapon (`b4bmodel.py` + `blender/b4bfit.py`
+  in headless Blender, static meshes `sm.py`: model → fitted, LODs, textures, then packed/installed), pack/install/
+  check (`addon.py`)), `b4bmod.cmd`/`b4bmod.sh`, `README.md` (Windows first; how to get every third-party piece),
+  `docs/` (author guides; models: `docs/meshes.md`), `package.sh` → `dist/modkit/b4bcoop-modkit-<version>.zip`
+  (reproducible; refuses 64-hex strings). The pak AES key is built into b4bmod.py (public, same for every copy;
+  `config aes_key`, `B4B_AES_KEY`, `--aes-key` override); pakx checks it against every pak index SHA1. No native
+  Oodle, ever: CUE4Parse's OodleSharp only. Dev-only asset tools stay in `tools/modkit/` (`pakscan.py`,
+  `customversions.py`, `assetcheck/`, `uassetrt/`, `testassets/`). Data: `~/.local/share/b4b-coop/`
+  (`%LOCALAPPDATA%\b4b-coop` on Windows).
 - `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
 
@@ -254,6 +294,15 @@ N --golden|--restore`; logged `profile testN: ...`; `--keep-profiles` skips it),
 breaks the next run; the profile checks still diff that run's before/after. A client joining during its own sign-in
 used to get its profile reset ("HydraPublicId mismatch"); joins now wait for the sign-in
 (docs/investigations/test-profiles.md).
+**Model mods (`models` branch): `tools/charsuite.py`**, the character suite (mesh-mods.md §17): builds every test
+character of a local manifest (models can't be committed: `~/.local/share/b4b-coop/characters/suite.json`, format +
+CC0 example `tools/charsuite-example.json`) with `b4bmod survivor --as` one at a time in its own extract folder
+(`--twice`: byte-identical paks), preview.py stills, then (lock `charsuite`, `--install`, add-ons into the lane's game
+folder) `multi.sh 2` (`--vanilla`: + a 3rd with `addons=0`): per outfit host `model <name>`, "wears outfit" in both
+logs, the mesh on the host's hero on both, screenshots with the host placed in front of each client (`face look`),
+new mesh/material/cloth/add-on log errors; `--mission N` wears N again in Evansburgh. Table + `contact.png` in
+`/tmp/b4b-charsuite[-l2]-<time>/`, exit 1 on failure. Full run: `B4B_LANE=2 B4B_GPU=4090 tools/charsuite.py --twice
+--vanilla --install` (~35 min for 13 characters).
 
 ## Branches
 - `main`: shippable. Releases are tagged from here.
@@ -299,6 +348,11 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
   chat command, ini save and key binding; live ini reload; joins wait for the offline sign-in (fixes a profile reset
   race with `join=`); e2e: golden test profiles, Steam's own relay sockets (steamclient.so, 0.0.0.0) reported apart
   from game sockets.
+- Model mods (`models` branch, 2026-09-25, epic #23, local sessions on Proton): add-ons in player builds (#20),
+  multiplayer rules `addons_policy` (#22), texture/material edits, SKM + static-mesh writing, a CC0 FBX survivor
+  (3P + FP arms, alpha hair) and an AK replacing AR02 as add-ons; added outfits and weapon looks (`--as`, `/model`)
+  that others without the add-on see as vanilla; Models and Add-ons tabs in the `~` window; the separate `modkit/`
+  (b4bmod, own zip). Not run on real Windows (modkit .NET tools); no facial animation.
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.

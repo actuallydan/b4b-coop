@@ -19,7 +19,7 @@ extern "C" {
 
 typedef void (*OverlayDrawFn)(void);
 // order: tab position (lower first). Built-in: Session 10, Players 20, Camera 30, Flashlight 40, Cheats 50,
-// Settings 90, Help 100. Up to 24 panels; a second call with the same name replaces the draw function.
+// Add-ons 70 (addons.c), Settings 90, Help 100. Up to 24 panels; a second call with the same name replaces the draw function.
 void overlay_add_panel(const char *name, int order, OverlayDrawFn draw);
 int overlay_is_open(void);
 void overlay_note(const char *text);   // a line in the window's log (any thread)
@@ -33,6 +33,7 @@ int ov_button(const char *label);             // 1 when clicked
 int ov_button_confirm(const char *label, const char *confirm);   // needs a second click ("confirm" shown) within 3 s
 int ov_checkbox(const char *label, int *v);   // 1 when changed
 int ov_radio(const char *label, int active);  // 1 when clicked
+int ov_selectable(const char *label, int selected);   // a clickable row/text (list selection); 1 when clicked
 int ov_slider(const char *label, float *v, float lo, float hi, const char *fmt);   // 1 while changing
 int ov_slider_int(const char *label, int *v, int lo, int hi);
 int ov_input_text(const char *label, char *buf, int n, const char *hint);          // 1 when Enter was pressed

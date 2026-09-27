@@ -9,7 +9,8 @@
 //
 // Host-side enforcement (hook AGameModeBase::PreLogin override, the function that calls slotguard's ApproveLogin):
 // the join policy (joinpolicy.c: by default Steam friends only) is checked first, then the joiner's b4bcoop protocol
-// (version_refused), both before the game's own PreLogin runs; then a banned player id, or any new player while the
+// (version_refused), then its add-ons against addons_policy (addons_refused, addons_mp.c), all before the game's own
+// PreLogin runs; then a banned player id, or any new player while the
 // session is locked, gets a login error before a PlayerController exists. Bans persist in b4bcoop-bans.txt next to the agent config (cmds_config_path()).
 #include <stdio.h>
 #include <stdlib.h>
@@ -168,6 +169,9 @@ static UObject *find_player(const char *arg, Out *o) {
     return NULL;
 }
 
+void admin_ps_key(UObject *ps, char *buf, size_t n) { ps_key(ps, buf, n); }
+void admin_ps_name(UObject *ps, char *buf, size_t n) { ps_name(ps, buf, n); if (!buf[0] || !strcmp(buf, "?")) bot_name(ps, buf, n); }
+
 // ---- bans (b4bcoop-bans.txt: "<key> <name>" per line) ----
 static const char *bans_path(void) {
     static char path[640];
@@ -308,9 +312,37 @@ static int version_refused(const TArray *opts, const void *uid, FString *err) {
     return 1;
 }
 
+// Add-ons (#22): the joiner's summary (?b4bcoopaddons=, cmds.c) against our addons_policy (addons_mp.c).
+static int addons_refused(const TArray *opts, const void *uid, FString *err) {
+    char o[1600], v[512], name[64], key[80], msg[320];
+    options_str(opts, o, sizeof o);
+    opt_value(o, "b4bcoopaddons", v, sizeof v);
+    opt_value(o, "Name", name, sizeof name);
+    if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
+    if (!addons_login_check(v, name, key, msg, sizeof msg)) return 0;
+    if (!err || fstring_assign_game(err, msg)) { LOG("admin: could not set the login error, allowing"); return 0; }
+    n_refused++;
+    return 1;
+}
+
+// The NetConnection logging in: B4B passes Connection->PlayerId as the unique id (UWorld::NotifyControlMessage).
+static UObject *conn_of_uid(const void *uid) {
+    UObject *w = ue_world(), *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
+    int32_t co = nd ? ue_prop_offset(nd, "ClientConnections") : -1;
+    if (co < 0 || !uid) return NULL;
+    TArray *cc = (TArray *)((char *)nd + co);
+    for (int i = 0; i < cc->num; i++) {
+        UObject *c = ((UObject **)cc->data)[i];
+        int32_t po = c ? ue_prop_offset(c, "PlayerId") : -1;
+        if (po >= 0 && (const char *)c + po == (const char *)uid) return c;
+    }
+    return NULL;
+}
+
 static void prelogin_detour(UObject *gm, const TArray *opts, const FString *addr, const void *uid, FString *err) {
     if (policy_refused(opts, addr, uid, err)) return;   // strangers never reach the game's login code
     if (version_refused(opts, uid, err)) return;        // another b4bcoop protocol: nothing would work right
+    if (addons_refused(opts, uid, err)) return;         // add-ons the host's addons_policy doesn't allow
     orig_prelogin(gm, opts, addr, uid, err);
     if (err && err->num > 1) return;   // already refused (e.g. slotguard's "Server full.")
     char o[1024], name[64], key[80], ip[64];
@@ -326,6 +358,7 @@ static void prelogin_detour(UObject *gm, const TArray *opts, const FString *addr
         if (!ok) why = "The host locked the session.";
     }
     LOG("admin: login %s from %s (%s): %s", name, ip, key, why ? why : "ok");
+    if (!why) { char v[512]; opt_value(o, "b4bcoopaddons", v, sizeof v); addons_login_record(conn_of_uid(uid), name, v); }
     if (!why || !err) return;
     if (fstring_assign_game(err, why)) { LOG("admin: could not set the login error, allowing"); return; }
     n_refused++;
@@ -361,7 +394,7 @@ static void ping(Out *o) {
 
 // Send one chat line to one player's client (ClientTeamMessage, sender = our player state). On the host's own
 // controller the RPC runs locally.
-static int send_line_t(UObject *pc, const char *text, int kick) {
+static int send_line_t(UObject *pc, const char *text, int kind) {   // kind: chat_notice_type
     static UFunction *f;
     UObject *me = ue_local_pc(), *my_ps = me ? ue_get_ptr(me, "PlayerState") : NULL;
     if (!f && pc) f = ue_find_function(U_CLASS(pc), "ClientTeamMessage");
@@ -372,11 +405,13 @@ static int send_line_t(UObject *pc, const char *text, int kick) {
     uint8_t p[64] = {0};
     *(UObject **)(p + FP_OFFSET(ps)) = my_ps;
     fstring_set((FString *)(p + FP_OFFSET(s)), text, w, 320);
-    *(FName *)(p + FP_OFFSET(t)) = chat_notice_type(kick);
+    *(FName *)(p + FP_OFFSET(t)) = chat_notice_type(kind);
     ue_process_event(pc, f, p);
     return 0;
 }
 static int send_line(UObject *pc, const char *text) { return send_line_t(pc, text, 0); }
+int admin_notice_to(UObject *pc, const char *text) { return send_line(pc, text); }   // models.c etc.
+int admin_data_to(UObject *pc, const char *text) { return send_line_t(pc, text, 2); }   // weaponlooks.c
 
 // Shared with cheats.c: the /players list, player lookup, a display name (bots: their hero), and a notice every
 // player sees (the /say path, prefixed "[b4bcoop] ").
@@ -607,16 +642,19 @@ static const struct { const char *name; int perm; const char *usage; } CMDS[] = 
     {"bans", CMD_HOST, "/bans"}, {"lock", CMD_HOST, "/lock"}, {"unlock", CMD_HOST, "/unlock"}, {"teamsize", CMD_HOST, "/teamsize N"},
     {"restart", CMD_HOST, "/restart"}, {"ready", CMD_HOST, "/ready [vote]"}, {"bots", CMD_HOST, "/bots on|off|default"},
     {"say", CMD_HOST, "/say <message>"},
+    {"model", CMD_ANYONE, "/model list|<name>|reset"}, {"models", CMD_ANYONE, "/models [on|off]"},   // host parts checked in models.c
+    {"addons", CMD_ANYONE, "/addons [on|off|info <#>|players|policy]"}, {"addon", CMD_ANYONE, "/addons [on|off|info <#>|players|policy]"},
 };
 #define N_CMDS ((int)(sizeof CMDS / sizeof CMDS[0]))
 
 static void help(Out *o) {
     out_printf(o, "b4bcoop %s (protocol %d)\n/join steam:<id64>  /host  /leave\n/players  /ping  /flashlight [on|off|auto]\n"
-                  "/thirdperson  (your own camera)\n",
+                  "/thirdperson  (your own camera)\n/model list|<name>|reset\n/addons [on|off|info <#>|players]\n",
                coop_version(), coop_protocol());
     if (is_client()) { out_printf(o, "(/kick /ban /lock ... are for the host)\n"); return; }
     out_printf(o, "host: /kick /ban <name|#>  /unban  /bans\n/lock  /unlock  /teamsize N  /bots on|off\n"
                   "/restart  /ready [vote]  /say <msg>\n/cheats on|off  (sandbox, /cheats help)\n"
+                  "/model <player> <name>  /models on|off\n/addons policy any|cosmetic|none|match\n"
                   "//text sends a message starting with /\n");
 }
 
@@ -655,6 +693,8 @@ void admin_slash(char *line, Out *o) {
     else if (!strcmp(verb, "ping")) ping(o);
     else if (!strcmp(verb, "flashlight")) cmd_flashlight(rest && *rest ? rest : "toggle", o);
     else if (!strcmp(verb, "thirdperson")) cmd_thirdperson(rest, o);
+    else if (!strcmp(verb, "model") || !strcmp(verb, "models")) models_slash(verb, rest, o);
+    else if (!strcmp(verb, "addons") || !strcmp(verb, "addon")) addons_slash(verb, rest, o);
     else if (!strcmp(verb, "join")) {
         if (!rest || !*rest) { out_printf(o, "usage: %s\n", CMDS[i].usage); return; }
         out_printf(o, "joining %s ...\n", rest);

@@ -130,7 +130,7 @@ int coop_is_loopback(const char *hostport) {
 // Returns 0 when the join started, -1 for a bad target, -2 for a Steam target without Steam P2P, -3 for an IP join to
 // another machine while host_ip=0.
 static int cmd_join(const char *target, Out *o) {
-    char url[300], cmd[400];
+    char url[800], cmd[900];
     int steam = steamnet_resolve_target(target, url, sizeof url);   // steam: -> a fake address carried over Steam P2P
     if (steam == -1) { LOG("join: bad target '%s'", target); out_printf(o, "bad join target: %s (ip[:port] or steam:<id64>)\n", target); return -1; }
     if (steam == -2) { out_printf(o, "cannot join %s: Steam P2P unavailable here (%s)\n", target, steamnet_last_error()); return -2; }
@@ -140,9 +140,10 @@ static int cmd_join(const char *target, Out *o) {
         return -3;
     }
     if (!steam) netguard_allow_host(url);   // a host given by name must still resolve
-    // our version and protocol go with the login (checked by the host's PreLogin gate, admin.c) and every rejoin
+    // our version and protocol go with the login (checked by the host's PreLogin gate, admin.c) and every rejoin,
+    // and so does the summary of our add-ons (addons_mp.c: the host's addons_policy)
     size_t ul = strlen(url);
-    snprintf(url + ul, sizeof url - ul, "?b4bcoop=%d?b4bcoopver=%s", coop_protocol(), coop_version());
+    snprintf(url + ul, sizeof url - ul, "?b4bcoop=%d?b4bcoopver=%s%s", coop_protocol(), coop_version(), addons_login_option());
     snprintf(cmd, sizeof cmd, "open %s", url);
     travel_set_host(url);        // the follow/rejoin logic reopens exactly this URL (travel.c), same Steam peer
     game_exec(cmd);
@@ -320,7 +321,7 @@ static int ini_stat(FILETIME *mt, DWORD *sz) {
 // the modules that can take a key while the game runs: 1 = applied
 static int ini_apply_live(const char *key, const char *val) {
     return thirdperson_live(key, val) || flashlight_live(key, val) || joinpolicy_live(key, val) ||
-           presence_live(key, val) || teamsize_live(key, val) || overlay_live(key, val);
+           presence_live(key, val) || teamsize_live(key, val) || overlay_live(key, val) || addons_live(key, val);
 }
 const char *cmds_ini_value(const char *key) {
     const IniKV *e = ini_last.n >= 0 ? ini_find(&ini_last, key) : NULL;
@@ -702,6 +703,7 @@ void cmds_tick(float dt) {
     rewardguard_tick(dt);
     cheats_tick(dt);
     thirdperson_tick(dt);
+    models_tick(dt);
     poststats_tick(dt);
     overlay_tick(dt);
     cmds_ini_poll(dt);
@@ -724,6 +726,13 @@ void cmds_run(char *line, Out *o) {
         for (int i = 0; i < n; i++) out_printf(o, "%02x%s", p[i], (i % 16 == 15) ? "\n" : " ");
         out_printf(o, "\n");
     }
+    else if (!strcmp(verb, "poke") && rest) {   // poke <hex addr> <hex byte>...: write bytes (dev: e.g. set a clip count)
+        char *a = strtok(rest, " ");
+        unsigned char *p = (unsigned char *)(uintptr_t)strtoull(a, NULL, 16);
+        int n = 0;
+        for (char *b = strtok(NULL, " "); b; b = strtok(NULL, " ")) p[n++] = (unsigned char)strtoul(b, NULL, 16);
+        out_printf(o, "poked %d byte(s) at %p\n", n, (void *)p);
+    }
     else if (!strcmp(verb, "join") && rest) cmd_join(rest, o);   // same path as coop_join()
     else if (!strcmp(verb, "leave")) { coop_leave(); out_printf(o, "leaving\n"); }
     else if (!strcmp(verb, "exec") && rest) cmd_exec(rest, o);
@@ -745,7 +754,7 @@ void cmds_run(char *line, Out *o) {
                !slotguard_cmd(verb, rest, o) && !chat_cmd(verb, rest, o) && !admin_cmd(verb, rest, o) &&
                !presence_cmd(verb, rest, o) && !rewardguard_cmd(verb, rest, o) && !joinpolicy_cmd(verb, rest, o) &&
                !cheats_cmd(verb, rest, o) && !thirdperson_cmd(verb, rest, o) && !overlay_cmd(verb, rest, o) &&
-               !poststats_cmd(verb, rest, o))
+               !paks_cmd(verb, rest, o) && !models_cmd(verb, rest, o) && !poststats_cmd(verb, rest, o))
         out_printf(o, "unknown command: %s\n", verb);
 }
 #endif  // !B4B_RELEASE

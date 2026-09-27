@@ -63,6 +63,10 @@ options need a game restart). Every option, with defaults and examples:
 - `host_ip=1`: **advanced**, only if you know you need it: host and join by IP address instead of through Steam. Needs
   port forwarding (UDP 7777) and triggers the Windows Firewall prompt. Everyone in the game needs it.
 
+Add-ons (textures, models): put the add-on's `.pak` in a `b4bcoop-addons` folder next to `Back4Blood.exe` and
+restart; `/addons` lists them. Only you see your add-ons. Hosts let in players with cosmetic add-ons only, by
+default (`addons_policy=`). Details: [docs/COMMANDS.md](docs/COMMANDS.md#add-ons).
+
 All chat commands and options: [docs/COMMANDS.md](docs/COMMANDS.md).
 
 ## Uninstall
@@ -71,7 +75,8 @@ Delete these files from the game folder (Steam → right-click Back 4 Blood → 
     - `xinput1_3.dll`
     - `b4bcoop-README.txt`
     - `b4bcoop-COMMANDS.txt`
-    - `b4bcoop-LICENSE.txt`.
+    - `b4bcoop-LICENSE.txt`
+    - the `b4bcoop-addons` folder (only there if you installed add-ons).
 2. In `Gobi\Binaries\Win64`:
     - `X3DAudio1_7.dll`
     - `b4bcoop.ini`
@@ -84,6 +89,8 @@ Delete these files from the game folder (Steam → right-click Back 4 Blood → 
 
 Steam's "Verify integrity of game files" does **not** remove these: they are extra files, not game files. Your offline
 progress stays either way.
+
+Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `b4bcoop-modkit-<version>.zip` on [Releases](../../releases)).
 
 ## Troubleshooting
 - **"Everyone needs the same version"**: someone has another b4bcoop version. Everyone downloads the latest release

@@ -6,3 +6,10 @@ native/out/
 *.log
 dist/
 .claude/
+tools/modkit/uassetrt/bin/
+tools/modkit/uassetrt/obj/
+tools/modkit/assetcheck/bin/
+tools/modkit/assetcheck/obj/
+modkit/dotnet/*/bin/
+modkit/dotnet/*/obj/
+modkit/deps/

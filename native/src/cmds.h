@@ -40,6 +40,7 @@ int joinpolicy_live(const char *key, const char *val);
 int presence_live(const char *key, const char *val);
 int teamsize_live(const char *key, const char *val);
 int overlay_live(const char *key, const char *val);
+int addons_live(const char *key, const char *val);
 // overlay.cpp: the `~` power-user window (#26; Dear ImGui over the game's D3D12 swap chain). Panels: overlay.h
 int overlay_init(void);
 void overlay_tick(float dt);
@@ -92,7 +93,9 @@ int chat_cmd(const char *verb, char *rest, Out *o);
 void chat_local(const char *fmt, ...);  // local-only chat line(s)
 #define CHAT_NOTICE_TYPE L"b4bcoop"      // ClientTeamMessage Type of host notices (shown by chat.c on the receiver)
 #define CHAT_KICK_TYPE L"b4bcoopkick"    // ... a notice after which the receiving client leaves (kick/ban)
-FName chat_notice_type(int kick);
+#define CHAT_DATA_TYPE L"b4bcoopdata"    // ... not shown: data for the client's agent (e.g. weapon looks on the floor);
+                                         //     agents without a handler and clients without b4bcoop ignore it
+FName chat_notice_type(int kind);        // 0 notice, 1 kick, 2 data
 void chat_local_later(const char *text); // show after the next map load (e.g. why a join was refused)
 void chat_on_join_failed(const char *error);  // uelog.c: PendingConnectionFailure on this client
 void cmds_auto_join_stop(void);        // client: no more ini auto-join attempts this session
@@ -102,6 +105,10 @@ int admin_cmd(const char *verb, char *rest, Out *o);
 void admin_slash(char *line, Out *o);  // a chat command typed by the local player (without the '/')
 void admin_on_initslots(UObject *psm); // teamsize.c: right before APlayerSlotManager::InitSlots
 void admin_ready(const char *rest, Out *o); // host: ready every player (chat /ready, dev `ready [vote]`)
+int admin_notice_to(UObject *pc, const char *text);  // host: one chat notice line to that player's client (0 = sent)
+int admin_data_to(UObject *pc, const char *text);    // host: one data line (CHAT_DATA_TYPE, not shown) to that client
+void admin_ps_key(UObject *ps, char *buf, size_t n);   // steam:<id64> or name:<name>
+void admin_ps_name(UObject *ps, char *buf, size_t n);  // player name, a bot's hero name
 void cmds_set_session_join(const char *targets); // Steam join target(s), comma-separated; overrides host=/join=
 const char *cmds_session_join(void);
 void cmds_join_now(void);                      // attempt the session target now (leaves the current session)
@@ -147,6 +154,58 @@ void joinpolicy_get(int *anyone, char *ids, size_t n);       // overlay: allow_j
 int rewardguard_init(void);
 void rewardguard_tick(float dt);
 int rewardguard_cmd(const char *verb, char *rest, Out *o);  // dev builds: `rewardguard`, host `rewardtest ...`
+
+// paks.c: engine pak layer (docs/investigations/model-mods-paks.md). Both builds: mounts the add-ons (addons.c).
+void paks_early_init(void);                                // DllMain: hook FPakPlatformFile::Initialize (if needed)
+int paks_mount_unsigned(const wchar_t *path, uint32_t order); // addons_mount only: mount one of our unsigned paks
+int paks_cmd(const char *verb, char *rest, Out *o);        // dev builds: `paks`, `mountpak`, `dumpassets`; 1 if handled
+// addons.c: L4D-style add-ons, <game>\b4bcoop-addons\*.pak + addonlist.txt (docs/investigations/addons.md)
+#define MAX_ADDONS 128
+int addons_scan(void);                        // DllMain: config, folder, load order, conflicts; number to mount
+void addons_unavailable(const char *why);     // paks.c: hooks unavailable, nothing gets mounted
+void addons_mount(void);                      // FPakPlatformFile::Initialize hook, right after the retail paks
+void addons_init(void);                       // init_thread: queue the player notice (conflicts, bad add-ons)
+void addons_slash(const char *verb, char *rest, Out *o);  // chat /addons (any thread that runs chat commands)
+typedef struct { const char *title, *file, *hash; int gameplay; unsigned kinds; const char *reason; } AddonRef;
+int addons_active(AddonRef *out, int max);    // add-ons mounted in this game, load order
+// Added outfits (addoninfo outfit= lines) of the mounted add-ons: object paths "/Game/X/Y.Y", meshfp "" = none
+typedef struct { const char *name, *hero, *mesh3p, *meshfp, *title, *addon; } AddonOutfit;
+int addons_outfits(AddonOutfit *out, int max);
+// Added weapon looks (addoninfo weapon= lines): code = weapon code (AR02); mesh object paths, "" = none
+typedef struct { const char *name, *code, *fp, *sm3p, *skm3p, *title, *addon; } AddonWeapon;
+int addons_weapons(AddonWeapon *out, int max);
+// addons_mp.c: add-ons in multiplayer (#22): login summary, host addons_policy, /addons players|policy
+int addons_policy_set(const char *v);         // any|cosmetic|none|match; -1 if unknown
+const char *addons_policy_name(void);
+const char *addons_login_option(void);        // "?b4bcoopaddons=..." appended to every join URL (cmds.c)
+int addons_login_check(const char *value, const char *name, const char *key, char *err, size_t en);  // host: 1 = refuse
+void addons_login_record(UObject *conn, const char *name, const char *value);  // host: accepted login's summary
+int addons_mp_slash(const char *sub, char *arg, Out *o);  // /addons players|policy; 1 if handled
+void addons_mp_panel(void);                  // ~ window: the Add-ons tab's policy + players section (addons.c draws the tab)
+// models.c: runtime model swaps (#19, docs/investigations/model-swap.md)
+int models_init(void);
+void models_tick(float dt);
+int models_cmd(const char *verb, char *rest, Out *o);  // dev builds: `model`, `models`, `mdl ...`
+void models_slash(const char *verb, char *rest, Out *o); // chat /model, /models
+void models_host_notice(const char *text);               // chat.c: a host notice arrived (client)
+int models_locked(void);                                 // host: /models off
+int models_off(void);                                    // host: /models off; client: as the host's notices said
+UObject *models_load_asset(const char *path);            // LoadAsset_Blocking of an object path, NULL if it failed
+int models_hero_pawns(UObject **out, int max);           // pawns of the hero-team slots, slot order
+// weaponlooks.c: added weapon looks (/model <weapon look>, docs/investigations/new-assets.md §9)
+int wlooks_init(void);
+void wlooks_tick(float dt);
+int wlooks_pick(const char *name, Out *o);               // /model <name>: 1 if it is a weapon look (handled)
+void wlooks_reset(Out *o);                               // /model reset: your weapons back to your own skins
+void wlooks_reset_code(const char *code, Out *o);        // one weapon type (NULL = all) back to your own skin
+void wlooks_panel(int blocked, const char *why);         // ~ Models tab: the weapon looks section (blocked: Use greyed)
+void wlooks_list(Out *o);                                // /model list weapons
+void wlooks_overview(Out *o);                            // the /model list overview line
+void wlooks_status(Out *o);
+int wlooks_lock_reset(void);                             // host, /models off: every weapon look undone; count
+void wlooks_host_notice(const char *text);
+void wlooks_host_data(const char *text);                 // chat.c: a data line from the host ("wlook ...", client)
+int wlooks_cmd(const char *verb, char *rest, Out *o);    // dev: wlook dump
 
 // admin.c helpers shared with cheats.c
 int admin_player_array(UObject ***arr);                 // GameState.PlayerArray (humans and bots), /players order

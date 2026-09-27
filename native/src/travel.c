@@ -12,7 +12,7 @@ static SetClientTravelFn orig_travel;
 static int redirecting;
 
 // client auto-rejoin state
-static char host_addr[256];          // last host we joined (set by `join`)
+static char host_addr[800];          // last host we joined (set by `join`; with our login options)
 static double follow_until;           // rejoin window after following a server travel
 static int retries_left;
 static double retry_at;
@@ -34,7 +34,7 @@ void travel_tick(float dt) {
     now_s += dt;
     if (retry_at > 0 && now_s >= retry_at) {
         retry_at = 0;
-        char cmd[300];
+        char cmd[900];
         snprintf(cmd, sizeof cmd, "open %s", host_addr);
         LOG("travel: rejoin attempt (%d left): %s", retries_left, cmd);
         game_exec(cmd);
