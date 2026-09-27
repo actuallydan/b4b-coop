@@ -306,9 +306,9 @@ new mesh/material/cloth/add-on log errors; `--mission N` wears N again in Evansb
 
 ## Branches
 - `main`: shippable. Releases are tagged from here.
-- `models`: ALL model/content-mod work (epic #23: spikes #16-#18, Tier 0 #19, add-on system #20-#22). Agents branch
-  from `models` and merge back into `models`; nothing model-related lands on `main` until the epic is DONE. Never
-  commit game assets, extracted files or paks (copyright); extracted content lives under `~/.local/share/b4b-coop/`.
+- `models`: the model/content-mod work (epic #23), merged into `main` for v0.6.0 (2026-09-26); feature branches now
+  branch from `main`. Never commit game assets, extracted files, paks, test models or their screenshots (copyright);
+  extracted content and test models live under `~/.local/share/b4b-coop/`.
 
 ## Gotchas
 - UE4SS does not work on this game (obfuscated engine) — don't go back to it.
