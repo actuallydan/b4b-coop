@@ -21,9 +21,11 @@ const string Usage = @"b4bmod <command> ...   (assets: /Game/... paths looked up
   mi <asset> set <param> <value> [set <param> <value>...] [parent <path>] -o <outdir>
                                           value: number (scalar), r,g,b[,a] (vector, linear 0-1),
                                           /Game/... texture path, or 'none'
-  rename <asset> </Game/new/Path/Name> -o <outdir> [--ref </Game/old>=</Game/new>]...
+  rename <asset> </Game/new/Path/Name> -o <outdir> [--ref </Game/old>=</Game/new>]... [--import-class </Game/pkg>=<Class>]...
                                           a copy of the asset as a new package (adds, replaces nothing); --ref points
-                                          its references to other renamed copies (e.g. an MI's textures)
+                                          its references to other renamed copies (e.g. an MI's textures);
+                                          --import-class sets the class of what it imports from that (new) package
+                                          (community packages sometimes import an MI as a Material)
 Checks: texcheck <dir> (every texture re-writes byte-identically?), deps <asset>, props <asset>
 Common: --src <dir containing Gobi/> (default $B4B_EXTRACT, else %LOCALAPPDATA%\b4b-coop\extract on Windows,
 ~/.local/share/b4b-coop/extract elsewhere).
@@ -59,6 +61,7 @@ class Opts
     public readonly Dictionary<string, string> Named = new();
     public readonly HashSet<string> Flags = new();
     public readonly List<string> Refs = new();
+    public readonly List<string> ImportClasses = new();
     public Opts(string[] args)
     {
         for (int i = 0; i < args.Length; i++)
@@ -66,6 +69,7 @@ class Opts
             string s = args[i];
             if (s is "-o" or "--out" or "--src" or "--mip" or "--quality") { if (i + 1 >= args.Length) throw new UsageException($"{s} needs a value"); Named[s == "-o" ? "--out" : s] = args[++i]; }
             else if (s is "--ref") { if (i + 1 >= args.Length) throw new UsageException("--ref needs old=new"); Refs.Add(args[++i]); }
+            else if (s is "--import-class") { if (i + 1 >= args.Length) throw new UsageException("--import-class needs /Game/pkg=Class"); ImportClasses.Add(args[++i]); }
             else if (s is "--resize") Flags.Add(s);
             else Positional.Add(s);
         }
@@ -287,16 +291,17 @@ static class Commands
     {
         // The native data holds absolute offsets (SkipOffset, inline mip offsets), which depend on where the export
         // lands: write once to learn it, then again with the right base (same length, so the base stays).
-        long guess = Texture2DData.ExtrasBase(a, e);
+        // Mips without NoOffsetFixUp (community-cooked) are stored relative to BulkDataStartOffset, which moves too.
+        long guess = Texture2DData.ExtrasBase(a, e), bulk = Texture2DData.BulkStart(a);
         byte[] ub = null;
         for (int pass = 0; ; pass++)
         {
-            (e.Extras, ub) = t.Write(guess);
-            a.WriteData();                      // updates the export map (SerialOffset/SerialSize)
-            long real = Texture2DData.ExtrasBase(a, e);
-            if (real == guess) break;
+            (e.Extras, ub) = t.Write(guess, bulk);
+            a.WriteData();                      // updates the export map (SerialOffset/SerialSize) and the summary
+            long real = Texture2DData.ExtrasBase(a, e), realBulk = Texture2DData.BulkStart(a);
+            if (real == guess && realBulk == bulk) break;
             if (pass == 3) throw new Exception("export offset does not settle");
-            guess = real;
+            guess = real; bulk = realBulk;
         }
         var outAsset = Path.Combine(outdir, rel);
         Directory.CreateDirectory(Path.GetDirectoryName(outAsset)!);
@@ -336,6 +341,23 @@ static class Commands
         int changed = 0;
         for (int i = 0; i < names.Count; i++)
             if (names[i]?.Value != null && map.TryGetValue(names[i].Value, out var nv)) { a.SetNameReference(i, new FString(nv)); changed++; }
+        // imports whose class doesn't match the object they name (the loader refuses them: "class mismatch")
+        foreach (var ic in o.ImportClasses)
+        {
+            int eq = ic.IndexOf('=');
+            if (eq < 0) throw new UsageException($"--import-class {ic}: expected /Game/pkg=Class");
+            string pkg = ic[..eq], cls = ic[(eq + 1)..];
+            foreach (var imp in a.Imports)
+            {
+                if (imp.OuterIndex.Index >= 0 || imp.ClassName.Value.Value == "Package") continue;
+                var outer = a.Imports[-imp.OuterIndex.Index - 1];
+                if (outer.ClassName.Value.Value != "Package" || outer.ObjectName.Value.Value != pkg || imp.ClassName.Value.Value == cls) continue;
+                Console.WriteLine($"  import {pkg}.{imp.ObjectName.Value.Value}: class {imp.ClassName.Value.Value} -> {cls}");
+                a.AddNameReference(new FString(cls));
+                imp.ClassName = new FName(a, cls);
+                changed++;
+            }
+        }
         if (a.AssetRegistryRecords != null)
             foreach (var rec in a.AssetRegistryRecords)
             {
@@ -575,7 +597,7 @@ static class Commands
             try
             {
                 var t = Texture2DData.Read(a, e, path);
-                var (ex, ub) = t.Write(Texture2DData.ExtrasBase(a, e));
+                var (ex, ub) = t.Write(Texture2DData.ExtrasBase(a, e), Texture2DData.BulkStart(a));
                 bool same = ex.AsSpan().SequenceEqual(e.Extras) &&
                             (t.UbulkPath == null ? ub == null : ub != null && ub.AsSpan().SequenceEqual(File.ReadAllBytes(t.UbulkPath)));
                 var p = t.Platforms[0];

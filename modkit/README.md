@@ -103,6 +103,7 @@ Add `--as <name>` to add an outfit instead of replacing Mom's (players wear it w
 | `rename <asset> </Game/new/path> -o <moddir> [--ref old=new]...` | a copy of an asset under a new path (textures, materials, meshes); experimental, see docs/textures.md |
 | `survivor <model> --outfit ... [--fp ...\|none] -o <moddir>`, `weapon <model> --fp-mesh <FP mesh or code> -o <moddir>` | your model, fitted in Blender, to a survivor outfit or a weapon, packed (`--install` installs it) |
 | `survivor ... --as <name>` | the same, as an **added** outfit players wear with `/model <name>` (nothing of the game replaced; docs/meshes.md "Add an outfit") |
+| `convert <mod.pak> --as <name> [--title T]` | a survivor **replacement** mod (someone's pak that overrides an outfit) to an added outfit any survivor can wear with `/model <name>`; the pak is only read (docs/meshes.md "Turn a replacement mod into an outfit") |
 | `mesh info / export / import / edit` | skeletal meshes: slots and LODs; to glTF; your own fitted FBX/glTF back; quick edits |
 | `pack <moddir> -o <name>.pak [--title ...] [--zip]` | the add-on |
 | `install <pak>`, `uninstall <name>`, `check [<pak>]` | into / out of `<game>\b4bcoop-addons`; what the game will load |

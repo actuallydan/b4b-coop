@@ -653,6 +653,41 @@ static void set_mesh(UObject *comp, UObject *mesh) {
     if (pr >= 0) p[pr] = 1;
     ue_process_event(comp, f, p);
 }
+// Hitboxes stay the wearer's: a body mesh brings its own PhysicsAsset (an add-on outfit: its template survivor's, e.g.
+// a female survivor's smaller bodies on Walker; an NPC body: the NPC's). Before the first swap on a pawn we note the
+// PhysicsAsset of the game's own mesh and put it back as the component's override (SetPhysicsAsset ->
+// PhysicsAssetOverride, which later SetSkeletalMesh calls keep), so a look never changes how the hero is hit.
+static struct { UObject *pawn, *pa; int32_t pi, pai; } wearer_pas[32];
+static int is_our_mesh(UObject *m) {
+    for (int i = 0; i < n_outfs; i++) if (outfs[i].m3 == m) return 1;
+    for (int i = 0; i < n_npcs; i++) if (npcs[i].mesh == m) return 1;
+    return 0;
+}
+static UObject *wearer_pa(UObject *pawn, UObject *body) {
+    int free_i = -1;
+    for (int i = 0; i < 32; i++) {
+        if (wearer_pas[i].pawn == pawn && ue_object_at(wearer_pas[i].pi) == pawn)
+            return ue_object_at(wearer_pas[i].pai) == wearer_pas[i].pa ? wearer_pas[i].pa : NULL;
+        if (free_i < 0 && (!wearer_pas[i].pawn || ue_object_at(wearer_pas[i].pi) != wearer_pas[i].pawn)) free_i = i;
+    }
+    UObject *cur = ue_get_ptr(body, "SkeletalMesh");
+    UObject *pa = cur && !is_our_mesh(cur) ? ue_get_ptr(cur, "PhysicsAsset") : NULL;
+    if (!pa || free_i < 0) return NULL;
+    wearer_pas[free_i].pawn = pawn; wearer_pas[free_i].pi = U_INDEX(pawn);
+    wearer_pas[free_i].pa = pa; wearer_pas[free_i].pai = U_INDEX(pa);
+    return pa;
+}
+static void keep_wearer_pa(UObject *body, UObject *pa) {
+    static UFunction *f; static int32_t pp, pr;
+    if (!f) { f = fn_of(body, "SetPhysicsAsset"); pp = parm_off(f, "NewPhysicsAsset"); pr = parm_off(f, "bForceReInit"); }
+    if (!f || pp < 0 || !pa) return;
+    int32_t ov = ue_prop_offset(body, "PhysicsAssetOverride");
+    if (ov >= 0 && *(UObject **)((char *)body + ov) == pa) return;
+    uint8_t p[32] = {0};
+    *(UObject **)(p + pp) = pa;
+    if (pr >= 0) p[pr] = 1;
+    ue_process_event(body, f, p);
+}
 static int n_npc_applied;
 static void tick_npc(void) {   // NPC bodies and add-on outfits (made-up outfit rows)
     UObject **s; int n = hero_slots(&s);
@@ -672,12 +707,17 @@ static void tick_npc(void) {   // NPC bodies and add-on outfits (made-up outfit 
             if (arms && ue_get_ptr(arms, "SkeletalMesh") != fpm) set_mesh(arms, fpm);
         }
         if (ue_get_ptr(body, "SkeletalMesh") == mesh) continue;
+        UObject *pa = wearer_pa(pawn, body);   // before the swap: the game's own mesh is still on
         set_mesh(body, mesh);
+        UObject *mpa = ue_get_ptr(mesh, "PhysicsAsset");
+        if (pa && mpa != pa) keep_wearer_pa(body, pa);
         UObject *head = comp_of(pawn, "ThirdPersonHeadMesh"), *legs = comp_of(pawn, "ThirdPersonLegsMesh");
         if (head && ue_get_ptr(head, "SkeletalMesh")) set_mesh(head, NULL);
         if (legs && ue_get_ptr(legs, "SkeletalMesh")) set_mesh(legs, NULL);
         n_npc_applied++;
-        LOG("models: hero slot %d wears %s %s", i, np ? "NPC" : "outfit", np ? np->name : of->name);
+        char pb[96];
+        LOG("models: hero slot %d wears %s %s (hitboxes: %s)", i, np ? "NPC" : "outfit", np ? np->name : of->name,
+            pa ? ue_obj_name(pa, pb, sizeof pb) : mpa ? "the look's own" : "none");
     }
 }
 

@@ -36,8 +36,10 @@ Nothing is saved: your profile, your unlocked outfits and your campaign runs sta
 - **An NPC**: `/model vanessa`, `/model emmett`, `/model survivor_f_03`, `/model guard_m_01`, `/model pow_male_02`,
   `/model cultistsniper` ... (`/model list npc`).
 
-- **An add-on outfit**: add-ons can add outfits (made with the mod maker's kit, `b4bmod survivor --as <name>`).
-  `/model list outfits` lists yours, e.g. `/model casual_joe`. Works on any survivor.
+- **An add-on outfit**: add-ons can add outfits (made with the mod maker's kit, `b4bmod survivor --as <name>`, or
+  converted from a survivor replacement mod with `b4bmod convert`). `/model list outfits` lists yours, e.g.
+  `/model casual_joe`. Works on any survivor: a woman's outfit on Walker or a man's on Holly keeps its own body
+  proportions, and you keep your own survivor's hitboxes.
 - **An add-on weapon look**: add-ons can add a model for one of the game's weapons (`b4bmod weapon --as <name>`).
   `/model list weapons` lists them with their weapon, e.g. `/model ak47` = your AR02 shows the AK. It stays on every
   AR02 you get (pickups, new maps) until `/model reset`; your survivor's look is separate.

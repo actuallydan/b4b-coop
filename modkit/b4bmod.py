@@ -37,6 +37,12 @@
                                           meshes in Blender, with LODs and textures; then packed into <moddir>.pak.
                                           --pak NAME.pak, --title/--author/--version/--description, --zip, --install,
                                           --no-pack; all other options: b4bmod model help. Guide: docs/meshes.md
+  convert <mod.pak> --as <name> [-o <moddir>] [--title T] [--only N,...] [--list]
+                                          a survivor REPLACEMENT mod (a pak that overrides an outfit) -> an ADDED
+                                          outfit any survivor can wear (/model <name>); the pak is only read. Several
+                                          outfits in the mod: <name>_01, _02 ... (--only picks, --list shows them).
+                                          Packs <moddir>.pak (default <moddir> = <name>); --pak, --zip, --install,
+                                          --author/--version/--description as for survivor
   model <b4bmodel.py arguments>           the model pipeline as is (e.g. model textures <manifest.json> ...)
   pack <moddir> [-o NAME.pak] [--title T] [--author A] [--version V] [--category C] [--description D] [--zip]
                                           <moddir> -> one add-on .pak (+ a zip for players with --zip)
@@ -716,6 +722,60 @@ def cmd_model(kind, a):
     return cmd_install([out])
 
 
+def cmd_convert(a):
+    """convert: a survivor replacement pak -> an added outfit (modkit/convert.py), packed like `survivor --as`."""
+    pak, install = take(a, "--pak"), "--install" in a
+    zipit, list_only = "--zip" in a, "--list" in a
+    a = [x for x in a if x not in ("--install", "--zip", "--list")]
+    meta = {k: take(a, "--" + k) for k in ("title", "author", "version", "description")}
+    name, only, moddir = take(a, "--as"), take(a, "--only"), take(a, "-o") or take(a, "--out")
+    if len(a) != 1 or not a[0].lower().endswith(".pak") or not (name or list_only):
+        die("usage: b4bmod convert <mod.pak> --as <name> [-o <moddir>] [--title T] [--only N,...] [--list]", 2)
+    src_pak = os.path.abspath(a[0])
+    if not os.path.isfile(src_pak):
+        die(f"{src_pak}: not found")
+    name = (name or "outfit").lower()
+    moddir = os.path.abspath(moddir or name)
+    st = os.stat(src_pak)
+    work = os.path.join(DATA, "convert", hashlib.sha1(f"{src_pak}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:12])
+    stage = os.path.join(work, "pak")
+    if not os.path.isdir(os.path.join(stage, "Gobi")):
+        shutil.rmtree(work, ignore_errors=True)
+        print(f"reading {os.path.basename(src_pak)} ...", file=sys.stderr)
+        r = run_dotnet_tool("pakx", ["extract", "--pak", src_pak, "--aes", aes_key(), "--out", stage, "."], capture=True)
+        if r.returncode:
+            shutil.rmtree(work, ignore_errors=True)
+            die((r.stderr or r.stdout).strip().removeprefix("pakx: "))
+        sys.stderr.write(r.stderr)
+    retail = {g for g in (game_name(p) for p, _ in listing()) if g}
+    low = {g.lower(): g for g in retail}
+
+    def retail_file(pkg):
+        g = low.get((pkg or "").lower())
+        if not g:
+            return None
+        f = asset_file(g)
+        if not os.path.exists(f):
+            extract([asset_regex(g)], quiet=True)
+        return f if os.path.exists(f) else None
+
+    sys.path.insert(0, KIT)
+    import convert
+    lines = convert.convert(stage, name, moddir, src_dir(), retail, retail_file, title=meta["title"], only=only,
+                            list_only=list_only)
+    if list_only:
+        return 0
+    out = pak or moddir.rstrip("/\\") + ".pak"
+    meta["category"] = "survivors"
+    args = ["pack", moddir, "-o", out] + [x for k, v in meta.items() if v for x in ("--" + k, v)]
+    rc = python_tool(os.path.join(KIT, "addon.py"), args + (["--zip"] if zipit else []))
+    if rc:
+        return rc
+    print(f"in game: {', '.join('/model ' + l.split('=', 1)[1].split('|', 1)[0] for l in lines)}"
+          f" (any survivor; players without this add-on see your survivor)")
+    return cmd_install([out]) if install else 0
+
+
 def addons_dir():
     return os.path.join(game_dir(), "b4bcoop-addons")
 
@@ -777,6 +837,8 @@ def main(argv):
                 "check": cmd_check}[cmd](rest)
     if cmd in ("survivor", "weapon"):
         return cmd_model(cmd, rest)
+    if cmd == "convert":
+        return cmd_convert(rest)
     if cmd == "model":   # the lower-level b4bmodel.py as is (e.g. `b4bmod model textures <manifest> ...`)
         help_ = not rest or rest[0] in ("-h", "--help", "help")
         return python_tool(os.path.join(KIT, "b4bmodel.py"), rest + ([] if help_ else ["--src", src_dir()]))
