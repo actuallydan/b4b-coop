@@ -27,7 +27,7 @@ of the window, and also in your chat.
 |---|---|---|
 | **Session** | Version and protocol, your Steam ID (Copy), Join a host by Steam ID, Host, Leave; your Steam friends in Back 4 Blood with **Join** (like Steam's Join Game) and **Invite** (while you host); "Show Join Game to Steam friends" (`presence`); host: who may join (Steam friends / anyone, always-allowed Steam IDs) | `/join`, `/host`, `/leave`; ini `presence`, `allow_joins`, `allow_steamids` |
 | **Players** | Everyone in the game with ping and Steam ID; host: **Kick**, **Ban** per player, a message to everyone (**Say**), **Locked**, bots (game default/on/off), team size, **Ready everyone**, **Ready post-round vote**, **Restart mission**, the ban list with **Unban** / **Unban all** | `/players`, `/ping`, `/kick`, `/ban`, `/say`, `/lock`, `/unlock`, `/bots`, `/teamsize`, `/ready`, `/ready vote`, `/restart`, `/bans`, `/unban` |
-| **Camera** | Third person on/off, start the game in third person, its key, sliders for distance, side, height and FOV (Ctrl+click a slider to type a number), Swap shoulder, Reset camera, aim correction | `/thirdperson ...`; ini `thirdperson*` |
+| **Camera** | Third person on/off, start the game in third person, its key, sliders for distance, side, height and FOV (Ctrl+click a slider to type a number), Swap shoulder, Reset camera, aim correction, free look on/off and its swing-back time | `/thirdperson ...`; ini `thirdperson*` |
 | **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode; **Beam (your view)**: sliders for width, range and brightness, Reset beam | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky`, `flashlight_width`, `flashlight_range`, `flashlight_brightness` |
 | **Cheats** | Host: **Cheats on**, a player picker (`me`, everyone, a player) for the buttons marked `*`, then every cheat: god, heal, revive, infinite ammo, copper, cards, fly, noclip, walk, teleport, free camera, size, horde, kill all ridden, freeze, director phases, spawn, game speed, win, lose, and your own save's supply points / unlock all | every `/cheats` command |
 | **Models** | Your look now and your pick, the host's refusal when it said no, **Reset my look**; lists to wear with a search box (click a name): **Survivors** (per survivor: whole survivor, outfits, heads, torsos, legs), **NPC bodies** (Fort Hope NPCs, other survivors, cultists), **Add-on outfits** (by add-on); **Weapon looks** per weapon type (**Use**, which add-on it comes from, **Reset** for that weapon type); **Everyone's look** (every player and bot); host: **Change the look of** a player or bot (then click a look), their **Reset**, **Model swaps allowed** (greyed on a client, with the host's last announced state) | `/model`, `/model list ...`, `/model <name>`, `/model reset`, `/model <player> <name>\|reset`, `/models on\|off` |
@@ -98,6 +98,13 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
   the game.
 - There is no third-person crosshair: the normal centre-of-screen one is used, and shots land under it (see **Aim**
   below). Aim with right mouse for precise shots.
+- **Free look**: standing still, move the mouse to swing the camera around your hero, all the way round to see its
+  front (your outfit, a custom character). Your hero doesn't turn, and the other players don't see it move. As soon as
+  you move, shoot, aim, reload, melee, use something, jump, crouch, sprint or switch weapons, the camera swings back
+  behind your hero (a quarter of a second) and the mouse turns your hero again; the first shot goes where your hero
+  faces. It starts after a quarter of a second of standing still, so turning while you stop still turns your hero.
+  Off with the **Camera** tab's checkbox or `thirdperson_freelook=0` (then standing still, the mouse turns your hero
+  as before).
 - **Picking things up** works as in first person: put the crosshair on a weapon, ammo, item or a card at a card
   shrine to see its prompt and card and press (or hold) F. (The game hides these in its own views from behind;
   b4bcoop turns that off in yours.) Doors, vendors, the war table and reviving work the same in both views.
@@ -409,7 +416,8 @@ Rules:
 - A line starting with `;` or `#` is ignored.
 - No `b4bcoop.ini` at all = all defaults.
 - **Applied while the game runs:** `thirdperson`, `thirdperson_key`, `thirdperson_distance`, `thirdperson_side`,
-  `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `flashlight_key`, `flashlight_sticky`,
+  `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `thirdperson_freelook`, `thirdperson_freelook_return`,
+  `flashlight_key`, `flashlight_sticky`,
   `flashlight_width`, `flashlight_range`, `flashlight_brightness`,
   `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
   `overlay_scale`, `addons_policy`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
@@ -437,6 +445,8 @@ Rules:
 | `thirdperson_height` | `0` | `-100`-`150` | Camera height offset (`/thirdperson height`) |
 | `thirdperson_fov` | `0` (game's) | `60`-`130` | Third-person field of view (`/thirdperson fov`) |
 | `thirdperson_aimfix` | `1` | `0`, `1` | `0`: no aim correction, shots land beside the crosshair by the camera offset |
+| `thirdperson_freelook` | `1` | `0`, `1` | `0`: no free look; standing still, the mouse turns your hero as before |
+| `thirdperson_freelook_return` | `0.25` | `0`-`2` (seconds) | How long the camera takes to swing back behind your hero; `0` = at once |
 | `overlay` | `1` | `0`, `1` | `0`: no `~` window |
 | `overlay_key` | `~` | a letter, a digit or a key code | The key that opens the `~` window |
 | `overlay_scale` | `1.25` | `0.5`-`4` | Size of the `~` window's text |
@@ -504,6 +514,14 @@ shoulder with a wider view:
 thirdperson_distance=150
 thirdperson_side=40
 thirdperson_fov=100
+```
+
+**`thirdperson_freelook`** / **`thirdperson_freelook_return`**: free look around your hero while standing still in
+third person (on by default), and how many seconds the camera takes to swing back behind it when you move, shoot,
+aim or use something. Off, or a slower swing back:
+```ini
+thirdperson_freelook=0
+thirdperson_freelook_return=0.5
 ```
 
 **`allow_joins`**: host only. `friends` (default): only your Steam friends can join. `anyone`: anyone who can reach

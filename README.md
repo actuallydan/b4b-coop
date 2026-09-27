@@ -117,7 +117,7 @@ The game has almost the entire retail experience with **no third-party network t
 
 So far we've implemented:
 - a **manual flashlight toggle** (L), optional, and a wider/longer/brighter beam for your own view (`~` window, Flashlight)
-- an optional **third-person camera** for your own hero (`/thirdperson`)
+- an optional **third-person camera** for your own hero (`/thirdperson`), with free look around it while you stand still
 - **5-player+** sessions (`teamsize=5` on the host), and a clean "Server full." instead of a host crash when too many
 join. Steam joins between two real accounts are verified; clicking Join Game in Steam's own friends list is new in
 this version and not yet tested between two accounts.
