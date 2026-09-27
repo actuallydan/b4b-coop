@@ -216,9 +216,9 @@ command (type it in the game's chat box; a message starting with `/` is never se
 
 **The rules:**
 - **Off until the host turns them on** with `/cheats on`. `/cheats off` turns them off again, and they switch off by
-  themselves when the game goes back to Fort Hope or the menus.
-- **Every map change clears the sandbox.** Cheats turned on in Fort Hope (camp) stay on into the mission, and on into
-  the next chapter, but everything they were doing stops at the map change: god mode, fly, noclip, infinite ammo, game
+  themselves when the game goes back to the menus.
+- **Every map change clears the sandbox.** Cheats stay on between Fort Hope (camp) and missions, both ways, and on
+  into the next chapter, but everything they were doing stops at the map change: god mode, fly, noclip, infinite ammo, game
   speed, freeze, size and the free camera (spawned ridden and director changes go with the old map). Everyone sees
   `[b4bcoop] cheats still on; effects reset`. Copper and cards already given stay, like any copper or card.
 - **Host only.** Every cheat command works only on the host (the player whose game the others joined, or your own

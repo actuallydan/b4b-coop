@@ -2,8 +2,8 @@
 //
 // Rules:
 //  - Every cheat is a chat command run by admin.c's dispatcher (`/god`, `/fly`, ...). Nothing works until the host types
-//    `/cheats on`; `/cheats off`, or the next map change that lands in Fort Hope or the menus turns them off. Leaving
-//    Fort Hope for a mission and the next chapter keep them on, but every map change resets their effects (god, fly,
+//    `/cheats on`; `/cheats off`, or the next map change that lands in the menus turns them off. Fort Hope, missions
+//    and the next chapter keep them on (both ways), but every map change resets their effects (god, fly,
 //    noclip, ammo, speed, freeze, size, free camera; the map's own spawns and director changes go with it).
 //  - Host only: the machine must be the server (listen host or standalone). A client's `/cheat ...` never leaves its
 //    machine (chat.c) and gets "host only". admin.c enforces it from VERBS' permissions (CMD_HOST / CMD_CHEAT).
@@ -1131,8 +1131,8 @@ void cheats_slash(const char *verb, char *rest, Out *o) {
 
 // Map change: every effect ends with the map (their actors are gone; a good way to clear the sandbox), the toggle stays.
 // Whether cheats stay on is decided once the new map has its game mode (a map change passes through worlds without
-// one): a mission (from Fort Hope, the next chapter, a restart) keeps them on, with a notice that the effects were
-// reset; Fort Hope, the menus, anything else turns them off.
+// one): Fort Hope and missions (both ways, the next chapter, a restart) keep them on, with a notice that the effects
+// were reset; the menus (no mission, not Fort Hope) turn them off.
 static int world_check, world_had_effects;
 static void on_world_change(void) {
     world_had_effects = effects_active();
@@ -1197,12 +1197,12 @@ void cheats_tick(float dt) {
         world_check = 0;
         char pkg[256] = "";
         ue_world_package(w, pkg, sizeof pkg);
-        if (!in_mission() || strstr(pkg, "FortHope")) {
+        if (!in_mission() && !strstr(pkg, "FortHope")) {
             on = 0;
-            LOG("cheats: off (map change out of the mission)");
-            snprintf(pending_notice, sizeof pending_notice, "cheats turned off (back in camp)");
+            LOG("cheats: off (map change to the menus)");
+            snprintf(pending_notice, sizeof pending_notice, "cheats turned off");
             pending_in = 60.f;
-        } else {   // mission from Fort Hope, next chapter, restart
+        } else {   // Fort Hope <-> mission, next chapter, restart
             LOG("cheats: still on in the new map; effects reset%s", world_had_effects ? " (some were active)" : "");
             snprintf(pending_notice, sizeof pending_notice, "cheats still on; effects reset");
             pending_in = 60.f;
@@ -1280,8 +1280,8 @@ static void cheats_panel(void) {
     ov_begin_perm(CMD_HOST);
     int en = on;
     if (ov_checkbox("Cheats on##cheats", &en)) ov_run(en ? "cheats on" : "cheats off");
-    ov_tooltip("Host only. Everyone is told. Stays on into the mission and the next chapter, but every map change "
-               "resets the effects (god, fly, ammo, speed, ...). Off again back in Fort Hope.");
+    ov_tooltip("Host only. Everyone is told. Stays on between Fort Hope and missions, but every map change "
+               "resets the effects (god, fly, ammo, speed, ...). Stays on in Fort Hope too; off in the menus.");
     ov_end_perm();
     if (on) ov_text_dim("god on %d hero(es), ammo %s, speed %.2fx%s%s", n_gods, ammo_inf ? "infinite" : "normal", slomo,
                         frozen ? ", AI frozen" : "", freecam ? ", free camera" : "");
