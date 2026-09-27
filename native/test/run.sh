@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build and run the updater's unit tests (native/test/updcore_test.c) on Linux with the pinned zig, against fixtures
-# made here: a release-shaped zip (deflate), a stored zip, a zip with a "../" entry, an OpenSSL ed25519 key with the
-# manifest and zip signed by tools/sign-release.sh (what release.yml runs). CI runs this (ci.yml).
+# Build and run the unit tests on Linux with the pinned zig: the add-on pak checks (native/test/pakfmt_test.c) and the
+# updater's (native/test/updcore_test.c), the latter against fixtures made here: a release-shaped zip (deflate), a
+# stored zip, a zip with a "../" entry, an OpenSSL ed25519 key with the manifest and zip signed by
+# tools/sign-release.sh (what release.yml runs). CI runs this (ci.yml).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)" root="$(cd "$(dirname "$0")/../.." && pwd)"
 v="$root/vendor"
@@ -33,3 +34,7 @@ openssl genpkey -algorithm ed25519 -out "$tmp/key.pem" 2>/dev/null
 "$root/tools/sign-release.sh" manifest "$tmp/release.zip" 0.6.2 2 > "$tmp/b4bcoop-update.txt"
 "$root/tools/sign-release.sh" sign "$tmp/key.pem" "$tmp/b4bcoop-update.txt" "$tmp/release.zip" >/dev/null
 "$tmp/updcore_test" "$tmp"
+
+# Add-on pak checks (native/test/pakfmt_test.c)
+"$v/zig/zig" cc -O2 -Wall -I"$here/../src" "$here/pakfmt_test.c" "$here/../src/pakfmt.c" -o "$tmp/pakfmt_test"
+"$tmp/pakfmt_test"

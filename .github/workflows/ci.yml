@@ -48,7 +48,7 @@ jobs:
       - name: Fetch the pinned toolchain (zig 0.15.2 + MinHook)
         run: tools/fetch-deps.sh --build
 
-      - name: Updater unit tests (signature, hash, zip, manifest; native/test/run.sh)
+      - name: Unit tests (add-on pak checks; updater signature, hash, zip, manifest; native/test/run.sh)
         run: native/test/run.sh
 
       - name: Dev build

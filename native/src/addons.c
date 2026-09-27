@@ -7,7 +7,7 @@
 //   are appended switched on (sorted by name) and the file is rewritten. /addons on|off edits it (applies on restart).
 //   Everything is read in DllMain (addons_scan, before the engine starts) so that paks.c installs no pak hook when
 //   there is nothing to mount; the paks are mounted from the FPakPlatformFile::Initialize hook (addons_mount).
-//   Our pak format only (modkit/b4bpak.py): v9, magic 0x18772, plain index; the index SHA1 is verified here (a damaged
+//   Our pak format only (modkit/b4bpak.py; pakfmt.c): v9 or v8, magic 0x18772, plain index; the index SHA1 is verified (a damaged
 //   index would be a Fatal in the engine) and is the add-on's content id (#22: compare it across a session).
 //   Conflicts: two enabled add-ons with the same file path; logged, listed by /addons, and one chat notice. "Mixed":
 //   one package's files (.uasset/.uexp/.ubulk) end up from different add-ons, which can crash the game.
@@ -25,10 +25,9 @@
 #include "cmds.h"
 #include "addonclass.h"
 #include "overlay.h"
+#include "pakfmt.h"
 
 #define ADDON_ORDER 1000          // read order of the first add-on; retail paks are 4 (+100 per patch level)
-#define PAK_MAGIC 0x18772u
-#define PAK_FOOTER 222
 #define ENTRY_HDR 53              // in-data FPakEntry of an uncompressed entry (B4B layout, modkit/b4bpak.py)
 #define INFO_NAME "b4bcoop-addoninfo.txt"
 #define LIST_NAME "addonlist.txt"
@@ -39,6 +38,7 @@ typedef struct {
     char name[MAX_PATH];          // same, UTF-8 (addonlist.txt key, chat)
     char title[96], author[64], version[32], category[48], desc[400], hash[41], claim[48];   // claim: addoninfo content=
     int nfiles, present, on, on_at_start, valid, mounted;   // mounted: 1 ok, -1 Mount failed, 0 not mounted
+    uint32_t pakver;              // pak version (9, or 8 for older community paks; pakfmt.c)
     int pos0;                     // 1-based place among the present add-ons at game start (0 = not present)
     char why[120];                // why it can't load
     uint32_t order;
@@ -74,37 +74,6 @@ static char *unquote(char *s) {
     size_t l = strlen(s);
     if (l >= 2 && s[0] == '"' && s[l - 1] == '"') { s[l - 1] = 0; s++; }
     return s;
-}
-
-// SHA1 (the pak footer's index hash)
-typedef struct { uint32_t h[5]; uint64_t len; uint8_t buf[64]; size_t n; } Sha1;
-#define ROL(x, k) (((x) << (k)) | ((x) >> (32 - (k))))
-static void sha1_block(Sha1 *s, const uint8_t *p) {
-    uint32_t w[80], a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4];
-    for (int i = 0; i < 16; i++) w[i] = (uint32_t)p[4 * i] << 24 | p[4 * i + 1] << 16 | p[4 * i + 2] << 8 | p[4 * i + 3];
-    for (int i = 16; i < 80; i++) w[i] = ROL(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    for (int i = 0; i < 80; i++) {
-        uint32_t f, k;
-        if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
-        else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
-        else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
-        else { f = b ^ c ^ d; k = 0xCA62C1D6; }
-        uint32_t t = ROL(a, 5) + f + e + k + w[i];
-        e = d; d = c; c = ROL(b, 30); b = a; a = t;
-    }
-    s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d; s->h[4] += e;
-}
-static void sha1(const uint8_t *p, size_t n, uint8_t out[20]) {
-    Sha1 s = {{0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0}, 0, {0}, 0};
-    s.len = (uint64_t)n * 8;
-    for (; n >= 64; n -= 64, p += 64) sha1_block(&s, p);
-    uint8_t t[128] = {0};
-    memcpy(t, p, n);
-    t[n] = 0x80;
-    size_t tl = n + 9 <= 64 ? 64 : 128;
-    for (int i = 0; i < 8; i++) t[tl - 1 - i] = (uint8_t)(s.len >> (8 * i));
-    for (size_t o = 0; o < tl; o += 64) sha1_block(&s, t + o);
-    for (int i = 0; i < 20; i++) out[i] = (uint8_t)(s.h[i / 4] >> (24 - 8 * (i % 4)));
 }
 
 static int read_at(HANDLE h, uint64_t off, void *buf, DWORD n) {
@@ -293,20 +262,17 @@ static void classify(Addon *a, HANDLE h, const Ent *ents) {
 static int load_pak(Addon *a, const wchar_t *path) {
     HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) { snprintf(a->why, sizeof a->why, "can't open (error %lu)", GetLastError()); return 0; }
-    LARGE_INTEGER sz; uint8_t ft[PAK_FOOTER]; uint8_t *idx = NULL; int ok = 0;
-    if (!GetFileSizeEx(h, &sz) || sz.QuadPart < PAK_FOOTER || !read_at(h, sz.QuadPart - PAK_FOOTER, ft, PAK_FOOTER)) {
-        snprintf(a->why, sizeof a->why, "not a pak file"); goto out;
-    }
-    uint32_t ver, magic; uint64_t isz, ioff;
-    memcpy(&ver, ft, 4); memcpy(&magic, ft + 4, 4); memcpy(&isz, ft + 45, 8); memcpy(&ioff, ft + 53, 8);
-    if (magic != PAK_MAGIC || ver != 9) { snprintf(a->why, sizeof a->why, "damaged, or not a Back 4 Blood add-on pak (magic %#x v%u)", magic, ver); goto out; }
-    if (ft[24]) { snprintf(a->why, sizeof a->why, "encrypted pak index: not made with modkit/addon.py"); goto out; }
-    if (ft[61] || isz > (64u << 20) || ioff + isz > (uint64_t)sz.QuadPart - PAK_FOOTER) { snprintf(a->why, sizeof a->why, "damaged pak (bad index position)"); goto out; }
+    LARGE_INTEGER sz; uint8_t ft[PAK_FOOTER_MAX]; uint8_t *idx = NULL; int ok = 0; PakFooter pf;
+    DWORD tl = 0;
+    if (GetFileSizeEx(h, &sz)) tl = sz.QuadPart < PAK_FOOTER_MAX ? (DWORD)sz.QuadPart : PAK_FOOTER_MAX;
+    if (!tl || !read_at(h, sz.QuadPart - tl, ft, tl)) { snprintf(a->why, sizeof a->why, "not a pak file"); goto out; }
+    if (!pak_footer_parse(ft, tl, (uint64_t)sz.QuadPart, &pf, a->why, sizeof a->why)) goto out;
+    uint64_t isz = pf.index_size, ioff = pf.index_offset;
     idx = malloc(isz ? isz : 1);
-    uint8_t hash[20];
     if (!idx || !read_at(h, ioff, idx, (DWORD)isz)) { snprintf(a->why, sizeof a->why, "damaged pak (index unreadable)"); goto out; }
-    sha1(idx, isz, hash);
-    if (memcmp(hash, ft + 25, 20)) { snprintf(a->why, sizeof a->why, "damaged pak (index checksum wrong): download it again"); goto out; }
+    if (!pak_index_ok(idx, isz, &pf, a->why, sizeof a->why)) goto out;
+    a->pakver = pf.version;
+    const uint8_t *hash = pf.index_sha1;
     for (int i = 0; i < 20; i++) snprintf(a->hash + 2 * i, 3, "%02x", hash[i]);
     Rd r = {idx, isz, 0, 0};
     char mount[520], name[1040], key[1600];
@@ -605,9 +571,9 @@ int addons_scan(void) {
         else a->valid = load_pak(a, full);
         if (!a->title[0]) snprintf(a->title, sizeof a->title, "%.*s", (int)(strlen(a->name) - 4), a->name);
         if (a->valid && a->on) n_mount++;
-        LOG("addons: %d. %s \"%s\" v%s by %s [%s]: %s, %d file(s), id %s%s%s", pos, a->name, a->title, a->version[0] ? a->version : "-",
+        LOG("addons: %d. %s \"%s\" v%s by %s [%s]: %s, %d file(s), id %s%s%s%s", pos, a->name, a->title, a->version[0] ? a->version : "-",
             a->author[0] ? a->author : "-", a->category, a->on ? "on" : "off", a->nfiles, a->hash[0] ? a->hash : "-",
-            a->valid ? "" : ", NOT LOADED: ", a->why);
+            a->pakver == 8 ? ", pak v8" : "", a->valid ? "" : ", NOT LOADED: ", a->why);
         if (a->valid) {
             char kinds[80];
             LOG("addons:    content: %s%s%s", addon_class_str(a, kinds, sizeof kinds), a->cls.gameplay ? ": " : "", a->cls.gameplay ? a->cls.reason : "");

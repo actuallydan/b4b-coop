@@ -2,8 +2,9 @@
 """b4bcoop add-on packer (#20; docs/investigations/addons.md, player side: docs/COMMANDS.md "Add-ons").
 Mod makers run it through `b4bmod pack / check` (modkit/README.md).
 
-An add-on is one .pak (modkit/b4bpak.py format: v9, B4B footer, uncompressed, unencrypted) that the agent mounts from
-<game>/b4bcoop-addons/ after the retail paks. Besides the cooked files it holds `b4bcoop-addoninfo.txt` (title,
+An add-on is one .pak (modkit/b4bpak.py format: v9, B4B footer, uncompressed, unencrypted; v8 paks load too) that
+the agent mounts from <game>/b4bcoop-addons/ after the retail paks. Besides the cooked files it holds
+`b4bcoop-addoninfo.txt` (title,
 author, version, category, description; `outfit=` / `weapon=` lines for added outfits and weapon looks, `b4bmod
 survivor|weapon --as`), which the agent shows in /addons.
 
@@ -252,8 +253,25 @@ def info_text(info):
         "".join(f"{k}={v}\r\n" for k in ("outfit", "weapon") for v in info.get(k, []))
 
 
+def check_footer(path, ft):
+    """The agent's footer checks (native/src/pakfmt.c), same messages: v9 (222-byte footer) or v8 (221), B4B magic,
+    plain unfrozen index inside the file. The index SHA1 is checked by b4bpak.read_index."""
+    ver, fs = ft["version"], ft["footer_size"]
+    if ft["magic"] != b4bpak.MAGIC or (ver, fs) not in ((9, 222), (8, 221)):
+        why = "not a pak file" if ft["file_size"] < 221 else \
+            f"damaged, or not a Back 4 Blood add-on pak (magic {ft['magic']:#x} v{ver})"
+        raise SystemExit(f"{path}: {why}")
+    if ft["encrypted_index"]:
+        raise SystemExit(f"{path}: encrypted pak index: not made with modkit/addon.py")
+    end = ft["file_size"] - fs
+    if ft["frozen"] or ft["index_size"] > 64 << 20 or ft["index_offset"] + ft["index_size"] > end:
+        raise SystemExit(f"{path}: damaged pak (bad index position)")
+
+
 def read_pak_files(path):
     """(name relative to ../../../, bytes) of every file in one of our uncompressed paks."""
+    with open(path, "rb") as f:
+        check_footer(path, b4bpak.read_footer(f))
     ft, mount, entries = b4bpak.read_index(path)
     prefix = mount
     while prefix.startswith("../"):
