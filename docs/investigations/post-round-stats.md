@@ -12,7 +12,9 @@ chapter → chapter) and tainted it, so for the whole mission the host held back
 rewards (`rewards: NOT forwarding AdjustSupplyPoints (151) ... cheats were on this map`). The client's post-round
 summary reads its **own** `PlayerStatsComponent`, which only those deltas fill: every stat showed `(0)` / `+0`.
 
-**Fix** (cheats.c, host only, no protocol bump): leaving Fort Hope turns cheats off (`cheats: off (left Fort Hope)`,
+**Superseded (2026-09-27, Dan's call): cheats withhold nothing any more** (§1b). The v0.6.0 fix below is history.
+
+**v0.6.0 fix** (cheats.c, host only, no protocol bump): leaving Fort Hope turns cheats off (`cheats: off (left Fort Hope)`,
 notice `cheats turned off (they don't carry over from Fort Hope)`); the mission is not tainted. Chapter → chapter
 still keeps them on, now with a reminder notice (`cheats are still on (this map's rewards and stats aren't sent to
 other players' saves)`). Cheats turned on during a mission still withhold that map's stats and rewards (by design:
@@ -28,6 +30,29 @@ Verified live (lane 2, Flatpak Steam, 2 instances, kills credited with dev `chea
 
 The host's summary showed its own 6 / 642,000 in every run. Chapter carry-over checked: `cheats on` in Evansburgh C,
 `endmission 1`, Evansburgh D has `on=1 tainted=1` and the reminder notice.
+
+## 1b. Cheats no longer withhold anything (2026-09-27)
+Dan: the `/cheats on` toggle should carry from camp into the mission, active effects should be cleared at that map
+change, and a cheated map should not cost the other players anything (simpler; a stray cheat can't ruin a run). So
+(cheats.c, host only, no protocol bump):
+- The taint is gone: no `cheats_tainted()`, rewards.c forwards every reward, and the component RPC hook that held back
+  `ClientApplyStatDeltas` / `ClientForceReconcileLegendaryMapStatsWithProfile` / `ClientUnlockManualAchievement`
+  (UActorComponent::CallRemoteFunction 0x143B2C830) is removed. The log lines `cheats: not sending ...` and
+  `rewards: NOT forwarding ... cheats were on this map` no longer exist.
+- Every map change resets the effects (god counters, infinite-ammo flags, slomo, freeze, size, free camera; the old
+  world's actors take the rest). Camp → mission, next chapter and restart keep cheats on: `cheats: still on in the new
+  map; effects reset[ (some were active)]`, notice `cheats still on; effects reset`. Fort Hope / menus: off, as before.
+
+Verified live (lane 2, Flatpak Steam, 2 instances, dev build):
+
+| Step | Result |
+|---|---|
+| camp: `cheats on`, `god`, `noclip`, `slomo 0.5`, `size 2`, `ammo infinite` | `on=1 gods=1 ammo=1(6) slomo=0.50`, host move=5 collision off |
+| `mission Easy` (Evansburgh B) | `on=1 gods=0 ammo=0(0) slomo=1.00`, host move=1 collision on, damage disabled 0; client got `cheats still on; effects reset` |
+| in the mission: `god all`, `noclip`, `horde`, killas host 6 / client 4, `endmission 1` | host `rewards: forwarding AdjustSupplyPoints (73)`, client `[CLIENT RPC] adjusting SP by 73`; client summary RIDDEN KILLED (4), ENEMY DAMAGE (470,800), SUPPLY POINTS 73; `poststats` host = client |
+| `ready vote` → Evansburgh C (seamless) | `on=1 gods=0`, no hero with damage disabled, collision on; notice again |
+
+`e2e.py --quick` 14/14 (lane 2, Flatpak Steam).
 
 ## 2. Where the post-round numbers come from (PvE)
 Panels (GetPostRoundPanelInfos 0x141D5F0C0): Splash, Lineup, Summary. The Stats table (EPostRoundPanel::Stats) is a

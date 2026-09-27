@@ -106,10 +106,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     docs/investigations/model-swap.md, player page docs/commands-models.md.
   - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
     /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
-    own save `/supply /unlockall`); off when a mission starts from camp and back in camp (next chapter keeps them);
-    every cheat touching others is a host notice; a map with cheats on sends remote players no rewards (rewards.c),
-    stats or achievements (their post-round summary shows 0, #30). Dev `cheat <cmd>`, `cheatprobe` (`killas <#n>`:
-    kills credited to a player).
+    own save `/supply /unlockall`); the toggle carries from camp into the mission and the next chapter, every map
+    change resets the effects (notice `cheats still on; effects reset`), off back in camp/menus; every cheat touching
+    others is a host notice; rewards, stats and achievements always flow (no cheated-map withholding since #30
+    follow-up). Dev `cheat <cmd>`, `cheatprobe` (`state`, `killas <#n>`: kills credited to a player).
   - `poststats.c` every build logs each player's post-round values once per post-round screen (`poststats:` lines,
     host and clients). Dev: `poststats`, UI probes `uitext <path part>` (live TextBlock texts), `uihide <suffix> [vis]`,
     `callw <suffix> <Func>`, `funcs <Class>`, `objat <addr>`. docs/investigations/post-round-stats.md.
