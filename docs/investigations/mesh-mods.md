@@ -1129,7 +1129,9 @@ the same way is the reference (charsuite now adds it to the previews: column "pr
   model on the survivor skeleton (bind pose, template weights) as `<work>/rigged3p.blend` (object names kept); the FP
   probe and FP fit load it (`--rigged`, identity bone map of the survivor names) and fit it like a rigged model: every
   joint exactly on the FP skeleton's (`pose fit: max joint error 0.00 cm`). `_unpose_chain` stays as the fallback
-  (no `--rigged`). Named arm parts of blocky figures are kept whole in FP.
+  (no `--rigged`), used when an arm doesn't fit onto the model's surface (below). The blocky figure's FP build had
+  failed since §19 (`fp_arm_mask` cut every face: "no skinned mesh in the glTF"); when that cut leaves nothing the
+  faces skinned to the arms are kept (12 per arm box, as before §19).
 - **Arm surface fit (unrigged, 3P and so FP).** The tip guess (`left arm is 4 deg from the template's pose`) left the
   hands 8 cm behind and below the template's: the model's hands took forearm and thigh weights. `fit_arm_pose` turns
   the template's clavicle, upper arm, forearm (coordinate search, mean distance of each segment's points and those
@@ -1159,3 +1161,11 @@ the same way is the reference (charsuite now adds it to the previews: column "pr
 - Also: ARP jaw-side bones (`c_lips_bot*`, `c_teeth_bot*`, `tong_*`) recognised for `b4b_face_jawsrc`.
 - Not fixed: the rigged model's inner upper lip hangs slightly into an opened mouth (AH), the unrigged model's lips
   part at the corners in a smile (its mouth interior is the generated one); both small at talking strength.
+- Live (lane 2, isolated Flatpak Steam account, `B4B_STEAM=flatpak B4B_GPU=4090`; native gameprocess_log unchanged,
+  2545 `AppID 924970` lines before and after): `charsuite.py --only marika,rainy --vanilla --mission 2 --motion`
+  2/2 PASS, 0 new log errors, no `missing usage flag` / `bUsedWithClothing` line (dress cloth on the Body slot);
+  host FP holds the SMG with the model's own hands and bracelets; black dress with gold vines, gold circlet in game.
+  Full suite (15 characters, all with 0 flags but the rigged model's `--normal-dx`, all deterministic): 15/15 PASS
+  (`/tmp/b4b-charsuite-l2-marikafinal-final`, after merging models 1b25e15); `e2e.py --quick` 14/14
+  (`/tmp/b4b-e2e-l2-marikafinal2`). New charsuite `--motion`: talking face (client view while the host's
+  hero says a line) and the outfit on a bot running across the host's view.
