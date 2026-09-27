@@ -28,7 +28,7 @@ of the window, and also in your chat.
 | **Session** | Version and protocol, your Steam ID (Copy), Join a host by Steam ID, Host, Leave; your Steam friends in Back 4 Blood with **Join** (like Steam's Join Game) and **Invite** (while you host); "Show Join Game to Steam friends" (`presence`); host: who may join (Steam friends / anyone, always-allowed Steam IDs) | `/join`, `/host`, `/leave`; ini `presence`, `allow_joins`, `allow_steamids` |
 | **Players** | Everyone in the game with ping and Steam ID; host: **Kick**, **Ban** per player, a message to everyone (**Say**), **Locked**, bots (game default/on/off), team size, **Ready everyone**, **Ready post-round vote**, **Restart mission**, the ban list with **Unban** / **Unban all** | `/players`, `/ping`, `/kick`, `/ban`, `/say`, `/lock`, `/unlock`, `/bots`, `/teamsize`, `/ready`, `/ready vote`, `/restart`, `/bans`, `/unban` |
 | **Camera** | Third person on/off, start the game in third person, its key, sliders for distance, side, height and FOV (Ctrl+click a slider to type a number), Swap shoulder, Reset camera, aim correction | `/thirdperson ...`; ini `thirdperson*` |
-| **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky` |
+| **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode; **Beam (your view)**: sliders for width, range and brightness, Reset beam | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky`, `flashlight_width`, `flashlight_range`, `flashlight_brightness` |
 | **Cheats** | Host: **Cheats on**, a player picker (`me`, everyone, a player) for the buttons marked `*`, then every cheat: god, heal, revive, infinite ammo, copper, cards, fly, noclip, walk, teleport, free camera, size, horde, kill all ridden, freeze, director phases, spawn, game speed, win, lose, and your own save's supply points / unlock all | every `/cheats` command |
 | **Models** | Your look now and your pick, the host's refusal when it said no, **Reset my look**; lists to wear with a search box (click a name): **Survivors** (per survivor: whole survivor, outfits, heads, torsos, legs), **NPC bodies** (Fort Hope NPCs, other survivors, cultists), **Add-on outfits** (by add-on); **Weapon looks** per weapon type (**Use**, which add-on it comes from, **Reset** for that weapon type); **Everyone's look** (every player and bot); host: **Change the look of** a player or bot (then click a look), their **Reset**, **Model swaps allowed** (greyed on a client, with the host's last announced state) | `/model`, `/model list ...`, `/model <name>`, `/model reset`, `/model <player> <name>\|reset`, `/models on\|off` |
 | **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`), every player's add-ons | `/addons`, `/addons on\|off`, `/addons info`, `/addons players`, `/addons policy`; ini `addons`, `addons_policy` |
@@ -407,6 +407,7 @@ Rules:
 - No `b4bcoop.ini` at all = all defaults.
 - **Applied while the game runs:** `thirdperson`, `thirdperson_key`, `thirdperson_distance`, `thirdperson_side`,
   `thirdperson_height`, `thirdperson_fov`, `thirdperson_aimfix`, `flashlight_key`, `flashlight_sticky`,
+  `flashlight_width`, `flashlight_range`, `flashlight_brightness`,
   `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
   `overlay_scale`, `addons_policy`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
   session. Deleting or commenting out a line = back to its default.
@@ -423,6 +424,9 @@ Rules:
 | `teamsize` | game's 4 | `5` (up to `8`) | Host: survivors per team |
 | `flashlight_key` | `L` | a letter, a digit, a key code, or `off` | The flashlight toggle key |
 | `flashlight_sticky` | `1` | `0`, `1` | Host: a manual flashlight choice stays until the next map |
+| `flashlight_width` | `100` | `25`-`300` | Your flashlight's cone width, percent of the game's (your screen only) |
+| `flashlight_range` | `100` | `25`-`400` | How far your flashlight reaches, percent of the game's (your screen only) |
+| `flashlight_brightness` | `100` | `0`-`500` | Your flashlight's brightness, percent of the game's (your screen only) |
 | `thirdperson` | `0` | `0`, `1` | `1`: start in third person (`/thirdperson`) |
 | `thirdperson_key` | `N` | a letter, a digit, a key code, or `off` | The third-person toggle key |
 | `thirdperson_distance` | `180` | `50`-`600` | Third-person camera distance (`/thirdperson distance`) |
@@ -469,6 +473,17 @@ flashlight_key=F
 **`flashlight_sticky`**: host setting, applies to every player in the host's game. `1` (default): once someone
 switches their light by hand, dark or bright areas no longer switch it back, until the next map (or `/flashlight auto`
 on the host). `0`: the game's automatic switching always wins.
+
+**`flashlight_width`** / **`flashlight_range`** / **`flashlight_brightness`**: your own flashlight beam, in percent of
+the game's (100 = unchanged), for very dark places. Easiest in the `~` window's **Flashlight** tab (sliders, **Reset
+beam**). They apply at once, in first and third person, as host or as a joined player, and only on your screen: the
+others see your light as the game draws it, and you see theirs that way. The cone stops at 160 degrees (about 175%
+of the game's 90-degree first-person beam). A wider beam spreads the same light over more area: raise the brightness with
+it to keep it as bright.
+```ini
+flashlight_width=180
+flashlight_brightness=150
+```
 
 **`thirdperson`** / **`thirdperson_key`**: your own camera, like `/thirdperson`. `thirdperson=1` starts every game
 in third person (`/thirdperson` still switches it). `thirdperson_key` (**N** by default) takes the same values as

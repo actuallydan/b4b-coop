@@ -36,6 +36,10 @@ cat > "$ini" <<'INI'
 
 ; Flashlight toggle key (default L; off disables it).
 ;flashlight_key=L
+; Your flashlight beam on your screen, percent of the game's (100 = unchanged): cone width, reach, brightness.
+;flashlight_width=100
+;flashlight_range=100
+;flashlight_brightness=100
 
 ; Start in third person (/thirdperson).
 ;thirdperson=1

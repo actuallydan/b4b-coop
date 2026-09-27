@@ -8,10 +8,18 @@
 //
 // Sticky mode (host side, flashlight_sticky=1, default): once a hero's light was toggled by hand, FlashlightVolume
 // enter/exit no longer overrides it (until the hero is destroyed, e.g. map change, or `flashlight auto` on the host).
+//
+// Beam tuning (#29, flashlight_width/_range/_brightness, percent): the light that renders is a set of SpotLightComponents
+// (FlashLightComponents +0x1B8) that every machine builds locally from the class's FlashLightBPs[EFlashlightMode]
+// templates, and rebuilds whenever the mode changes (first/third person, HDR output, quality). Nothing about them
+// replicates, so scaling their cone angles, attenuation radius and intensity on this machine changes only how the
+// local player's own light looks on this screen. Values are scaled from what the game last put there (it rewrites
+// intensity for flicker/gameplay effects and makes new components on every view change), checked every frame.
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
@@ -75,11 +83,13 @@ static void toggle_detour(UObject *comp) {
 // ---- local hero ----
 static UClass *cls_hlc;
 static UObject *local_light(void) {
-    static UObject *cache, *cache_pawn; static int32_t cache_idx;
+    static UObject *cache, *cache_pawn, *miss_pawn; static int32_t cache_idx; static DWORD miss_t;
     UObject *pc = ue_local_pc();
     UObject *pawn = pc ? ue_get_ptr(pc, "Pawn") : NULL;
     if (!pawn) return NULL;
     if (cache && cache_pawn == pawn && ue_object_at(cache_idx) == cache && U_OUTER(cache) == pawn) return cache;
+    if (pawn == miss_pawn && GetTickCount() - miss_t < 2000) return NULL;   // a pawn without a light: the beam tuning
+    miss_pawn = pawn; miss_t = GetTickCount();                              // asks every frame, scan every 2 s at most
     if (!cls_hlc) cls_hlc = ue_find_class("HeroLightComponent");
     if (!cls_hlc) return NULL;
     int32_t n = ue_num_objects();
@@ -123,6 +133,128 @@ static void restore_auto(UObject *comp) {
     orig_set(comp, vis, sh);
 }
 
+// ---- beam tuning (#29): the local hero's spotlights, on this machine only ----
+// Engine offsets (sdk/Script_Engine.txt): LightComponentBase.Intensity +0x244, LocalLightComponent.AttenuationRadius
+// +0x398, SpotLightComponent.InnerConeAngle +0x3C8 / OuterConeAngle +0x3CC (half angles, degrees).
+#define HLC_SPOTS(c)   ((TArray *)((char *)(c) + 0x1B8))   // FlashLightComponents: TArray<USpotLightComponent*>
+#define HLC_MODE(c)    (*(uint8_t *)((char *)(c) + 0x170))   // EFlashlightMode the spotlights were built for
+static const int32_t BEAM_OFF[4] = {0x3C8, 0x3CC, 0x398, 0x244};
+static const char *const BEAM_SET[4] = {"SetInnerConeAngle", "SetOuterConeAngle", "SetAttenuationRadius", "SetIntensity"};
+enum { B_INNER, B_OUTER, B_RADIUS, B_INTENSITY };
+#define BEAM_MAX_OUTER 80.f       // half angle: a 160-degree cone (the editor's spot light max; the proxy clamps at 89)
+static float beam_w = 100, beam_r = 100, beam_b = 100;   // percent of the game's values
+typedef struct { UObject *c; int32_t idx; float base[4], put[4]; } Beam;
+static Beam beams[8];
+static int n_beams;
+static UObject *beam_light;       // the light component the beams belong to
+static UClass *cls_spot;
+static UFunction *beam_fn[4];
+
+static int beam_default(void) { return beam_w == 100 && beam_r == 100 && beam_b == 100; }
+static float *bf(UObject *spot, int k) { return (float *)((char *)spot + BEAM_OFF[k]); }
+static void beam_call(UObject *spot, int k, float v) {
+    if (!beam_fn[k]) beam_fn[k] = ue_find_function(U_CLASS(spot), BEAM_SET[k]);
+    if (!beam_fn[k]) { *bf(spot, k) = v; return; }
+    uint8_t p[16] = {0};
+    memcpy(p, &v, sizeof v);
+    ue_process_event(spot, beam_fn[k], p);   // the engine setter: value + render-state update
+}
+static void beam_targets(const Beam *b, float t[4]) {
+    float outer = b->base[B_OUTER] * beam_w / 100.f;
+    if (outer > BEAM_MAX_OUTER && outer > b->base[B_OUTER]) outer = b->base[B_OUTER] > BEAM_MAX_OUTER ? b->base[B_OUTER] : BEAM_MAX_OUTER;
+    t[B_OUTER] = outer;
+    t[B_INNER] = b->base[B_OUTER] > 0 ? b->base[B_INNER] * outer / b->base[B_OUTER] : b->base[B_INNER];
+    t[B_RADIUS] = b->base[B_RADIUS] * beam_r / 100.f;
+    t[B_INTENSITY] = b->base[B_INTENSITY] * beam_b / 100.f;
+}
+static void beam_apply(Beam *b) {
+    float t[4];
+    beam_targets(b, t);
+    for (int k = 0; k < 4; k++) {
+        if (*bf(b->c, k) != t[k]) beam_call(b->c, k, t[k]);
+        b->put[k] = *bf(b->c, k);   // what is there now (a setter may refuse or clamp)
+    }
+}
+static int beam_alive(const Beam *b) { return b->c && ue_object_at(b->idx) == b->c; }
+static void beam_restore_all(void) {   // the game's values back on spotlights we changed (another hero now)
+    for (int i = 0; i < n_beams; i++) {
+        Beam *b = &beams[i];
+        if (!beam_alive(b)) continue;
+        for (int k = 0; k < 4; k++)
+            if (*bf(b->c, k) == b->put[k] && b->put[k] != b->base[k]) beam_call(b->c, k, b->base[k]);
+    }
+    n_beams = 0;
+}
+
+// Every frame: find new spotlights (view change = new components), pick up values the game wrote since our last
+// write as the new base, and scale. At the defaults with nothing tracked this is one pointer check.
+static void beam_tick(void) {
+    if (beam_default() && !n_beams) return;
+    UObject *c = local_light();
+    if (c != beam_light) { beam_restore_all(); beam_light = c; }
+    if (!c) return;
+    if (!cls_spot) cls_spot = ue_find_class("SpotLightComponent");
+    TArray *a = HLC_SPOTS(c);
+    if (!cls_spot || a->num <= 0 || a->num > 8) return;
+    for (int j = 0; j < a->num; j++) {
+        UObject *s = ((UObject **)a->data)[j];
+        if (!s || (U_FLAGS(s) & 0x30) || !ue_is_a(s, cls_spot)) continue;
+        Beam *b = NULL;
+        for (int i = 0; i < n_beams; i++) if (beams[i].c == s && beam_alive(&beams[i])) { b = &beams[i]; break; }
+        if (!b) {
+            int i = 0;
+            while (i < n_beams && beam_alive(&beams[i])) i++;   // reuse a dead slot (the old view's spotlights)
+            if (i == n_beams) { if (n_beams == 8) continue; n_beams++; }
+            b = &beams[i];
+            b->c = s; b->idx = U_INDEX(s);
+            for (int k = 0; k < 4; k++) { b->base[k] = *bf(s, k); b->put[k] = NAN; }
+        }
+        int changed = 0;
+        for (int k = 0; k < 4; k++) {
+            float cur = *bf(s, k);
+            if (cur == b->put[k]) continue;
+            // the game wrote it: that is its value now. One exception is relative: with HDR output on, the game
+            // halves the intensity once after a rebuild (0x141BF172B), which must halve the base, not our result.
+            if (k == B_INTENSITY && b->put[k] > 0 && fabsf(cur - b->put[k] * 0.5f) <= b->put[k] * 1e-4f)
+                b->base[k] *= 0.5f;
+            else if (!isnan(b->put[k]) || cur != b->base[k]) b->base[k] = cur;
+            changed = 1;
+        }
+        if (changed) beam_apply(b);
+    }
+    if (beam_default()) {   // back at 100%: our values are gone again, stop watching
+        for (int i = 0; i < n_beams; i++) if (beam_alive(&beams[i])) beam_apply(&beams[i]);
+        n_beams = 0;
+    }
+}
+static void beam_settings_changed(void) {   // re-apply to the tracked spotlights at once (beam_tick adds new ones)
+    for (int i = 0; i < n_beams; i++) if (beam_alive(&beams[i])) beam_apply(&beams[i]);
+}
+
+// Readout of the local hero's spotlights: current values and the game's (base) values.
+static void beam_status(Out *o, UObject *c) {
+    TArray *a = HLC_SPOTS(c);
+    if (!cls_spot) cls_spot = ue_find_class("SpotLightComponent");
+    out_printf(o, "beam: width %.0f%% range %.0f%% brightness %.0f%%, mode %d, %d spotlight(s)\n", beam_w, beam_r, beam_b,
+               HLC_MODE(c), a->num);
+    for (int j = 0; j < a->num && j < 8; j++) {
+        UObject *s = ((UObject **)a->data)[j];
+        if (!s || !cls_spot || !ue_is_a(s, cls_spot)) continue;
+        const Beam *b = NULL;
+        for (int i = 0; i < n_beams; i++) if (beams[i].c == s && beam_alive(&beams[i])) b = &beams[i];
+        int32_t units = ue_prop_offset(s, "IntensityUnits"), ies = ue_prop_offset(s, "IESTexture"),
+                lf = ue_prop_offset(s, "LightFunctionMaterial"), sr = ue_prop_offset(s, "SourceRadius");
+        char n1[128], n2[128];
+        UObject *iesp = ies >= 0 ? *(UObject **)((char *)s + ies) : NULL, *lfp = lf >= 0 ? *(UObject **)((char *)s + lf) : NULL;
+        out_printf(o, "  [%d] inner %.1f outer %.1f radius %.0f intensity %.2f units %d source %.1f ies %s lightfn %s",
+                   j, *bf(s, 0), *bf(s, 1), *bf(s, 2), *bf(s, 3), units >= 0 ? *((uint8_t *)s + units) : -1,
+                   sr >= 0 ? *(float *)((char *)s + sr) : -1.f, iesp ? ue_obj_name(iesp, n1, sizeof n1) : "-",
+                   lfp ? ue_obj_name(lfp, n2, sizeof n2) : "-");
+        if (b) out_printf(o, " (game: %.1f %.1f %.0f %.2f)", b->base[0], b->base[1], b->base[2], b->base[3]);
+        out_printf(o, "\n");
+    }
+}
+
 // flashlight list: every hero light in this world, as this machine sees it (replicated state on clients)
 static void list_lights(Out *o) {
     if (!cls_hlc) cls_hlc = ue_find_class("HeroLightComponent");
@@ -153,6 +285,7 @@ void cmd_flashlight(const char *arg, Out *o) {
         out_printf(o, "light=%s role=%s manual=%s sticky=%d volume_requests=%d dark_card=%d hooks=%d key=0x%02x\n",
                    vis ? "on" : "off", auth ? "authority" : "client", manual_find(c) ? "yes" : "no", sticky,
                    HLC_REQUESTS(c)->num, HLC_DARKCARD(c), hooked, hotkey);
+        beam_status(o, c);
         return;
     }
     if (!strcmp(arg, "auto")) {
@@ -173,6 +306,7 @@ void cmd_flashlight(const char *arg, Out *o) {
 // ---- hotkey (only while the game window has focus) ----
 void flashlight_tick(float dt) {
     static int was_down; static float cooldown;
+    beam_tick();
     if (!hotkey) return;
     if (cooldown > 0) cooldown -= dt;
     int down = cmds_hotkey_down(hotkey);
@@ -184,11 +318,20 @@ void flashlight_tick(float dt) {
     was_down = down;
 }
 
-// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; off disables), flashlight_sticky=1. Both
-// also change live (cmds_ini_poll; val NULL = removed: the default).
+// b4bcoop.ini: flashlight_key=L (a letter/digit, or a VK code like 0x4C; off disables), flashlight_sticky=1,
+// flashlight_width=100 (25-300), flashlight_range=100 (25-400), flashlight_brightness=100 (0-500): percent of the
+// game's beam, your own view only. All change live (cmds_ini_poll; val NULL = removed: the default).
+static float pct(const char *v, float lo, float hi) {
+    float f = v ? (float)atof(v) : 100.f;
+    if (!(f == f)) f = 100.f;
+    return f < lo ? lo : f > hi ? hi : f;
+}
 int flashlight_live(const char *key, const char *v) {
     if (!strcmp(key, "flashlight_sticky")) sticky = v ? atoi(v) : 1;
     else if (!strcmp(key, "flashlight_key")) hotkey = v ? cmds_parse_key(v) : 'L';
+    else if (!strcmp(key, "flashlight_width")) { beam_w = pct(v, 25, 300); beam_settings_changed(); }
+    else if (!strcmp(key, "flashlight_range")) { beam_r = pct(v, 25, 400); beam_settings_changed(); }
+    else if (!strcmp(key, "flashlight_brightness")) { beam_b = pct(v, 0, 500); beam_settings_changed(); }
     else return 0;
     return 1;
 }
@@ -219,12 +362,37 @@ static void fl_panel(void) {
     if (ov_checkbox("Keep a manual choice (sticky)##sticky", &st)) ov_setting("flashlight_sticky", st ? "1" : "0", 1);
     ov_tooltip("Host setting: once a player switches their light by hand, dark or bright areas no longer switch it, "
                "until the next map.");
+    ov_heading("Beam (your view)");
+    static const struct { const char *label, *key; float lo, hi; const char *tip; } S[3] = {
+        {"Width##flashlight_width", "flashlight_width", 25, 300, "Cone angle, percent of the game's. It stops at a 160-degree cone (about 175% in first person)."},
+        {"Range##flashlight_range", "flashlight_range", 25, 400, "How far the light reaches, percent of the game's."},
+        {"Brightness##flashlight_brightness", "flashlight_brightness", 0, 500, "Light intensity, percent of the game's."},
+    };
+    float *cur[3] = {&beam_w, &beam_r, &beam_b};
+    for (int i = 0; i < 3; i++) {
+        float v = *cur[i];
+        ov_width(14);
+        if (ov_slider(S[i].label, &v, S[i].lo, S[i].hi, "%.0f%%")) ov_setting_f(S[i].key, v, 0);
+        if (ov_edit_done()) ov_setting_f(S[i].key, v, 1);
+        ov_tooltip(S[i].tip);
+    }
+    if (ov_button("Reset beam")) for (int i = 0; i < 3; i++) ov_setting(S[i].key, NULL, 1);
+    if (c && HLC_SPOTS(c)->num > 0) {
+        UObject *s = ((UObject **)HLC_SPOTS(c)->data)[0];
+        if (!cls_spot) cls_spot = ue_find_class("SpotLightComponent");
+        if (s && cls_spot && ue_is_a(s, cls_spot))
+            ov_text_dim("Now: cone %.0f degrees, reach %.0f m, intensity %.1f (%s person).", 2 * *bf(s, B_OUTER),
+                        *bf(s, B_RADIUS) / 100.f, *bf(s, B_INTENSITY), HLC_MODE(c) >= 3 ? "third" : "first");
+    }
+    ov_text_dim("Only your own screen: other players see your light as the game draws it, and you see theirs that way. "
+                "A wider beam spreads over more area; raise the brightness to keep it as bright.");
 }
 
 int flashlight_init(void) {
     load_config();
     overlay_add_panel("Flashlight", 40, fl_panel);
-    LOG("flashlight: key=0x%02x sticky=%d", hotkey, sticky);
+    LOG("flashlight: key=0x%02x sticky=%d beam width %.0f%% range %.0f%% brightness %.0f%%", hotkey, sticky, beam_w,
+        beam_r, beam_b);
     if (memcmp((void *)ADDR_HLC_SET, SIG_SET, sizeof SIG_SET) || memcmp((void *)ADDR_HLC_TOGGLE, SIG_TOGGLE, sizeof SIG_TOGGLE)) {
         LOG("flashlight: signature mismatch, sticky mode off");
         return -1;

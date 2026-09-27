@@ -111,3 +111,55 @@ Notes:
 - The client's `flashlight status` always shows `manual=no volume_requests=0`: the manual table and the request stack
   exist on the host only. Use the host's `flashlight list` to see them.
 - No bugs found in `flashlight.c`.
+
+## Beam width, range and brightness (issue #29)
+
+Static analysis 2026-09-27 (build 14216215); live results below.
+
+### Where the beam lives
+- What renders is `UHeroLightComponent.FlashLightComponents` (+0x1B8, `TArray<USpotLightComponent*>`). They are **not**
+  replicated: every machine creates them itself from the component's `FlashLightBPs[6]` (+0x100, one Blueprint class
+  per `EFlashlightMode`: FirstPerson/ThirdPerson × Epic/Low/SplitScreen). The Blueprint's spot lights are the
+  templates: `0x141BF2110` picks the class for a mode, `0x141C127C0` lists its components, `NewObject` copies each one
+  onto the hero (`0x141BF29E5` / `0x141BF2D59`), attached to the FP (+0x140) or TP (+0x150) parent component.
+- **Rebuild** `0x141BF26A0`: mode = TP when `PlayerViewComponent+0x215` (IsThirdPerson) is set, else FP; Epic vs Low
+  from two globals, split screen separately. If the mode differs from `+0x170` (last built mode), it destroys the old
+  spotlights (vtable +0x3B8), clears the array and makes new ones. Called by `OnViewChanged` (exec `0x142164950`, sets
+  `+0x191` bThirdPerson then rebuild + `0x141BF3400` visibility), by the tick when `r.HDR.EnableHDROutput` changes
+  (`+0x193`), and at init. So every 1P↔3P switch (aiming in `/thirdperson`, the game's own TP moments) makes new
+  components with the Blueprint's values.
+- Tick (`0x141BF1550`, vtable +0x348) writes `Intensity` (+0x244) only: once ×0.5 after a rebuild when HDR output is
+  on (`0x141BF172B`, relative), and every frame while `FlickerModifiers` (+0x198) is non-empty (`0x141BF0900`: absolute
+  values from `FlashLightConfig` +0x1A8, `LightParameterConfig{Intensity[], Temperature[]}` per spotlight). Those come
+  from `GameplayEffectHeroLightComponent` (FirstPerson/ThirdPersonLightConfig): only intensity/temperature, never cone
+  or radius. Nothing writes `InnerConeAngle`/`OuterConeAngle` (+0x3C8/+0x3CC) or `AttenuationRadius` (+0x398) after
+  creation.
+- No dark/bright sensing anywhere (FlashlightVolume only switches on/off), no map-load reset beyond the new hero.
+
+### Implementation (`flashlight.c`, beam tuning)
+- `flashlight_width`, `flashlight_range`, `flashlight_brightness`: percent of the game's values (defaults 100), live
+  from the ini and from the `~` Flashlight tab (sliders + Reset beam, saved when an edit ends).
+- Every frame (only while a setting is off 100, or until our values are undone): the local hero's light component,
+  each spotlight in `FlashLightComponents`. A new spotlight (view change) gets its current values as the base. A value
+  that differs from what we last wrote was written by the game and becomes the new base (flicker, gameplay effects),
+  except the HDR ×0.5, which halves the base. Targets: outer cone × width (capped at 80°), inner cone scaled with it,
+  radius × range, intensity × brightness (the cookie light function `Flashlight_Cookie_LF_MI` follows the cone), set through the engine's own `SetOuterConeAngle` / `SetInnerConeAngle` /
+  `SetAttenuationRadius` / `SetIntensity` (ProcessEvent: value + render-state update). At 100% nothing is called.
+- Local only, both sides: host and client each tune their own hero's light on their own screen. Other players see
+  your beam as the game draws it (their machine built the spotlights from the same templates), you see theirs that
+  way. No protocol change. When the local hero changes (bot take-over, next map) the old hero's spotlights get the
+  game's values back.
+- `flashlight status` prints the spotlights (current and game values, units, IES, light function).
+- No "wider when dark" auto mode: the game has no light measurement, and one would need a render readback.
+
+### Live results (2026-09-27, lane 2, host + client, Evansburgh_B Easy, both heroes in dark FlashlightVolumes)
+- Game values (low settings): FP (mode 1) `[0]` cookie spot outer 45° radius 3300 intensity 2.5, `[1]` fill spot outer
+  45° radius 5000 intensity 0.16; TP (mode 4) `[0]` inner 8° outer 30° radius 2200 intensity 2.0, `[1]` intensity 0.
+  Epic modes not measured.
+- Host, overlay `Width` 170 → outer 76.5° on both spots, visibly much wider spot on the wall (cookie scales with it).
+  `/thirdperson on` → new TP spotlights picked up (outer 51.0 = 30 × 1.7, inner 13.6); off → FP 76.5 again.
+- Client, overlay width 160 / range 200 / brightness 250 → outer 72°, radius 6600/10000, intensity 6.25/0.39; lit
+  wall much wider and brighter on the client's screen. Settings written to the client's own `b4bcoop.ini`.
+- Host `Reset beam` → game values back exactly (45 / 3300 / 2.5), ini lines commented out.
+- Not tested: flicker/gameplay-effect intensity updates while scaled (logic only), Epic quality, HDR output, a restart
+  with the ini values set (same handler as the live path).
