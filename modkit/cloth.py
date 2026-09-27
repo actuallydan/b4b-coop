@@ -56,9 +56,15 @@ def hair_chains(skm_file, src):
             if bones[i] == "head": return True
             i = parent[i]
         return False
+    def sim_above(i):                 # a simulated hair bone further up: i is inside that chain (Mom: 00 and 02 of 3)
+        i = parent[i]
+        while i >= 0 and bones[i] != "head":
+            if bones[i] in sim: return True
+            i = parent[i]
+        return False
     chains = []
     for i, b in enumerate(bones):
-        if b in sim and "hair" in b and under_head(i) and bones[parent[i]] not in sim:
+        if b in sim and "hair" in b and under_head(i) and not sim_above(i):
             c, j = [b], i
             while len(kids.get(j, [])) == 1:
                 j = kids[j][0]; c.append(bones[j])

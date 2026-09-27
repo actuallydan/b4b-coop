@@ -3,7 +3,7 @@
 The model-mods counterpart of tools/e2e.py (dev tool; the models themselves are never committed).
 
     tools/charsuite.py [--manifest FILE] [--only a,b] [--twice] [--no-preview] [--no-game] [--no-build]
-                       [--vanilla] [--mission N] [--install] [--no-lock] [--out DIR] [--build-dir DIR]
+                       [--vanilla] [--mission N] [--motion] [--install] [--no-lock] [--out DIR] [--build-dir DIR]
 
 Manifest (JSON, outside the repo; default ~/.local/share/b4b-coop/characters/suite.json or $B4B_CHARSUITE; format and
 a CC0 example: tools/charsuite-example.json):
@@ -22,7 +22,8 @@ Steps:
     `modkit/b4bmod.sh survivor <model> --outfit .. --fp .. --as <name>` into --build-dir (default
     ~/.local/share/b4b-coop/charsuite/build, replaced per run); checks exit status, the add-on's outfit= name, size.
     --twice builds again into <build-dir>2 and compares the paks byte for byte (determinism).
- 2. previews (blender/preview.py: 3P front/side/back with the game textures + the face), 4 at a time.
+ 2. previews (blender/preview.py: 3P front/side/back with the game textures, the face, the FP arms in a gun hold
+    seen from the FP camera), 4 at a time.
  3. game (lane from B4B_LANE; takes launch/gamelock.sh as "charsuite" unless --no-lock; --install runs
     launch/install.sh first): the add-ons go into <game>/b4bcoop-addons (the lock's backup restores the player's own on
     release), multi.sh 2 (host + client with the add-ons; --vanilla adds a 3rd instance with addons=0), Fort Hope.
@@ -33,7 +34,8 @@ Steps:
     survivor, no add-on mesh, no "wears" line); new mesh/material/cloth/add-on errors in every log since the outfit
     went on (lines not seen before the first swap), every instance still answering.
     --mission N (default 2, 0 = off): then Evansburgh (mission Easy, `ready` ends the character select) with the first
-    N entries marked "mission": true (else the first N) worn again: host FP holding a weapon, host 3P, client view.
+    N entries marked "mission": true (else the first N) worn again: host FP holding a weapon, host 3P, client view;
+    --motion adds the face while talking (host's hero says a line, client view) and the outfit running (on a bot).
 Output: summary table + contact sheet (contact.png, one row per character) + logs, previews, screenshots, the game logs
 and agent transcript in /tmp/b4b-charsuite-<time>/ (lane 2: /tmp/b4b-charsuite-l2-<time>/). Exit 1 on any failure.
 Set B4B_GPU (e.g. 4090) as for multi.sh to keep the instances off the display GPU.
@@ -192,6 +194,11 @@ def previews(rows, a):
         g = os.path.join(wk, "fit3p", "lod0.glb")
         tex = ["--textures", os.path.join(wk, "preview_textures_3p.json")] if os.path.exists(os.path.join(wk, "preview_textures_3p.json")) else []
         jobs.append((r, "prev3p", [g, os.path.join(OUT, "preview", f"{r.name}.png"), "--size", "360"] + tex))
+        gf = os.path.join(wk, "fitfp", "lod0.glb")
+        if os.path.exists(gf):                         # FP arms in a gun hold from the FP camera
+            texf = os.path.join(wk, "preview_textures_fp.json")
+            jobs.append((r, "prevfp", [gf, os.path.join(OUT, "preview", f"{r.name}_fp.png"), "--size", "360",
+                                       "--fp", "hold"] + (["--textures", texf] if os.path.exists(texf) else [])))
         if os.path.exists(os.path.join(wk, "face_preview.json")):
             jobs.append((r, "prevface", [g, os.path.join(OUT, "preview", f"{r.name}_face.png"), "--size", "360", "--views", "front",
                                          "--face", os.path.join(wk, "face_preview.json")] + tex))
@@ -306,6 +313,35 @@ def look(idx, d, dz=3):
     return e2e.agent(H, "face", "look", idx, d, dz)
 
 
+def motion(S, r, ic):
+    """--motion (mission): the face while talking (the host's hero says a line, the client's camera 70 cm in front of
+    it) and the outfit running (put on a bot, which runs 8 m to the side while the host looks at it)."""
+    name = r.e["expect"]
+    me = mine(H)
+    if ic is not None and me:
+        look(ic, 70); time.sleep(2)
+        e2e.agent(H, "face", "say", me["idx"], "Ping_Affirmative")
+        time.sleep(0.5); shot(r, C, "m_talk", "talking (client view)")
+    # dev `players`: "[k] <class> name=<player> pawn=<class>"; a bot's player state has no name and a hero pawn
+    bots = re.findall(r"^\s*\[(\d+)\] \S+ name= pawn=Hero_", e2e.agent(H, "players"), re.M)
+    if not bots:
+        log("  motion: no bot to run"); return
+    e2e.agent(H, "model", "#" + bots[0], name)
+    b = e2e.wait_for(lambda: next((h for h in heroes(H) if not h["you"] and
+                                   f"/b4bcoop/outfits/{name}/".lower() in h["mesh"].lower()), None), 15, 1)
+    if not b:
+        log(f"  motion: bot #{bots[0]} doesn't wear {name}"); return
+    look(b["idx"], 400, 0); time.sleep(2)
+    x, y, z = b["at"]
+    me = mine(H)
+    dx, dy = (me["at"][0] - x, me["at"][1] - y) if me else (1.0, 0.0)
+    n = max(1e-3, (dx * dx + dy * dy) ** 0.5)
+    # across the host's view (perpendicular to host -> bot), 3 m: the bot stays in the picture while it runs
+    e2e.agent(H, "face", "walk", b["idx"], round(x - dy / n * 300), round(y + dx / n * 300), round(z))
+    time.sleep(0.8); shot(r, H, "m_run", "bot running in the outfit")
+    e2e.agent(H, "model", "#" + bots[0], "reset")
+
+
 def check_logs(S, r, insts, baseline, tag):
     new = []
     for n in insts:
@@ -407,15 +443,18 @@ def game(rows, a):
                     e2e.agent(H, "thirdperson", "on"); time.sleep(2)
                     shot(r, H, "m_host_3p", "mission host 3P")
                     e2e.agent(H, "thirdperson", "off")
+                    if a.motion:
+                        motion(S, r, ic)
                 if not check_logs(S, r, insts, baseline, "mission"): r.mission = False
     finally:
         S.stop()
 
 
 # ---------------------------------------------------------------- output
-COLS = [("prev3p", "preview 3P"), ("prevface", "preview face"), ("host_3p", "host 3P"),
+COLS = [("prev3p", "preview 3P"), ("prevface", "preview face"), ("prevfp", "preview FP"), ("host_3p", "host 3P"),
         ("client_face", "client face"), ("client_body", "client body"), ("vanilla_face", "no add-ons"),
-        ("m_host_fp", "mission FP"), ("m_host_3p", "mission 3P"), ("m_client", "mission client")]
+        ("m_host_fp", "mission FP"), ("m_host_3p", "mission 3P"), ("m_client", "mission client"),
+        ("m_talk", "talking"), ("m_run", "running")]
 
 
 def contact(rows):
@@ -466,6 +505,7 @@ def main():
     ap.add_argument("--no-game", action="store_true")
     ap.add_argument("--vanilla", action="store_true", help="a 3rd instance without add-ons (must see vanilla)")
     ap.add_argument("--mission", type=int, default=2, help="characters worn in Evansburgh (0 = no mission step)")
+    ap.add_argument("--motion", action="store_true", help="mission: face while talking, the outfit running (on a bot)")
     ap.add_argument("--install", action="store_true", help="launch/install.sh (this checkout's dev build) first")
     ap.add_argument("--no-lock", action="store_true", help="don't take launch/gamelock.sh (caller holds it)")
     ap.add_argument("--out", help="artifacts (default /tmp/b4b-charsuite-<time>)")

@@ -559,7 +559,18 @@ def chin_nose(out, ks, sm, ku, kl, scale):
     """Chin: the front-most point below the lower lip; nose tip: the front-most above the upper lip."""
     ch = [x for x in ks if kl - 0.035 * scale <= x < kl - 0.005 * scale]
     if ch:
-        kc = max(ch, key=lambda x: sm[x]); out["chin"] = Vector((sm[kc], 0.0, kc))
+        kc = max(ch, key=lambda x: sm[x])
+        # a full lower lip is the front-most thing right under the lip line: then the chin is the bulge below the
+        # dent under the lip (mentolabial fold), else the chin landed on the lip (the jaw then ended at the lip and
+        # the chin stayed behind when the mouth opened)
+        dz = [x for x in ch if x >= kl - 0.02 * scale]
+        if dz:
+            kd = min(dz, key=lambda x: sm[x])
+            below = [x for x in ch if x < kd]
+            if below and kc >= kd:
+                kb = max(below, key=lambda x: sm[x])
+                if sm[kb] > sm[kd] + 0.0005 * scale: kc = kb
+        out["chin"] = Vector((sm[kc], 0.0, kc))
     no = [x for x in ks if ku + 0.008 * scale <= x <= ku + 0.05 * scale]
     if no:
         kn = max(no, key=lambda x: sm[x]); out["nose"] = Vector((sm[kn], 0.0, kn))
@@ -772,6 +783,40 @@ def mouth_from_shape_key(head, seed, scale):
     if len(band) < 2: return None
     ml = max(band, key=lambda p: p.y); mr = min(band, key=lambda p: p.y)
     if ml.y <= 0 or mr.y >= 0: return None
+    # the corners: where the lips part, the key's motion jumps from stay to move within a few mm (the slit); past the
+    # corners the cheek moves too, smoothly (the moved region alone put the corners on the cheeks: 8.6 cm wide mouth,
+    # the corner bones then pulled a slash across the cheek)
+    near = [(p, v) for p, v in pts if abs(p.z - crease.z) < 0.012 * scale and p.x > front - 0.03 * scale]
+    step = 0.002 * scale
+    bins = {}
+    for p, v in near: bins.setdefault(int(math.floor(p.y / step)), []).append((p, v))
+    slit = {}
+    for b, ps in bins.items():
+        ps.sort(key=lambda t: t[0].z)
+        best = 0.0
+        for k in range(len(ps)):
+            for j in range(k + 1, len(ps)):
+                if ps[j][0].z - ps[k][0].z > 0.003 * scale: break
+                best = max(best, abs(ps[j][1] - ps[k][1]))
+        slit[b] = best
+    thr = 0.4 * mx
+    def edge(sign):
+        b0 = int(math.floor(crease.y / step))
+        last, b, miss = None, b0, 0
+        while abs(b - b0) * step < 0.06 * scale:
+            if slit.get(b, 0.0) > thr: last, miss = b, 0
+            else:
+                miss += 1
+                if miss > 2 and last is not None: break
+            b += sign
+        return last
+    bl, br = edge(1), edge(-1)
+    if bl is not None and br is not None and bl * step > 0.008 * scale and br * step < -0.008 * scale:
+        pick = lambda b: min(bins[b], key=lambda t: abs(t[0].z - crease.z))[0]
+        cl, cr = pick(bl), pick(br)
+        if cl.y < ml.y or cr.y > mr.y:
+            if DEBUG: print(f"b4bface: mouth corners by the slit {fmt(cl)} {fmt(cr)} (moved region {fmt(ml)} {fmt(mr)})")
+            ml, mr = (cl if cl.y < ml.y else ml), (cr if cr.y > mr.y else mr)
     return {"mouth_l": ml, "mouth_r": mr, "lip_up": lip_up, "lip_lo": lip_lo, "crease": crease}
 
 
@@ -796,7 +841,9 @@ class MouthLine:
 def capture_jaw_weights(meshes):
     """Before the source rig's weights are renamed: per vertex, the weight on its jaw-side face bones (jaw, chin, lower
     lip, lower teeth, tongue), as vertex attribute b4b_face_jawsrc (which lip a vertex belongs to)."""
-    rx = re.compile(r"jaw|chin|lip\.?b\b|lip\.b\.|lower_?lip|lip_?lower|teeth\.b|lower_?teeth|teeth_?lower|tongue", re.I)
+    # (Auto-Rig Pro: c_lips_bot*, c_teeth_bot*, tong_* under c_jawbone.x)
+    rx = re.compile(r"jaw|chin|lip\.?b\b|lip\.b\.|lower_?lip|lip_?lower|lips?_?bot|teeth\.b|lower_?teeth|teeth_?lower|"
+                    r"teeth_?bot|tongue|(^|[_.])tong([_.\d]|$)", re.I)
     n = 0
     for m in meshes:
         gi = {g.index for g in m.vertex_groups if rx.search(g.name)}
@@ -886,10 +933,10 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
                 elif v is not None: sd = -1 if v > 0.6 else 1 if v < 0.05 else sd     # the rig's jaw weights
         F_ = lookup(q, cls, sd)
         u = abs(p.y) / side_m.cy
-        if sd != 0 and u > 0.8:
+        if sd != 0 and u > CORNER_BLEND[0]:
             # at the mouth corners upper and lower lip meet: blend into the template's corner weights (both lips)
             # instead of a hard split, which left spiky triangles at the corners of an opening mouth
-            t = min(1.0, (u - 0.8) / 0.3)
+            t = min(1.0, (u - CORNER_BLEND[0]) / (CORNER_BLEND[1] - CORNER_BLEND[0]))
             G_ = lookup(q, cls, 0)
             F_ = {b: F_.get(b, 0.0) * (1 - t) + G_.get(b, 0.0) * t for b in set(F_) | set(G_)}
         return F_
@@ -941,6 +988,8 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
         Wm[m][i] = nw
         stats["verts"] += 1
     smooth_corners(head, Wm, side_m, scale, face, jaw_chain)
+    sj = smooth_jaw_edges(head, Wm, side_m, scale, face, jaw_chain)
+    if sj: log(f"face: jaw: {sj} vertices around hard jaw-weight edges (chin, jaw line) blended")
     welded = weld_seams(head, Wm, meshes, F)
     if welded: log(f"face: {welded} vertices where the head's meshes meet share their weights (no seams opening)")
     # new bind positions: every face bone mapped onto the model's face (face frame)
@@ -968,6 +1017,7 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
     return moved
 
 
+CORNER_BLEND = (0.8, 1.1)  # share of the mouth's half width where the lips' split fades into the shared corner weights
 MOUTH_INTERIOR = ["auto"]   # auto: only when the model has none; on; off (b4bfit --mouth)
 
 
@@ -1146,6 +1196,65 @@ def smooth_corners(head, Wm, line, scale, face, jaw_chain, iters=6):
             for b, x in (ot.items() if so > 0 else [("head", 1.0)]): nw[b] = nw.get(b, 0.0) + x / (so or 1.0) * hw * (1 - new)
             W[i] = nw; n += 1
     return n
+
+
+def smooth_jaw_edges(head, Wm, line, scale, face, jaw_chain):
+    """Where the jaw's share jumps between neighbouring vertices away from the lips (under the chin, along the jaw
+    line: the template's weights end where its surface and the model's part, or the model's own rig ends there), the
+    opening mouth tears the chin off with a hard edge. Around every such edge (within JAW_BLEND_CM) the jaw share is
+    evened out over the mesh (neighbours averaged; the lip line and everything outside stay as they are)."""
+    import numpy as np
+    hv = {}
+    for (m, i, p, mt, c) in head: hv.setdefault(m, {})[i] = p
+    total = 0
+    for m, P in hv.items():
+        W = Wm[m]
+        def jf(i):
+            w = W[i]; hw = sum(x for b, x in w.items() if b == "head" or b in face)
+            return sum(x for b, x in w.items() if b in jaw_chain) / hw if hw > 0 else 0.0
+        def lip_band(p):
+            return abs(p.y) < line.cy * 1.25 and abs(p.z - line.z(p.y)) < 0.007 * scale and \
+                p.x > line.mid.x - 0.035 * scale
+        free = {i for i, p in P.items() if not lip_band(p)}
+        J = {}
+        nb = {}
+        jumps = set()
+        lens = []
+        for e in m.data.edges:
+            a, b = e.vertices
+            if a not in P or b not in P: continue
+            nb.setdefault(a, []).append(b); nb.setdefault(b, []).append(a)
+            ja = J[a] if a in J else J.setdefault(a, jf(a))
+            jb = J[b] if b in J else J.setdefault(b, jf(b))
+            if abs(ja - jb) > 0.3 and a in free and b in free:
+                jumps.update((a, b)); lens.append((P[a] - P[b]).length)
+        if not jumps: continue
+        r = JAW_BLEND_CM * 0.01 * scale
+        kd = KDTree(len(jumps))
+        for k, i in enumerate(jumps): kd.insert(P[i], k)
+        kd.balance()
+        region = [i for i in free if i in nb and kd.find(P[i])[2] < r]
+        el = float(np.median(lens)) if lens else r / 3
+        iters = int(min(80, max(4, (r / max(el, 1e-4)) ** 2)))
+        val = dict(J)
+        for _ in range(iters):
+            val.update({i: (val[i] + sum(val[j] for j in nb[i])) / (1 + len(nb[i])) for i in region})
+        for i in region:
+            w = W[i]; hw = sum(x for b, x in w.items() if b == "head" or b in face)
+            if hw <= 0: continue
+            old, new = J[i], val[i]
+            if abs(new - old) < 0.02: continue
+            ja = {b: x for b, x in w.items() if b in jaw_chain}
+            ot = {b: x for b, x in w.items() if (b == "head" or b in face) and b not in jaw_chain}
+            nw = {b: x for b, x in w.items() if b != "head" and b not in face}
+            sj, so = sum(ja.values()), sum(ot.values())
+            for b, x in (ja.items() if sj > 0 else [("jaw", 1.0)]): nw[b] = x / (sj or 1.0) * hw * new
+            for b, x in (ot.items() if so > 0 else [("head", 1.0)]): nw[b] = nw.get(b, 0.0) + x / (so or 1.0) * hw * (1 - new)
+            W[i] = nw; total += 1
+    return total
+
+
+JAW_BLEND_CM = 1.5      # smooth_jaw_edges: how far around a hard jaw-weight edge the share is evened out
 
 
 BLINK_DEG = 28.0        # the game's blink turns the upper lids about this far (live, every hero; mesh-mods.md §12)

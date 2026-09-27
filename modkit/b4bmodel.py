@@ -680,7 +680,8 @@ MAT_SKIN_RX = re.compile(r"skin|face|head|flesh|body|mouth|teeth|tongue|nail", r
 MAT_CLOTH_ZONES = [(re.compile(r"pant|trouser|jean|short|skirt|leg|bottom|shoe|boot|sock|feet|foot|lower", re.I),
                     re.compile(r"leg|pant|lower", re.I)),
                    (re.compile(r"gear|bag|belt|hat|cap\b|helmet|glove|glass|accessor|strap|armou?r|mask|pouch|holster|"
-                               r"jewel|necklace|ear", re.I), re.compile(r"gear|acc", re.I)),
+                               r"jewel|necklace|ear|circlet|crown|tiara|diadem|bangle|armband|anklet|pendant|amulet",
+                               re.I), re.compile(r"gear|acc", re.I)),
                    (re.compile(r".", re.I), re.compile(r"torso|body|top|upper|jacket|shirt|arms?$", re.I))]
 
 
@@ -701,7 +702,8 @@ REGIONS = ("head", "torso", "arms", "hands", "legs", "feet")
 GEAR_SLOT_RX = re.compile(r"gear|acc", re.I)
 GEAR_WORDS = {"hat", "cap", "helmet", "hood", "glasses", "goggles", "mask", "backpack", "bag", "belt", "pouch", "holster",
               "strap", "straps", "armor", "armour", "jewel", "jewelry", "necklace", "earring", "earrings", "bracelet",
-              "watch", "gear", "accessory", "accessories", "scarf", "badge"}
+              "watch", "gear", "accessory", "accessories", "scarf", "badge", "circlet", "crown", "tiara", "diadem",
+              "bangle", "armband", "anklet", "pendant", "amulet"}
 
 
 def name_words(name):
@@ -801,6 +803,11 @@ def auto_slots(mats, minfo, s3, user, regions=None):
         if MAT_EYE_RX.search(n):
             if clear > 0.5 and re.search(r"highlight|extra|spec|reflect|shine|catch", n):
                 drop.append(m); why[m] = "eye highlight overlay (transparent)"; continue
+            if re.search(r"cornea|tear_?line|moisture", m, re.I) or \
+                    (not inf.get("textures") and inf.get("blend", "OPAQUE") != "OPAQUE"):
+                # the clear shell over the eyeball: opaque on the skin slot it covered the iris (white eyes)
+                drop.append(m); why[m] = "clear cover over the eye (cornea): an opaque slot would hide the iris"
+                continue
             if clear > 0.5 and hair:
                 out[m] = hair[0]; why[m] = "eye layer with alpha (e.g. iris): hair slot, masked, in the hair colour"
                 continue
@@ -825,7 +832,8 @@ def auto_slots(mats, minfo, s3, user, regions=None):
         for zi, (rx_mat, rx_slot) in enumerate(MAT_CLOTH_ZONES):
             if rx_mat.search(n):
                 out[m], why[m] = cloth_slot(m, rx_slot if zi < 2 else None)
-                if zi == 2 and not re.search(r"body|torso|top|upper|jacket|shirt", n): by_look.add(m)
+                if zi == 2 and not re.search(r"body|torso|top|upper|jacket|shirt", n) and not GARMENT_RX.search(m):
+                    by_look.add(m)                   # (a dress is named: it doesn't follow its necklace to gear)
                 break
     # a material placed by its look that draws the same colour image as materials on one slot joins them there (one
     # atlas tile instead of the image twice): game rips' teeth and tongue use the body skin's image
@@ -888,8 +896,15 @@ def survivor(o):
         o.o["tex"].append(f"{NO_MATERIAL}={g}")      # the image inspect found for faces without a material
     # where each material sits on the body (and each template slot): the model fitted once, quickly (no face, LODs)
     rp = os.path.join(work, "regions")
+    # an unrigged model: that fit also saves it rigged to the survivor skeleton; its FP arms are fitted from that like
+    # a rigged model's (every joint on the FP skeleton's)
+    rigged = os.path.join(work, "rigged3p.blend")
+    if os.path.exists(rigged): os.remove(rigged)
+    unrigged = not info["armatures"]
     run_blender(["character", "--template", template_glb(tp, work), "--source", os.path.abspath(model), "--out", rp,
-                 "--mode", "3p", "--probe", "regions", "--proportions", o.get("proportions") or "own"] + fit_args(o.o))
+                 "--mode", "3p", "--probe", "regions", "--proportions", o.get("proportions") or "own"] + fit_args(o.o) +
+                (["--rigged_out", rigged] if unrigged else []))
+    rig_args = ["--rigged", rigged] if unrigged and os.path.exists(rigged) else []
     regions = json.load(open(os.path.join(rp, "regions.json")))
     slot3, drop = auto_slots(mats, minfo, s3, user, regions)
     o.o["drop_mat"] = drop
@@ -921,7 +936,7 @@ def survivor(o):
         # which materials survive in first person (faces skinned to the arms): only those need the FP texture set
         dp = os.path.join(work, "fpprobe")
         run_blender(["character", "--template", template_glb(fp, work), "--source", os.path.abspath(model), "--out",
-                     dp, "--mode", "fp", "--probe", "1"] + fit_args(o.o))
+                     dp, "--mode", "fp", "--probe", "1"] + fit_args(o.o) + rig_args)
         keep = set(json.load(open(os.path.join(dp, "probe.json")))["materials"])
         fp_slot = {m: s for m, s in fp_slot.items() if m in keep}
         for m, s in fp_slot.items():
@@ -999,7 +1014,7 @@ def survivor(o):
         atlas_args[1] = tiles_fp
         df = os.path.join(work, "fitfp")
         run_blender(["character", "--template", template_glb(fp, work), "--source", os.path.abspath(model), "--out",
-                     df, "--mode", "fp", "--lods", o.get("fp_lods", "1,0.5")] + fit_args(o.o) + atlas_args +
+                     df, "--mode", "fp", "--lods", o.get("fp_lods", "1,0.5")] + fit_args(o.o) + rig_args + atlas_args +
                     density_args(o.o, fp=True) +
                     [x for s, st in fp_slotset.items() if st != s for x in ("--slotset", f"{s}={st}")] +
                     [x for m, s in fp_slot.items() for x in ("--slot", f"{m}={s}")])
@@ -1328,13 +1343,23 @@ def dangle_args(o, tp, src):
     a = []
     if o.get("hair_physics", "auto") != "off":   # default on where the template supports it
         chains, pa = cloth.hair_chains(tp, src)
+        pa_file = lambda: upkg.game_path_to_file(pa.split(".")[0], src) if pa else None
+        if not chains and pa and not os.path.exists(pa_file() or "") and find_b4bmod():
+            # the physics asset is not among the mesh's extracted references (materials, textures): get it, else
+            # every template would read as "no hair chain"
+            subprocess.run([sys.executable, find_b4bmod(), "extract", pa.split(".")[0], "-o", src], capture_output=True,
+                           text=True)
+            chains, pa = cloth.hair_chains(tp, src)
         if chains:
             a += ["--hair_bones", ";".join(",".join(c) for c in chains)]
             if o.get("hair_swing"): a += ["--hair_swing", o["hair_swing"]]
+        elif pa and not os.path.exists(pa_file() or ""):
+            log(f"hair: {os.path.basename(tp)}'s physics asset {pa.split('.')[0]} could not be extracted: the hair "
+                f"moves with the head")
         else:
             log(f"hair: {os.path.basename(tp)}'s physics asset ({(pa or '?').split('.')[-1]}) has no simulated hair "
-                f"bones: the hair moves with the head (templates with a hair chain: Holly, Holly Elite 06, Walker "
-                f"Elite 03, Doc Elite 03, Mom)")
+                f"bones for its skeleton: the hair moves with the head (templates with a hair chain: Holly (Elite 00 "
+                f"...), Holly Elite 06, Walker Elite 03, Doc Elite 03, Mom, Mom Elite 07)")
     if o.get("cloth", "auto") != "off":
         a += ["--cloth", o.get("cloth", "auto")]
         n = len(cloth.cloth_assets(skm.SkeletalMesh(tp)))

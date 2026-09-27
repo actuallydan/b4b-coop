@@ -1076,3 +1076,96 @@ jeans, boots and a shirt, 100k vertices; both on Holly Elite 00, local only) exp
   textured with its pattern, boots on the feet, FP arms from the default `--fp`), shino/avatar_e/bulky/coattest/
   capetest unchanged (same sizes, skirt/coat/cape still cloth). Open: the unrigged model's FP mesh is its whole body
   (FP arm extraction keeps everything for unrigged models), so no arms show in first person.
+
+## 19. The same two models: jaw, eyes, torn chin, unrigged FP arms, hair physics (models-fixA, 2026-09-26)
+Two new local test characters (a paid Auto-Rig Pro FBX, 310 bones, 61 mapped; an unrigged Daz FBX), both on Holly
+Elite 00, now in the local suite manifest. General bugs they showed, all in `modkit/`:
+- **Mouth pulled wide open, tongue out (rigged, also `--face off`)**: not the FBX's stored pose (75 bones away from
+  rest, but the imported mesh is closed-mouthed at rest and in that pose; phase 2 sets every pose bone to `D @ rest`
+  anyway). The cause: bones under a `BIND_ONLY` bone (the jaw: ARP `c_chin_*`, `c_lips_bot*`, `c_teeth_bot*`, `tong_*`
+  under `c_jawbone.x`) own-map to the jaw, which has no `D_of`, so they got the identity and stayed at the source
+  place while the head moved (own proportions: +7.6 cm). Now they take the jaw's `D_used` (its parent's transform).
+- **Face looking up ~15 deg**: the head (no aim joint) took the neck chain's rotation; the model's neck leans 15.2 deg
+  forward, the survivor's bind neck 0, so straightening it tipped the face up. The head now keeps the model's own
+  orientation (both look ahead at rest).
+- **White eyes**: the clear `Cornea` shell (no image, blend HASHED) went opaque on the skin slot over the iris. Eye
+  materials named cornea/tearline/moisture, or see-through without an image, are now dropped (`b4bmodel.auto_slots`).
+- **Chin torn off when talking (unrigged)**: its weights come from the template's nearest vertices, *face bones
+  included*; the face rig then re-skins only vertices near the template's face (fade 8-20 mm) and left the rest with
+  the template's jaw weights taken at unwarped positions (hair by the chin followed the jaw too). Copied template
+  weights now give face bones to `head` (`face_bones_of`/`fold_face`); plus `b4bface.smooth_jaw_edges`: around every
+  edge whose jaw share jumps > 0.3 outside the lip band, the share is averaged over the mesh within 1.5 cm (175 -> 66
+  jump edges on the unrigged head, the rest on the lip line; 432 vertices blended).
+- **No hands in first person (unrigged) — half done.** (a) The cut: FP weights come from the FP template, which is
+  only arms, so every vertex got arm weights and `keep_arms` kept the whole body (100k verts). Now unrigged FP also
+  needs the vertex's nearest template body segment to be an arm bone within 12 cm (`fp_arm_mask`), hair materials and
+  materials with < 10 % of their faces on the arms are left out: 25.5k verts (template 26k). (b) Still no hands in
+  game after the cut. Bisected live with the add-on's FP mesh swapped (`exp` builds, lane 1): the template's own arms
+  and the rigged model's arms show; the unrigged arms don't, whatever their weights, UVs or normals; the rigged
+  arms **moved 8 cm back** vanish too. So FP arms must sit on the FP skeleton's joints within a few cm (the FP view
+  is tight; hands end up below it). The unrigged un-pose only turned the upper arm (straight arm vs the FP bind
+  pose's 40 deg elbow; hands 8 cm short, palm-in). Now (`unpose_arms(chain=True)` + `_unpose_chain`): each segment
+  (upper arm, forearm, hand) mapped onto the FP skeleton's (turn + stretch + move, applied by hand as linear blend
+  skinning because Blender poses can't hold the stretch), the hand by a PCA frame (fingers, thumb side, palm normal),
+  hand/finger bones only inside the model's hands. Hand centroid now matches the template's (5, 4, -6 cm from the hand
+  bone vs 6, 3, -7). Last live look: sleeves now in view, but distorted (a sleeve stretched up past the gun), hands
+  not yet clean. Next: check the forearm/sleeve weights after the chain un-pose (sleeve vertices near the elbow),
+  maybe weight sleeves by segment instead of nearest template surface; then re-run the suite. Also fixed on the way:
+  imported meshes keep the template's constant extra UV channels (FP Arms slot UV1 = 0) and never get bounds smaller
+  than the template's (neither alone was the cause). 8 influences are fine (the rigged FP with 8 draws hands).
+- **Hair physics "no simulated hair bones" on Holly E00**: false; `3P_Holly_PA` simulates hair_00..02 (all 28 hero PAs
+  scanned: Holly, Holly E06, Walker E03 hair_00..02; Doc E03 hair_00..01; Mom, Mom E07 pigtails; backpack/gasmask
+  elsewhere). The physics asset simply wasn't extracted (not among the mesh's material/texture references), and
+  `hair_chains` returned no chain. `dangle_args` now extracts it; `hair_chains` no longer adds a second chain for a
+  simulated bone below another one (Mom: `['hair_02_l']` twice). Docs (meshes.md) were right; Mom E07 added.
+
+## 20. Finishing the two models: FP arms from the 3P fit, arm surface fit, textures, mouth landmarks (models-fixA, 2026-09-26)
+Same two local models as §19 (rigged ARP FBX, unrigged Daz FBX). Offline checks with a new preview mode:
+`preview.py --fp hold` poses the FP skeleton's arms by two-bone IK onto fixed hand targets in front of the `camera`
+bone (right hand on the grip, left on the fore-end) and renders from the camera (90 deg); the retail FP mesh rendered
+the same way is the reference (charsuite now adds it to the previews: column "preview FP"). It reproduced the live
+§19 finding offline: the unrigged sleeve stretched up past the hands, the rigged arms matching the retail ones.
+- **Unrigged FP arms = the rigged path.** The 3P fit of an unrigged model (the regions probe, `--rigged_out`) saves the
+  model on the survivor skeleton (bind pose, template weights) as `<work>/rigged3p.blend` (object names kept); the FP
+  probe and FP fit load it (`--rigged`, identity bone map of the survivor names) and fit it like a rigged model: every
+  joint exactly on the FP skeleton's (`pose fit: max joint error 0.00 cm`). `_unpose_chain` stays as the fallback
+  (no `--rigged`), used when an arm doesn't fit onto the model's surface (below). The blocky figure's FP build had
+  failed since §19 (`fp_arm_mask` cut every face: "no skinned mesh in the glTF"); when that cut leaves nothing the
+  faces skinned to the arms are kept (12 per arm box, as before §19).
+- **Arm surface fit (unrigged, 3P and so FP).** The tip guess (`left arm is 4 deg from the template's pose`) left the
+  hands 8 cm behind and below the template's: the model's hands took forearm and thigh weights. `fit_arm_pose` turns
+  the template's clavicle, upper arm, forearm (coordinate search, mean distance of each segment's points and those
+  below it to the model's nearest vertex, limits 25/70/70 deg), then the hand by frames: the model's hand = vertices
+  reached over the welded mesh within 1.3 hand lengths of the wrist, on its far side (so the thigh next to a hanging
+  hand isn't taken); direction wrist -> hand centre, palm normal = thinnest PCA axis (sign nearest the template's).
+  Result: hand surface distance 4.6 -> 1.7 cm, 1834/1886 hand vertices; FP hands where the retail ones are. Fit worse
+  than 3 cm (blocky figure: 9-10 cm) -> the old tip turn (`no fit onto the model's surface`).
+- **Palm roll (rigged).** The hand's aim-only turn left the palm wherever the model had it; now also the knuckle line
+  (pinky_01 -> index_01) onto the template's (`palms turned l -2 deg, r 2 deg` on the rigged model), fingers keep the
+  hand's roll (parent's turn first, then the shortest turn onto their segment).
+- **Wrong dress colour (rigged model).** Its FBX links the dress's colour image only to Alpha (colour socket empty), so
+  the name guess took `<Mat>Inner_BaseColor` (substring of another material's set): an olive dress instead of black
+  with gold vines. Now an alpha-only image whose name says base colour is the colour too, and the name guess prefers
+  files named exactly after the material. Then the dress followed its necklace (same image) to Gear, where cloth
+  would be refused: garment-named materials no longer count as "placed by look". Circlet (was on the Head skin slot:
+  pale, "skin colours 100%") and other jewellery words (circlet, crown, tiara, bangle, armband, anklet, pendant,
+  amulet) go to Gear.
+- **Cheek slash in Joy/OW (rigged).** Mouth corners from the mouth-open key were the sides of everything it moves:
+  model half width 4.3 cm (template 2.4), the corner bones sat on the cheeks. Now the corners are where the key's motion
+  jumps across the lip slit (> 40 % of its max within 3 mm of height, 2 mm bins walking out from the middle): 2.2 cm.
+  Smile, "O" and "AH" read as a mouth.
+- **Chin left behind (unrigged).** The profile chin was the front-most point under the lower lip = the bottom of a
+  full lower lip (0.4 cm below it); the warp then sent the real chin below the template's (5-7 cm from its surface):
+  no jaw weight, the chin stayed while the lip dropped. The chin is now the bulge below the fold under the lower lip
+  (-0.8 cm): the whole chin follows the jaw.
+- Also: ARP jaw-side bones (`c_lips_bot*`, `c_teeth_bot*`, `tong_*`) recognised for `b4b_face_jawsrc`.
+- Not fixed: the rigged model's inner upper lip hangs slightly into an opened mouth (AH), the unrigged model's lips
+  part at the corners in a smile (its mouth interior is the generated one); both small at talking strength.
+- Live (lane 2, isolated Flatpak Steam account, `B4B_STEAM=flatpak B4B_GPU=4090`; native gameprocess_log unchanged,
+  2545 `AppID 924970` lines before and after): `charsuite.py --only marika,rainy --vanilla --mission 2 --motion`
+  2/2 PASS, 0 new log errors, no `missing usage flag` / `bUsedWithClothing` line (dress cloth on the Body slot);
+  host FP holds the SMG with the model's own hands and bracelets; black dress with gold vines, gold circlet in game.
+  Full suite (15 characters, all with 0 flags but the rigged model's `--normal-dx`, all deterministic): 15/15 PASS
+  (`/tmp/b4b-charsuite-l2-marikafinal-final`, after merging models 1b25e15); `e2e.py --quick` 14/14
+  (`/tmp/b4b-e2e-l2-marikafinal2`). New charsuite `--motion`: talking face (client view while the host's
+  hero says a line) and the outfit on a bot running across the host's view.
