@@ -16,6 +16,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 zig="$here/../vendor/zig/zig"
 mh="$here/../vendor/minhook"
 mc="$here/../vendor/monocypher/src" puff="$here/../vendor/zlib/contrib/puff"   # the updater's signature check + inflate
+stb="$here/../vendor/stb"                                                        # the add-on shop's thumbnails (stb_image)
 flavor=dev out="$here/out" defs=()
 for a in "$@"; do
   case "$a" in
@@ -50,7 +51,7 @@ cxx_objs=()
 for f in "$im"/imgui.cpp "$im"/imgui_draw.cpp "$im"/imgui_tables.cpp "$im"/imgui_widgets.cpp "$im"/backends/imgui_impl_dx12.cpp \
          "$here"/src/overlay.cpp; do o=$(cxx_obj "$f") || exit 1; cxx_objs+=("$o"); done
 agent() {   # agent <proxy name> <output file>
-  cc -I"$mh/include" -I"$here/src" -I"$mc" -I"$mc/optional" -I"$puff" \
+  cc -I"$mh/include" -I"$here/src" -I"$mc" -I"$mc/optional" -I"$puff" -I"$stb" \
     "$here"/src/*.c "$here/proxy/$1.c" "$mh"/src/hook.c "$mh"/src/buffer.c "$mh"/src/trampoline.c "$mh"/src/hde/hde64.c \
     "$mc/monocypher.c" "$mc/optional/monocypher-ed25519.c" "$puff/puff.c" \
     "${cxx_objs[@]}" "$here/proxy/$1.def" -lws2_32 -lc++ -o "$out/$2"

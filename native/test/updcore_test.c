@@ -184,6 +184,75 @@ static void test_openssl_signatures(const char *dir) {
     free(pubhex); free(man); free(msig); free(zip); free(zsig);
 }
 
+static void test_sha_stream(void) {
+    char *a = malloc(300001);
+    for (int i = 0; i < 300001; i++) a[i] = (char)(i * 31 + i / 7);
+    uint8_t one[32], st[32];
+    upd_sha256((uint8_t *)a, 300001, one);
+    UpdSha s; upd_sha256_init(&s);
+    for (size_t o = 0, k = 1; o < 300001; o += k, k = k * 3 % 70001 + 1) upd_sha256_update(&s, a + o, o + k > 300001 ? 300001 - o : k);
+    upd_sha256_final(&s, st);
+    CHECK(!memcmp(one, st, 32));
+    upd_sha256_init(&s); upd_sha256_final(&s, st);
+    upd_sha256((uint8_t *)"", 0, one);
+    CHECK(!memcmp(one, st, 32));
+    free(a);
+}
+
+#define H64 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+static void test_catalog(const char *dir) {
+    const char *j =
+        "{\"b4bcoop-shop\": 1, \"updated\": \"2026-09-27\", \"future\": {\"x\": [1, 2]}, \"addons\": ["
+        "{\"id\": \"casual_joe\", \"name\": \"Casual Joe\", \"author\": \"b4bcoop\", \"license\": \"CC0-1.0\","
+        " \"class\": \"cosmetic\", \"adds\": [\"outfit casual_joe (mom)\", \"x\"], \"replaces\": [], \"size\": 83436658,"
+        " \"sha256\": \"" H64 "\", \"url\": \"https://github.com/o/r/releases/download/t/casual_joe.pak\","
+        " \"thumb\": \"https://github.com/o/r/releases/download/t/casual_joe.png\", \"thumb_sha256\": \"" H64 "\","
+        " \"min_b4bcoop\": \"0.8.0\", \"content_id\": \"94464dba3971fcf44b75446e4321d03867ea3341\"},"
+        "{\"id\": \"Bad Id\", \"name\": \"x\", \"license\": \"MIT\", \"size\": 1, \"sha256\": \"" H64 "\", \"url\": \"https://e/x\"},"
+        "{\"id\": \"nolicense\", \"name\": \"x\", \"size\": 1, \"sha256\": \"" H64 "\", \"url\": \"https://e/x\"},"
+        "{\"id\": \"plainhttp\", \"name\": \"x\", \"license\": \"MIT\", \"size\": 1, \"sha256\": \"" H64 "\", \"url\": \"http://e/x\"},"
+        "{\"id\": \"holly\", \"name\": \"Holly\", \"license\": \"CC-BY-4.0\", \"class\": \"weird\", \"replaces\": \"Holly's portrait\","
+        " \"size\": 2, \"sha256\": \"" H64 "\", \"url\": \"http://127.0.0.1:8000/holly.pak\", \"thumb\": \"https://e/t.png\"},"
+        "{\"id\": \"holly\", \"name\": \"dup\", \"license\": \"MIT\", \"size\": 1, \"sha256\": \"" H64 "\", \"url\": \"https://e/x\"}"
+        "]}";
+    ShopCatalog c; char err[200];
+    CHECK(upd_catalog_parse(j, strlen(j), &c, err, sizeof err));
+    CHECK(c.format == 1 && c.n == 2 && c.n_bad == 4 && !strcmp(c.updated, "2026-09-27"));
+    if (c.n == 2) {
+        CHECK(!strcmp(c.items[0].id, "casual_joe") && c.items[0].size == 83436658 && c.items[0].sha256[0] == 0x01);
+        CHECK(!strcmp(c.items[0].adds, "outfit casual_joe (mom); x") && !c.items[0].replaces[0] && c.items[0].thumb[0]);
+        CHECK(!strcmp(c.items[0].min_version, "0.8.0") && !strcmp(c.items[0].cls, "cosmetic") && c.items[0].content_id[0]);
+        CHECK(!strcmp(c.items[1].cls, "unknown") && !strcmp(c.items[1].replaces, "Holly's portrait"));
+        CHECK(!c.items[1].thumb[0]);   // a thumbnail without its sha256 is dropped
+    }
+    upd_catalog_free(&c);
+    CHECK(!upd_catalog_parse(j, strlen(j) - 3, &c, err, sizeof err));                  // truncated
+    CHECK(!upd_catalog_parse("{\"addons\": []}", 14, &c, err, sizeof err));            // no format key
+    CHECK(!upd_catalog_parse("{\"b4bcoop-shop\": 2, \"addons\": []}", 33, &c, err, sizeof err) && strstr(err, "newer"));
+    CHECK(upd_shop_id_ok("a") && upd_shop_id_ok("mod_ak47-2") && !upd_shop_id_ok("-x") && !upd_shop_id_ok("A") &&
+          !upd_shop_id_ok("../x") && !upd_shop_id_ok("") && !upd_shop_id_ok("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    // signed with Monocypher, then an edited byte
+    uint8_t sk[64], pk[32], seed[32], sig[64];
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(i * 5 + 1);
+    crypto_ed25519_key_pair(sk, pk, seed);
+    crypto_ed25519_sign(sig, sk, (const uint8_t *)j, strlen(j));
+    CHECK(upd_catalog_verify(j, strlen(j), sig, 64, pk, &c, err, sizeof err) && c.n == 2);
+    upd_catalog_free(&c);
+    char *e = strdup(j); e[40] ^= 1;
+    CHECK(!upd_catalog_verify(e, strlen(e), sig, 64, pk, &c, err, sizeof err) && strstr(err, "signature"));
+    free(e);
+    if (!dir) return;
+    size_t pn, cn, sn;   // OpenSSL-signed (tools/sign-release.sh sign, what the shop repo's workflow runs)
+    uint8_t *pubhex = slurp(dir, "pub.hex", &pn), *cat = slurp(dir, "catalog.json", &cn), *csig = slurp(dir, "catalog.json.sig", &sn);
+    if (pubhex && cat && csig) {
+        while (pn && (pubhex[pn - 1] == '\n' || pubhex[pn - 1] == '\r')) pubhex[--pn] = 0;
+        CHECK(upd_hex_decode((char *)pubhex, pk, 32));
+        CHECK(upd_catalog_verify((char *)cat, cn, csig, sn, pk, &c, err, sizeof err) && c.n == 1 && !strcmp(c.items[0].id, "casual_joe"));
+        upd_catalog_free(&c);
+    }
+    free(pubhex); free(cat); free(csig);
+}
+
 static void test_json(const char *dir) {
     const char *j =
         "{\"url\":\"x\",\"author\":{\"login\":\"a\",\"name\":\"not the release\",\"site_admin\":false},"
@@ -217,6 +286,8 @@ int main(int argc, char **argv) {
     test_install_filter();
     test_manifest_and_download();
     test_json(dir ? dir : ".");
+    test_sha_stream();
+    test_catalog(dir);
     if (dir) { test_zip(dir); test_openssl_signatures(dir); }
     printf("%s: %d checks, %d failed\n", fails ? "FAIL" : "ok", checks, fails);
     return fails != 0;

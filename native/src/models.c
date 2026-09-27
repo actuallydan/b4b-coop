@@ -325,6 +325,24 @@ static void build_outfits(void) {
         LOG("models: add-on outfit %s (\"%s\", %s): %s%s%s", o->name, o->title, o->addon, o->p3, o->pf[0] ? " + " : "", o->pf);
     }
 }
+// An add-on mounted at runtime (Browse tab): append its outfits; entries already built stay as they are.
+void models_outfits_refresh(void) {
+    if (n_outfs < 0) return;   // not built yet: the first use builds the whole list
+    AddonOutfit a[MAX_OUTFS];
+    int n = addons_outfits(a, MAX_OUTFS);
+    for (int i = 0; i < n && n_outfs < MAX_OUTFS; i++) {
+        int k = 0;
+        while (k < n_outfs && _stricmp(outfs[k].name, a[i].name)) k++;
+        if (k < n_outfs) continue;
+        Outf *o = &outfs[n_outfs++];
+        memset(o, 0, sizeof *o);
+        snprintf(o->name, sizeof o->name, "%s", a[i].name); snprintf(o->hero, sizeof o->hero, "%s", a[i].hero);
+        snprintf(o->title, sizeof o->title, "%s", a[i].title); snprintf(o->addon, sizeof o->addon, "%s", a[i].addon);
+        snprintf(o->p3, sizeof o->p3, "%s", a[i].mesh3p); snprintf(o->pf, sizeof o->pf, "%s", a[i].meshfp);
+        o->fpbad = !o->pf[0];
+        LOG("models: add-on outfit %s (\"%s\", %s, added now): %s%s%s", o->name, o->title, o->addon, o->p3, o->pf[0] ? " + " : "", o->pf);
+    }
+}
 static Outf *outfit_by_name(const char *name) {
     if (n_outfs < 0) build_outfits();
     for (int i = 0; i < n_outfs; i++) if (!_stricmp(outfs[i].name, name)) return &outfs[i];

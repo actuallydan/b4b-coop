@@ -10,6 +10,10 @@
 #define UPD_MAX_FILE (32u << 20)      // largest single file inside it
 
 void upd_sha256(const uint8_t *p, size_t n, uint8_t out[32]);
+typedef struct { uint32_t h[8]; uint64_t n; uint8_t buf[64]; size_t k; } UpdSha;   // streaming SHA-256 (downloads to disk)
+void upd_sha256_init(UpdSha *s);
+void upd_sha256_update(UpdSha *s, const void *p, size_t n);
+void upd_sha256_final(UpdSha *s, uint8_t out[32]);
 int upd_hex_decode(const char *hex, uint8_t *out, size_t n);   // exactly 2n hex digits -> 1
 void upd_hex(const uint8_t *p, size_t n, char *out);           // out: 2n+1 chars
 // 1 = sig is a valid ed25519 signature of msg by pub
@@ -51,3 +55,30 @@ const UpdAsset *upd_release_asset(const UpdRelease *r, const char *name);
 // Semantic versions "1.2.3" / "1.2.3-test.1": <0, 0, >0. Unparsable sorts lowest.
 int upd_version_cmp(const char *a, const char *b);
 int upd_version_valid(const char *v);
+
+// ---- add-on shop catalog (#36, docs/investigations/shop.md): catalog.json + catalog.json.sig (ed25519, release key) ----
+//   {"b4bcoop-shop": 1, "updated": "2026-09-27", "addons": [{"id": "casual_joe", "name": "...", "author": "...",
+//    "license": "CC0-1.0", "license_url": "...", "version": "1.0", "class": "cosmetic", "kinds": "textures, meshes",
+//    "adds": ["outfit casual_joe"], "replaces": [], "description": "...", "size": 123, "sha256": "<64 hex>",
+//    "content_id": "<40 hex: pak index SHA1>", "url": "https://...", "thumb": "https://...", "thumb_sha256": "<64 hex>",
+//    "min_b4bcoop": "0.8.0"}, ...]}
+// Entries that break a rule are skipped (counted in n_bad); unknown keys are ignored (newer catalogs stay readable).
+#define SHOP_FORMAT 1
+#define SHOP_MAX_ITEMS 256
+#define SHOP_MAX_PAK (1024ull << 20)   // largest add-on the shop downloads
+#define SHOP_MAX_THUMB (1u << 20)      // largest thumbnail file
+#define SHOP_MAX_CATALOG (4u << 20)
+typedef struct {
+    char id[33];                  // [a-z0-9][a-z0-9_-]*: the add-on's file is <id>.pak in b4bcoop-addons
+    char name[96], author[80], license[48], license_url[200], version[32], cls[16], kinds[80], desc[600];
+    char adds[300], replaces[300];   // the lists joined with "; " (shown to the player; the files decide what mounts live)
+    char url[400], thumb[400], min_version[40], content_id[41];
+    uint64_t size;
+    uint8_t sha256[32], thumb_sha256[32];
+} ShopItem;
+typedef struct { int format; char updated[40]; ShopItem *items; int n, n_bad; } ShopCatalog;
+int upd_catalog_parse(const char *json, size_t n, ShopCatalog *c, char *err, size_t en);   // 1 = ok; free with upd_catalog_free
+int upd_catalog_verify(const char *json, size_t n, const uint8_t *sig, size_t sig_len, const uint8_t pub[32],
+                       ShopCatalog *c, char *err, size_t en);
+void upd_catalog_free(ShopCatalog *c);
+int upd_shop_id_ok(const char *id);
