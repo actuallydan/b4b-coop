@@ -49,6 +49,33 @@ void upd_sha256(const uint8_t *p, size_t n, uint8_t out[32]) {
     for (int k = 0; k < 8; k++) { out[4 * k] = (uint8_t)(h[k] >> 24); out[4 * k + 1] = (uint8_t)(h[k] >> 16); out[4 * k + 2] = (uint8_t)(h[k] >> 8); out[4 * k + 3] = (uint8_t)h[k]; }
 }
 
+void upd_sha256_init(UpdSha *s) {
+    static const uint32_t h0[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    memcpy(s->h, h0, sizeof h0); s->n = 0; s->k = 0;
+}
+void upd_sha256_update(UpdSha *s, const void *data, size_t n) {
+    const uint8_t *p = data;
+    s->n += n;
+    if (s->k) {
+        size_t t = 64 - s->k < n ? 64 - s->k : n;
+        memcpy(s->buf + s->k, p, t); s->k += t; p += t; n -= t;
+        if (s->k < 64) return;
+        sha256_block(s->h, s->buf); s->k = 0;
+    }
+    for (; n >= 64; n -= 64, p += 64) sha256_block(s->h, p);
+    memcpy(s->buf, p, n); s->k = n;
+}
+void upd_sha256_final(UpdSha *s, uint8_t out[32]) {
+    uint8_t last[128] = {0};
+    memcpy(last, s->buf, s->k);
+    last[s->k] = 0x80;
+    size_t blocks = s->k + 9 <= 64 ? 1 : 2;
+    uint64_t bits = s->n * 8;
+    for (int k = 0; k < 8; k++) last[blocks * 64 - 1 - k] = (uint8_t)(bits >> (8 * k));
+    for (size_t k = 0; k < blocks; k++) sha256_block(s->h, last + 64 * k);
+    for (int k = 0; k < 8; k++) { out[4 * k] = (uint8_t)(s->h[k] >> 24); out[4 * k + 1] = (uint8_t)(s->h[k] >> 16); out[4 * k + 2] = (uint8_t)(s->h[k] >> 8); out[4 * k + 3] = (uint8_t)s->h[k]; }
+}
+
 static int hexval(char c) {
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
@@ -391,3 +418,114 @@ const UpdAsset *upd_release_asset(const UpdRelease *r, const char *name) {
     for (int i = 0; i < r->n_assets; i++) if (!strcmp(r->assets[i].name, name)) return &r->assets[i];
     return NULL;
 }
+
+// ---- add-on shop catalog (updcore.h) ----
+int upd_shop_id_ok(const char *id) {
+    size_t l = id ? strlen(id) : 0;
+    if (!l || l > 32 || !((id[0] >= 'a' && id[0] <= 'z') || (id[0] >= '0' && id[0] <= '9'))) return 0;
+    return strspn(id, "abcdefghijklmnopqrstuvwxyz0123456789_-") == l;
+}
+static int jlist(J *j, char *out, size_t n) {   // ["a", "b"] -> "a; b" (or a plain string)
+    if (n) out[0] = 0;
+    if (j->p < j->e && *j->p == '"') return jstr(j, out, n);
+    if (j->p >= j->e || *j->p != '[') return jskip(j);
+    j->p++; ws(j);
+    if (j->p < j->e && *j->p == ']') { j->p++; return 1; }
+    for (;;) {
+        char s[200];
+        ws(j);
+        if (j->p < j->e && *j->p == '"') {
+            if (!jstr(j, s, sizeof s)) return 0;
+            size_t k = strlen(out);
+            if (s[0] && k + strlen(s) + 3 < n) snprintf(out + k, n - k, "%s%s", k ? "; " : "", s);
+        } else if (!jskip(j)) return 0;
+        ws(j);
+        if (j->p >= j->e) return 0;
+        if (*j->p == ',') { j->p++; continue; }
+        if (*j->p == ']') { j->p++; return 1; }
+        return 0;
+    }
+}
+typedef struct { ShopItem it; char sha[80], tsha[80]; int has_size; } ItemTmp;
+static int item_member(J *j, const char *key, void *ctx) {
+    ItemTmp *t = ctx;
+    ShopItem *i = &t->it;
+    if (!strcmp(key, "id")) return jstr_or_null(j, i->id, sizeof i->id);
+    if (!strcmp(key, "name")) return jstr_or_null(j, i->name, sizeof i->name);
+    if (!strcmp(key, "author")) return jstr_or_null(j, i->author, sizeof i->author);
+    if (!strcmp(key, "license")) return jstr_or_null(j, i->license, sizeof i->license);
+    if (!strcmp(key, "license_url")) return jstr_or_null(j, i->license_url, sizeof i->license_url);
+    if (!strcmp(key, "version")) return jstr_or_null(j, i->version, sizeof i->version);
+    if (!strcmp(key, "class")) return jstr_or_null(j, i->cls, sizeof i->cls);
+    if (!strcmp(key, "kinds")) return jstr_or_null(j, i->kinds, sizeof i->kinds);
+    if (!strcmp(key, "description")) return jstr_or_null(j, i->desc, sizeof i->desc);
+    if (!strcmp(key, "adds")) return jlist(j, i->adds, sizeof i->adds);
+    if (!strcmp(key, "replaces")) return jlist(j, i->replaces, sizeof i->replaces);
+    if (!strcmp(key, "url")) return jstr_or_null(j, i->url, sizeof i->url);
+    if (!strcmp(key, "thumb")) return jstr_or_null(j, i->thumb, sizeof i->thumb);
+    if (!strcmp(key, "min_b4bcoop")) return jstr_or_null(j, i->min_version, sizeof i->min_version);
+    if (!strcmp(key, "content_id")) return jstr_or_null(j, i->content_id, sizeof i->content_id);
+    if (!strcmp(key, "sha256")) return jstr_or_null(j, t->sha, sizeof t->sha);
+    if (!strcmp(key, "thumb_sha256")) return jstr_or_null(j, t->tsha, sizeof t->tsha);
+    if (!strcmp(key, "size") && j->p < j->e && *j->p >= '0' && *j->p <= '9') { t->has_size = 1; return jnum(j, &i->size); }
+    return jskip(j);
+}
+static int url_ok(const char *u) {   // https:// (http:// only for the dev test server; the downloader refuses it in player builds)
+    if (strncmp(u, "https://", 8) && strncmp(u, "http://127.0.0.1", 16)) return 0;
+    for (const unsigned char *c = (const unsigned char *)u; *c; c++) if (*c <= 32 || *c >= 127 || *c == '"' || *c == '\\') return 0;
+    return strlen(u) < 399;
+}
+static int item_ok(ItemTmp *t) {
+    ShopItem *i = &t->it;
+    if (!upd_shop_id_ok(i->id) || !i->name[0] || !i->license[0] || !url_ok(i->url)) return 0;
+    if (!t->has_size || !i->size || i->size > SHOP_MAX_PAK || !upd_hex_decode(t->sha, i->sha256, 32)) return 0;
+    if (strcmp(i->cls, "cosmetic") && strcmp(i->cls, "gameplay")) snprintf(i->cls, sizeof i->cls, "unknown");
+    if (i->min_version[0] && !upd_version_valid(i->min_version)) return 0;
+    if (i->thumb[0] && (!url_ok(i->thumb) || !upd_hex_decode(t->tsha, i->thumb_sha256, 32))) i->thumb[0] = 0;   // no picture
+    if (i->content_id[0] && (strlen(i->content_id) != 40 || strspn(i->content_id, "0123456789abcdef") != 40)) i->content_id[0] = 0;
+    return 1;
+}
+static int catalog_member(J *j, const char *key, void *ctx) {
+    ShopCatalog *c = ctx;
+    if (!strcmp(key, "b4bcoop-shop") && j->p < j->e && *j->p >= '0' && *j->p <= '9') { uint64_t f; if (!jnum(j, &f)) return 0; c->format = (int)(f > 1000 ? 1000 : f); return 1; }
+    if (!strcmp(key, "updated")) return jstr_or_null(j, c->updated, sizeof c->updated);
+    if (!strcmp(key, "addons") && j->p < j->e && *j->p == '[') {
+        j->p++; ws(j);
+        if (j->p < j->e && *j->p == ']') { j->p++; return 1; }
+        for (;;) {
+            ItemTmp *t = calloc(1, sizeof *t);
+            if (!t) return 0;
+            ws(j);
+            if (!jobject(j, item_member, t)) { free(t); return 0; }
+            int dup = 0;
+            for (int k = 0; k < c->n && !dup; k++) dup = !strcmp(c->items[k].id, t->it.id);
+            if (item_ok(t) && !dup && c->n < SHOP_MAX_ITEMS) c->items[c->n++] = t->it;
+            else c->n_bad++;
+            free(t);
+            ws(j);
+            if (j->p >= j->e) return 0;
+            if (*j->p == ',') { j->p++; continue; }
+            if (*j->p == ']') { j->p++; return 1; }
+            return 0;
+        }
+    }
+    return jskip(j);
+}
+int upd_catalog_parse(const char *json, size_t n, ShopCatalog *c, char *err, size_t en) {
+    memset(c, 0, sizeof *c);
+    if (n > SHOP_MAX_CATALOG) ERR("add-on list too large");
+    c->items = calloc(SHOP_MAX_ITEMS, sizeof *c->items);
+    if (!c->items) ERR("out of memory");
+    J j = {json, json + n, 0};
+    if (!jobject(&j, catalog_member, c)) { upd_catalog_free(c); ERR("the add-on list is damaged (bad JSON)"); }
+    if (!c->format) { upd_catalog_free(c); ERR("not a b4bcoop add-on list"); }
+    if (c->format > SHOP_FORMAT) { upd_catalog_free(c); ERR("the add-on list needs a newer b4bcoop (Updates tab)"); }
+    return 1;
+}
+int upd_catalog_verify(const char *json, size_t n, const uint8_t *sig, size_t sig_len, const uint8_t pub[32],
+                       ShopCatalog *c, char *err, size_t en) {
+    memset(c, 0, sizeof *c);
+    if (!upd_sig_ok((const uint8_t *)json, n, sig, sig_len, pub)) ERR("the add-on list's signature is not valid (not signed with the b4bcoop release key)");
+    return upd_catalog_parse(json, n, c, err, en);
+}
+void upd_catalog_free(ShopCatalog *c) { free(c->items); c->items = NULL; c->n = 0; }

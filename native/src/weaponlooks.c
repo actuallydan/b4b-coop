@@ -81,6 +81,24 @@ static void build_looks(void) {
             l->path[0], l->path[1], l->path[2]);
     }
 }
+// An add-on mounted at runtime (Browse tab): append its weapon looks; built entries stay.
+void wlooks_refresh(void) {
+    if (n_looks < 0) return;
+    AddonWeapon a[MAX_LOOKS];
+    int n = addons_weapons(a, MAX_LOOKS);
+    for (int i = 0; i < n && n_looks < MAX_LOOKS; i++) {
+        int k = 0;
+        while (k < n_looks && _stricmp(looks[k].name, a[i].name)) k++;
+        if (k < n_looks) continue;
+        Look *l = &looks[n_looks++];
+        memset(l, 0, sizeof *l);
+        snprintf(l->name, sizeof l->name, "%s", a[i].name); snprintf(l->code, sizeof l->code, "%s", a[i].code);
+        snprintf(l->title, sizeof l->title, "%s", a[i].title); snprintf(l->addon, sizeof l->addon, "%s", a[i].addon);
+        snprintf(l->path[M_FP], 200, "%s", a[i].fp); snprintf(l->path[M_SM], 200, "%s", a[i].sm3p);
+        snprintf(l->path[M_SKM], 200, "%s", a[i].skm3p);
+        LOG("wlooks: add-on weapon look %s for %s (\"%s\", %s, added now)", l->name, l->code, l->title, l->addon);
+    }
+}
 static Look *look_by_name(const char *name) {
     if (n_looks < 0) build_looks();
     for (int i = 0; i < n_looks; i++) if (!_stricmp(looks[i].name, name)) return &looks[i];

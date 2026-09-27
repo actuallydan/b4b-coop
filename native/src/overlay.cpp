@@ -30,6 +30,7 @@
 #include <math.h>
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
+#include "imgui_internal.h"   // ImGui::RegisterUserTexture (ov_texture)
 extern "C" {
 #include "log.h"
 #include "cmds.h"
@@ -119,8 +120,9 @@ static int get_buffers(IDXGISwapChain3 *sc) {
     }
     return 1;
 }
+#define SRV_SLOTS 256   // font atlas pages + ov_texture pictures (at most OV_MAX_TEX), never freed
 static void srv_alloc(ImGui_ImplDX12_InitInfo *, D3D12_CPU_DESCRIPTOR_HANDLE *c, D3D12_GPU_DESCRIPTOR_HANDLE *g) {
-    UINT i = srv_used < 64 ? srv_used++ : 63;   // the font atlas (and a few more textures in 1.92): never freed here
+    UINT i = srv_used < SRV_SLOTS ? srv_used++ : SRV_SLOTS - 1;   // ov_texture keeps well below the end
     *c = srv_heap->GetCPUDescriptorHandleForHeapStart(); c->ptr += (SIZE_T)i * srv_inc;
     *g = srv_heap->GetGPUDescriptorHandleForHeapStart(); g->ptr += (UINT64)i * srv_inc;
 }
@@ -133,7 +135,7 @@ static int init_render(IDXGISwapChain3 *sc) {
     D3D12_DESCRIPTOR_HEAP_DESC hd = {};
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = MAXBUF;
     if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap)))) return 0;
-    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 64; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = SRV_SLOTS; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&srv_heap)))) return 0;
     rtv_inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     srv_inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -707,6 +709,27 @@ extern "C" int ov_key(const char *label, int *vk) {
     if (vis[0]) { ImGui::SameLine(); ImGui::TextUnformatted(vis); }
     if (const char *d = drive_take(label, 2)) { *vk = cmds_parse_key(d); r = 1; }
     return r;
+}
+// Pictures (shop thumbnails): an RGBA copy handed to ImGui's texture list; the DX12 backend uploads it on the render
+// thread with the next frame. Kept for the whole session (never destroyed: no frame in flight can still use a freed
+// one); OV_MAX_TEX of them at most, so the descriptor heap (SRV_SLOTS) never runs out.
+static ImTextureData *user_tex[OV_MAX_TEX + 1];
+static int n_user_tex;
+extern "C" int ov_texture(const unsigned char *rgba, int w, int h) {
+    LOCKED;
+    if (!imgui_ready || !rgba || w <= 0 || h <= 0 || w > 512 || h > 512 || n_user_tex >= OV_MAX_TEX) return 0;
+    ImTextureData *t = IM_NEW(ImTextureData)();
+    t->Create(ImTextureFormat_RGBA32, w, h);
+    memcpy(t->Pixels, rgba, (size_t)w * h * 4);
+    ImGui::RegisterUserTexture(t);
+    user_tex[++n_user_tex] = t;
+    return n_user_tex;
+}
+extern "C" void ov_image(int tex, float w_em, float h_em) {
+    LOCKED;
+    ImVec2 sz(ImGui::GetFontSize() * w_em, ImGui::GetFontSize() * h_em);
+    if (tex > 0 && tex <= n_user_tex) ImGui::Image(user_tex[tex]->GetTexRef(), sz);
+    else ImGui::Dummy(sz);
 }
 extern "C" void ov_same_line(void) { LOCKED; ImGui::SameLine(); }
 extern "C" void ov_separator(void) { LOCKED; ImGui::Separator(); }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Fetch build/tooling dependencies into vendor/ (not committed): zig (cross-compiler), MinHook, Dear ImGui, Monocypher
-# and zlib's puff (the in-game updater's signature check and inflate, #34), embeddable Windows Python (runs inside the
+# and zlib's puff (the in-game updater's signature check and inflate, #34), stb_image (the add-on shop's thumbnails,
+# #36), embeddable Windows Python (runs inside the
 # game's Proton prefix for memory tooling). Also creates the host .venv.
 #   tools/fetch-deps.sh          everything (development)
-#   tools/fetch-deps.sh --build  only what native/build.sh needs: zig + MinHook + ImGui + Monocypher + puff (CI)
+#   tools/fetch-deps.sh --build  only what native/build.sh needs: zig + MinHook + ImGui + Monocypher + puff + stb (CI)
 # zig, MinHook, ImGui, Monocypher and zlib are pinned (version + sha256, commit; ImGui, Monocypher and puff also the
 # sha256 of the files the build compiles) so every build uses the same compiler and libraries.
 set -euo pipefail
@@ -22,6 +23,8 @@ MONOCYPHER_SHA256=afbfd61450ebe219cd9e01d3897f914b0c9351d0a0593bd64b3eb34b612703
 MONOCYPHER_FILES="src/monocypher.c src/monocypher.h src/optional/monocypher-ed25519.c src/optional/monocypher-ed25519.h"
 ZLIB_COMMIT=51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf                             # madler/zlib v1.3.1 (zlib licence): contrib/puff
 PUFF_SHA256=6da25c1bcc606585566da8d6af3c7209657ee4ec5c67f116e13e52197e86b1a5      # puff.c + puff.h, concatenated
+STB_COMMIT=2c980bb59875b0d32144a71867fbdebb2f77cd20                              # nothings/stb (public domain / MIT): stb_image v2.30
+STB_IMAGE_SHA256=594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3 # stb_image.h
 build_only=0; [[ ${1:-} == --build ]] && build_only=1
 
 if [[ ! -x "$v/zig/zig" ]]; then
@@ -61,6 +64,10 @@ pinned_git monocypher https://github.com/LoupVaillant/Monocypher.git "$MONOCYPHE
 pinned_git zlib https://github.com/madler/zlib.git "$ZLIB_COMMIT"                            # updater: inflate (puff)
 [[ $(cd "$v/zlib/contrib/puff" && cat puff.c puff.h | sha256sum | cut -d' ' -f1) == "$PUFF_SHA256" ]] ||
   { echo "vendor/zlib does not match the pinned sources ($ZLIB_COMMIT)" >&2; exit 1; }
+
+pinned_git stb https://github.com/nothings/stb.git "$STB_COMMIT"                              # shop: thumbnails
+[[ $(sha256sum < "$v/stb/stb_image.h" | cut -d' ' -f1) == "$STB_IMAGE_SHA256" ]] ||
+  { echo "vendor/stb does not match the pinned sources ($STB_COMMIT)" >&2; exit 1; }
 
 if [[ $build_only == 0 ]]; then
   if [[ ! -x "$v/winpy/python.exe" ]]; then

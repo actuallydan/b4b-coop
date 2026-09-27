@@ -31,5 +31,7 @@ cp "$here/fixtures/release-latest.json" "$tmp/"
 openssl genpkey -algorithm ed25519 -out "$tmp/key.pem" 2>/dev/null
 "$root/tools/sign-release.sh" pubhex "$tmp/key.pem" > "$tmp/pub.hex"
 "$root/tools/sign-release.sh" manifest "$tmp/release.zip" 0.6.2 2 > "$tmp/b4bcoop-update.txt"
-"$root/tools/sign-release.sh" sign "$tmp/key.pem" "$tmp/b4bcoop-update.txt" "$tmp/release.zip" >/dev/null
+printf '{"b4bcoop-shop": 1, "addons": [{"id": "casual_joe", "name": "Casual Joe", "license": "CC0-1.0", "size": 5, "sha256": "%s", "url": "https://github.com/o/r/releases/download/t/casual_joe.pak"}]}\n' \
+  "$(printf hello | sha256sum | cut -d' ' -f1)" > "$tmp/catalog.json"   # the add-on shop's catalog (#36)
+"$root/tools/sign-release.sh" sign "$tmp/key.pem" "$tmp/b4bcoop-update.txt" "$tmp/release.zip" "$tmp/catalog.json" >/dev/null
 "$tmp/updcore_test" "$tmp"
