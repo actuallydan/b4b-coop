@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Back 4 Blood .pak reader/writer (pak v9 as the game accepts it; docs/investigations/model-mods-paks.md).
+Reads v8 too (221-byte footer without bIndexIsFrozen, used by some community paks); always writes v9.
 
 B4B's pak format is stock UE 4.25 pak v9 (FrozenIndex) with three changes:
   - footer field order: Version u32, Magic u32, EncryptionKeyGuid[16], bEncryptedIndex u8, IndexHash[20] (SHA1),
@@ -34,15 +35,26 @@ def entry(offset, size, sha1):
 
 
 def read_footer(f):
+    """Footer fields. Probes v9 (222 bytes) then v8 (221, no bIndexIsFrozen), like the engine and the agent."""
     f.seek(0, 2)
     size = f.tell()
-    f.seek(size - FOOTER)
-    ft = f.read(FOOTER)
+    f.seek(max(0, size - FOOTER))
+    tail = f.read(FOOTER)
+    ft = tail[-FOOTER:]
+    for fs in (FOOTER, FOOTER - 1):
+        if len(tail) >= fs and struct.unpack_from("<I", tail, len(tail) - fs + 4)[0] == MAGIC:
+            ft = tail[len(tail) - fs:]
+            break
+    if len(ft) < 61:
+        return dict(version=0, magic=0, footer_size=len(ft), file_size=size)
+    fs = len(ft)
     ver, magic = struct.unpack_from("<II", ft, 0)
     isz, ioff = struct.unpack_from("<QQ", ft, 45)
-    return dict(version=ver, magic=magic, guid=ft[8:24].hex(), encrypted_index=ft[24], index_sha1=ft[25:45].hex(),
-                index_size=isz, index_offset=ioff, frozen=ft[61],
-                compression=[ft[62 + 32 * i:94 + 32 * i].split(b"\0")[0].decode() for i in range(5)], file_size=size)
+    names = ft[fs - 160:]
+    return dict(version=ver, magic=magic, footer_size=fs, guid=ft[8:24].hex(), encrypted_index=ft[24],
+                index_sha1=ft[25:45].hex(), index_size=isz, index_offset=ioff, frozen=ft[61] if fs == FOOTER else 0,
+                compression=[names[32 * i:32 * i + 32].split(b"\0")[0].decode("latin1") for i in range(5)],
+                file_size=size)
 
 
 def read_index(path, aes_key=None):

@@ -27,7 +27,7 @@ Player page: docs/COMMANDS.md "Add-ons".
 Folder (default `<DLL dir>\..\..\..\b4bcoop-addons`, normalized with GetFullPathName; ini `addons_dir=<windows path>`,
 `addons=0` = off). Only `*.pak` files directly in it.
 
-Add-on pak = pak v9, magic 0x18772, uncompressed, plain index, mount point `../../../`, names `Gobi/Content/...`
+Add-on pak = pak v9 (or v8, §1a), magic 0x18772, uncompressed, plain index, mount point `../../../`, names `Gobi/Content/...`
 (or `Engine/Content/...`), plus `b4bcoop-addoninfo.txt` at the root (`../../../b4bcoop-addoninfo.txt` in the
 engine's file system: harmless, never read by the game, excluded from conflicts):
 ```
@@ -48,11 +48,27 @@ survivors ridden weapons items ui sounds maps misc.
 Content id for #22: the index SHA1 from the pak footer (it covers every entry's SHA1), logged as `id <sha1>` and
 printed by `addon.py pack/info`.
 
+### 1a. Pak v8 (older community paks)
+Some community B4B paks are **v8**: same B4B format (magic 0x18772, same field order, entry layout, uncompressed,
+plain index), but a **221-byte footer** with no `bIndexIsFrozen` byte (compression names at +61 instead of +62).
+The engine accepts them as is: `FPakFile::Initialize` probes footer sizes 9..1. The loader does the same
+(`native/src/pakfmt.c`, unit tests `native/test/pakfmt_test.c`): 222-byte window with v9, else 221 with v8; any other
+version, v8 with a 222 footer or v9 with 221, stock magic, encrypted or frozen index, index outside the file ->
+the usual `damaged, or not a Back 4 Blood add-on pak (magic .. v..)` / `encrypted pak index` / `bad index position`.
+The index SHA1 check and content id are unchanged (a v8 pak and its v9 re-headered copy have the same id). The
+per-add-on log line ends in `, pak v8`. `modkit/b4bpak.py` reads v8 footers (always writes v9); `addon.py info/check`
+apply the same checks with the same messages, and `addon.py pack <v8.pak>` repacks as v9.
+
+Live (dev build, lane 2, 2026-09-27): three original v8 character paks (270/162/158 files, 1.1 GB) dropped unchanged
+into `b4bcoop-addons`: `addons: 1. ... id 76211819..., pak v8`, `paks: mount ... order 1000 -> ok (unsigned)` for all
+three, `no .sig lookup for mod pak ...`, `precacher: first read from a mod pak`; no `Fatal`/`Corrupt file`. In Fort
+Hope, `/model holly_elite_00` showed the replacement model in third person (screenshot kept local).
+
 ## 2. Loader (addons.c)
 - `addons_scan()` runs in DllMain from `paks_early_init` (before the engine exists; kernel32 file I/O only): reads
   `b4bcoop.ini` (`addons`, `addons_dir`), `addonlist.txt`, lists `*.pak`, appends new ones, rewrites the list if it
-  changed (`.tmp` + MoveFileEx), then for each present add-on in order: footer checks (magic, version 9, index not
-  encrypted/frozen, bounds), reads the index and **verifies its SHA1** (a corrupt index would be an engine Fatal at
+  changed (`.tmp` + MoveFileEx), then for each present add-on in order: footer checks (`pakfmt.c`: magic, version 9 or 8
+  (§1a), index not encrypted/frozen, bounds), reads the index and **verifies its SHA1** (a corrupt index would be an engine Fatal at
   mount), walks the entries (bounds-checked), reads the addoninfo entry (uncompressed, data at entry offset + 53 bytes
   of in-data FPakEntry). Returns the number of add-ons to mount. Non-ASCII file or folder names are refused (the
   exemption matching compares narrowed paths).
