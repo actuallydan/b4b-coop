@@ -38,3 +38,24 @@ replaced by the blank one from the incident: restored (`was: publicId offline.76
 13/13 (`-173601`). One earlier run failed only the loopback check: the host had 4 UDP sockets on 0.0.0.0 with random
 ports for one sample during a slow sign-in (EOS_TimedOut; lane 1 busy at the time), unrelated to this change
 (`/tmp/b4b-e2e-l2-20260925-171946/ss-samples.txt`).
+
+## Flatpak mode: the second account's own golden profiles (2026-09-26)
+`B4B_STEAM=flatpak` runs lane 2 on account dreamsofants (76561198994546085). The lane-2 prefixes are clones of Dan's
+real prefix, so their profile and `profile-golden/` are Hergmgurk's (publicId `p64c...`, 15 decks, burn cards). That
+`.sav` doesn't load under dreamsofants (`[PlayerProfileSettings] Failed to deserialize` → blank profile: publicId
+empty, 0 decks, 0 consumables, SP 73; `/tmp/b4b-e2e-l2-20260926-181741/profile*-after.json`), so e2e's burn-card and
+profile-diff checks failed. dreamsofants' own real profile is a fresh 2.4 KB one (no decks, no burn cards).
+- tools/testprefix.py: one golden set per Steam mode. Flatpak mode uses `<prefix>/profile-golden-flatpak/`;
+  `profile_health` there also rejects another account's profile (publicId not empty / not `offline.<dreamsofants>`),
+  counts burn cards (`consumables` rows `Burn_*`, acquired - spent) and accepts SP + (decks or burn cards). No
+  fallback to the real prefix in flatpak mode (it holds Hergmgurk's). `--golden-from M` copies test M's golden set.
+- Making it (in the game, lane 2, flatpak, holding its lock): one instance on test1, then on the host with dev
+  commands: `cheat cheats on`, `cheat supply +50000`, `cheat unlockall` (the backup lands next to the save),
+  `duffelreward 0 <product guid> 30` for several burn cards (the duffel-bag issuer: AdjustConsumableQuantity on the
+  local profile), `cheat cheats off`; wait for the deferred save, stop, `testprefix.py 1 --golden`, then
+  `testprefix.py 2..5 --golden-from 1`.
+- Done 2026-09-26: test1 seeded with dreamsofants' real 2.4 KB profile (loads: `[PlayerProfileSettings] Deserialized`),
+  then the steps above → `publicId -, 0 deck(s), SP 50073, 300 burn card(s), 74663 B` (372 unlocks; `burncard list`: 11
+  playable), golden set on lane2 test1-5. `B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/e2e.py --quick`: 13/13
+  (`/tmp/b4b-e2e-l2-20260926-200831`; host Burn_RollGunHG, client Burn_RollGunAR, client SP +73), native
+  gameprocess_log still 1328 `adding PID` lines. Solo decks: none (0 decks is fine: e2e never reads a deck).

@@ -106,8 +106,13 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     docs/investigations/model-swap.md, player page docs/commands-models.md.
   - `cheats.c` Cheats: opt-in, host-only sandbox through chat (`/cheats on|off`, then `/god /heal /revive /ammo /copper
     /card /fly /noclip /walk /tp /freecam /size /horde /director /spawn /killall /freeze /slomo /win /lose`, host's
-    own save `/supply /unlockall`); off again back in camp; every cheat touching others is a host notice; a map with
-    cheats on sends remote players no rewards (rewards.c), stats or achievements. Dev `cheat <cmd>`, `cheatprobe`.
+    own save `/supply /unlockall`); off when a mission starts from camp and back in camp (next chapter keeps them);
+    every cheat touching others is a host notice; a map with cheats on sends remote players no rewards (rewards.c),
+    stats or achievements (their post-round summary shows 0, #30). Dev `cheat <cmd>`, `cheatprobe` (`killas <#n>`:
+    kills credited to a player).
+  - `poststats.c` every build logs each player's post-round values once per post-round screen (`poststats:` lines,
+    host and clients). Dev: `poststats`, UI probes `uitext <path part>` (live TextBlock texts), `uihide <suffix> [vis]`,
+    `callw <suffix> <Func>`, `funcs <Class>`, `objat <addr>`. docs/investigations/post-round-stats.md.
     Player reference: the Cheats section of `docs/COMMANDS.md`. Host-side only, no protocol bump.
   - `thirdperson.c` `/thirdperson` (CMD_ANYONE, host and clients, no cheats): the local hero's own over-the-shoulder
     camera (PlayerViewComponent +0x200 + UpdateView), first person while aiming, game's own 3P moments left alone; on
@@ -219,7 +224,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
 - **Test prefixes are shared between sessions: change them (`testprefix.py`, `B4B_FRESH`, `B4B_BLANK`, editing their
   `b4bcoop.ini` or saves) only while holding `launch/gamelock.sh`.** `testprefix.py` refuses to touch a prefix a game
   process is running on (`B4B_PREFIX` in /proc/<pid>/environ) unless `--force`.
-- Each prefix keeps a golden profile copy in `profile-golden/` (clone time; e2e.py restores it).
+- Each prefix keeps a golden profile copy in `profile-golden/` (clone time; e2e.py restores it). `B4B_STEAM=flatpak`
+  uses its own set, `profile-golden-flatpak/` (dreamsofants' saves, made in the game: a save only loads under the
+  account that wrote it); docs/investigations/test-profiles.md "Flatpak mode".
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.
