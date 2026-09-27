@@ -48,7 +48,7 @@ or accept their Steam invite. It works with your game closed or running: the gam
 Offline and joins them.
 
 Only the host's **Steam friends** can join. Press **`~`** in game for the b4bcoop window: players (kick, ban, lock),
-join/leave, camera, flashlight, keys, cheats. The same things work as chat commands (`/help` in the game's chat).
+join/leave, camera, flashlight, keys, cheats, updates. The same things work as chat commands (`/help` in the game's chat).
 
 ## Options
 All optional. Open `Gobi\Binaries\Win64\b4bcoop.ini` in a text editor and remove the `;` in front of a line to turn
@@ -69,6 +69,14 @@ default (`addons_policy=`). Details: [docs/COMMANDS.md](docs/COMMANDS.md#add-ons
 
 All chat commands and options: [docs/COMMANDS.md](docs/COMMANDS.md).
 
+## Update
+In game: press **`~`**, tab **Updates** → **Check for updates** → **Download and install on next start**, then
+restart the game. Nothing is downloaded or changed until you click; the download must carry the b4bcoop release
+signature, and your `b4bcoop.ini`, add-ons and bans stay as they are. **Go back to ...** in the same tab returns to
+the version you had. Details: [docs/COMMANDS.md](docs/COMMANDS.md#updates).
+
+By hand: download the new zip from [Releases](../../releases) and extract it over the old files (Install, step 2).
+
 ## Uninstall
 Delete these files from the game folder (Steam → right-click Back 4 Blood → Manage → Browse local files):
 1. Next to `Back4Blood.exe`: 
@@ -77,6 +85,7 @@ Delete these files from the game folder (Steam → right-click Back 4 Blood → 
     - `b4bcoop-COMMANDS.txt`
     - `b4bcoop-LICENSE.txt`
     - the `b4bcoop-addons` folder (only there if you installed add-ons).
+    - the `b4bcoop-update` folder (only there if you updated from the game).
 2. In `Gobi\Binaries\Win64`:
     - `X3DAudio1_7.dll`
     - `b4bcoop.ini`
@@ -93,8 +102,8 @@ progress stays either way.
 Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `b4bcoop-modkit-<version>.zip` on [Releases](../../releases)).
 
 ## Troubleshooting
-- **"Everyone needs the same version"**: someone has another b4bcoop version. Everyone downloads the latest release
-  and extracts it again (step 3 of Install).
+- **"Everyone needs the same version"**: someone has another b4bcoop version. Press `~`, tab **Updates**: it offers
+  the host's version (or the latest). Or everyone downloads the latest release and extracts it again (Install).
 - **Play online / with Easy Anti-Cheat** without removing the mod: add `-b4bcoop=off` to the launch options (Steam →
   right-click Back 4 Blood → Properties → Launch Options). The game then starts normally. Remove it again to play
   co-op.

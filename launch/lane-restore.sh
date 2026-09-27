@@ -13,7 +13,7 @@
 #                             `gamelock.sh release` calls it (after multi-stop.sh)
 #   lane-restore.sh status    backup present or not; player's game running or not
 #   lane-restore.sh busy      print PIDs of the player's own game in this lane's folder (Dan playing); exit 1 if none
-# Covered: top-level files of the game root and Gobi/Binaries/Win64, and <game>/b4bcoop-addons/ (the only places a
+# Covered: top-level files of the game root and Gobi/Binaries/Win64, <game>/b4bcoop-addons/ and <game>/b4bcoop-update/ (the only places a
 # lane writes); compatdata and saves are never touched.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -22,7 +22,8 @@ source "$here/lane.sh"
 game="$lane_game" bin="$lane_game/Gobi/Binaries/Win64"
 bk="$HOME/.local/share/b4b-coop/lane$B4B_LANE-player-backup"
 logs="$HOME/.local/share/b4b-coop/lane$B4B_LANE-logs"
-dirs=(b4bcoop-addons)   # directories in the game root covered as a whole (add-ons live next to Back4Blood.exe)
+dirs=(b4bcoop-addons b4bcoop-update)   # directories in the game root covered as a whole (add-ons and the in-game
+                                      # updater's staging/backup folder live next to Back4Blood.exe)
 # the game's own files: never copied, never removed
 is_game_file() { case "$1" in Back4Blood.exe|start_protected_game.exe|libScePad.dll) return 0 ;; esac; return 1; }
 # files a lane run may add; anything else unknown is left alone and reported

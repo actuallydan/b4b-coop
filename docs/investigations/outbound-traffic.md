@@ -97,6 +97,12 @@ calling module, first-seen time and reason. `b4b.py netguard allow <host>` allow
   `SetNetworkStatus(Disabled)`, returned 0, and `GetNetworkStatus` read 1 after ticking, with no lookups. With
   `netguard_eos=0`, EOS immediately tried `api.epicgames.dev` (blocked) and fell back to status 2 (Offline).
 
+### Updater exception (#34)
+`netguard_updater_scope(1/0)` wraps each player-started update check or download (updater.c): only while it is open,
+`api.github.com`, `github.com` and `*.githubusercontent.com` pass the name hooks (reason `updater`), their resolved IPs
+take TCP (valid only inside the scope), and WinHTTP's own port-443 connects pass (`updater-winhttp`, for Windows'
+asynchronous resolver). Outside it they are blocked like any name. Details and evidence: updater.md §1.
+
 ## Risks
 - **Startup with EOS disabled and DNS failing** is equivalent to a machine without internet. The offline flow
   doesn't care (offline sign-in skips EOS and Hydra tasks): verified in-game on Proton, see below. If something

@@ -29,7 +29,8 @@
 
 enum { NG_OFF, NG_BLOCK, NG_LOG };
 enum { V_ALLOW, V_BLOCK, V_WOULD };          // verdicts recorded in the table
-enum { D_BLOCK, D_ALLOW, D_ALLOW_REMEMBER };  // decide_name(): allow + remember resolved IPs for TCP
+enum { D_BLOCK, D_ALLOW, D_ALLOW_REMEMBER, D_ALLOW_REMEMBER_UPD };  // decide_name(): allow (+ remember resolved IPs for
+                                                                   // TCP; _UPD: only while the updater scope is open)
 
 static int g_mode = NG_BLOCK, g_eos_off = 1, g_hooks;
 static CRITICAL_SECTION cs;
@@ -54,7 +55,14 @@ static int ndyn, dyn_next;
 typedef struct { int fam; uint8_t a[16]; } IpKey;
 #define MAX_IPS 256
 static IpKey ok_ips[MAX_IPS];
+static uint8_t ok_upd[MAX_IPS];               // learned from an updater-scope lookup: valid only while the scope is open
 static int nips, ip_next;
+
+// The in-game updater's scoped exception (#34, updater.c): while a player-started check or download runs, these
+// hosts resolve and their IPs take TCP; before and after, they are blocked like any other name.
+static volatile LONG g_upd_scope;
+static const char *const upd_hosts[] = {"api.github.com", "github.com", "*.githubusercontent.com"};
+static char upd_extra[112];                   // dev builds: the update_api= test server's host
 
 static char own_host[256];
 static int own_host_done;
@@ -112,6 +120,12 @@ static const char *list_rule(const char *h) {
     for (int i = 0; i < ncfg; i++) if (pattern_match(cfg_allow[i], h)) return "allowlist";
     for (int i = 0; i < ndyn; i++) if (!strcmp(dyn_allow[i], h)) return "runtime-allow";
     return NULL;
+}
+
+static int upd_rule(const char *h) {
+    if (g_upd_scope <= 0) return 0;
+    for (size_t i = 0; i < sizeof upd_hosts / sizeof *upd_hosts; i++) if (pattern_match(upd_hosts[i], h)) return 1;
+    return upd_extra[0] && !strcmp(upd_extra, h);
 }
 
 // caller holds cs
@@ -184,6 +198,11 @@ static int decide_name(const char *kind, const char *raw, void *ra) {
         LeaveCriticalSection(&cs);
         remember = why != NULL;
     }
+    if (!why && upd_rule(h)) {
+        module_of(ra, via, sizeof via);
+        note(kind, h, via, "updater", V_ALLOW);
+        return D_ALLOW_REMEMBER_UPD;
+    }
     module_of(ra, via, sizeof via);
     if (!why && trusted_module(via)) {
         why = "trusted-caller";
@@ -236,13 +255,14 @@ static const char *ip_class(const IpKey *k) {
     return NULL;
 }
 
-static void remember_ip(const struct sockaddr *sa, size_t len) {
+static void remember_ip(const struct sockaddr *sa, size_t len, int upd) {
     IpKey k; unsigned port;
     if (!ip_of(sa, (int)len, &k, &port) || ip_class(&k)) return;
     EnterCriticalSection(&cs);
     int i = 0;
     for (; i < nips; i++) if (!memcmp(&ok_ips[i], &k, sizeof k)) break;
-    if (i == nips) { ok_ips[ip_next] = k; ip_next = (ip_next + 1) % MAX_IPS; if (nips < MAX_IPS) nips++; }
+    if (i == nips) { i = ip_next; ok_ips[i] = k; ok_upd[i] = (uint8_t)upd; ip_next = (ip_next + 1) % MAX_IPS; if (nips < MAX_IPS) nips++; }
+    else if (!upd) ok_upd[i] = 0;             // also allowed for another reason: keep it
     LeaveCriticalSection(&cs);
 }
 
@@ -266,11 +286,16 @@ static int decide_addr(SOCKET s, const struct sockaddr *sa, int len, void *ra) {
     else snprintf(host, sizeof host, k.fam == AF_INET6 ? "[%s]:%u" : "%s:%u", ip, port);
     if (!why) {
         EnterCriticalSection(&cs);
-        for (int i = 0; i < nips && !why; i++) if (!memcmp(&ok_ips[i], &k, sizeof k)) why = "resolved-allowed";
+        for (int i = 0; i < nips && !why; i++)
+            if (!memcmp(&ok_ips[i], &k, sizeof k) && (!ok_upd[i] || g_upd_scope > 0)) why = ok_upd[i] ? "updater" : "resolved-allowed";
         for (int i = 0; i < ncfg && !why; i++) if (!strcmp(cfg_allow[i], ip)) why = "allowlist";
         LeaveCriticalSection(&cs);
     }
     if (!why && trusted_module(via)) why = "trusted-caller";
+    // Windows' WinHTTP may resolve asynchronously (GetAddrInfoExW with an OVERLAPPED: no IPs remembered), so while the
+    // updater scope is open, HTTPS connects made by WinHTTP itself pass too (updater.c is its only user in the game).
+    if (!why && g_upd_scope > 0 && port == 443 && (!_stricmp(via, "winhttp.dll") || !_stricmp(via, "webio.dll")))
+        why = "updater-winhttp";
     if (why) { note("tcp", host, via, why, V_ALLOW); return 1; }
     note("tcp", host, via, "public-ip", g_mode == NG_LOG ? V_WOULD : V_BLOCK);
     return g_mode == NG_LOG;
@@ -312,7 +337,7 @@ static int WSAAPI h_getaddrinfo(PCSTR node, PCSTR svc, const ADDRINFOA *hints, P
     int d = decide_name("dns", node, __builtin_return_address(0));
     if (d == D_BLOCK) { if (res) *res = NULL; NOT_FOUND(); }
     bypass(1); int r = o_getaddrinfo(node, svc, hints, res); bypass(0);
-    if (!r && res && d == D_ALLOW_REMEMBER) for (ADDRINFOA *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen);
+    if (!r && res && d >= D_ALLOW_REMEMBER) for (ADDRINFOA *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen, d == D_ALLOW_REMEMBER_UPD);
     return r;
 }
 
@@ -322,7 +347,7 @@ static int WSAAPI h_GetAddrInfoW(PCWSTR node, PCWSTR svc, const ADDRINFOW *hints
     int d = decide_name("dns", n, __builtin_return_address(0));
     if (d == D_BLOCK) { if (res) *res = NULL; NOT_FOUND(); }
     bypass(1); int r = o_GetAddrInfoW(node, svc, hints, res); bypass(0);
-    if (!r && res && d == D_ALLOW_REMEMBER) for (ADDRINFOW *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen);
+    if (!r && res && d >= D_ALLOW_REMEMBER) for (ADDRINFOW *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen, d == D_ALLOW_REMEMBER_UPD);
     return r;
 }
 
@@ -333,7 +358,7 @@ static int WSAAPI h_GetAddrInfoExA(PCSTR name, PCSTR svc, DWORD ns, LPGUID nsid,
     int d = decide_name("dns", name, __builtin_return_address(0));
     if (d == D_BLOCK) { if (res) *res = NULL; if (h) *h = NULL; NOT_FOUND(); }
     bypass(1); int r = o_GetAddrInfoExA(name, svc, ns, nsid, hints, res, tv, ov, cr, h); bypass(0);
-    if (!r && !ov && res && d == D_ALLOW_REMEMBER) for (ADDRINFOEXA *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen);
+    if (!r && !ov && res && d >= D_ALLOW_REMEMBER) for (ADDRINFOEXA *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen, d == D_ALLOW_REMEMBER_UPD);
     return r;
 }
 
@@ -345,7 +370,7 @@ static int WSAAPI h_GetAddrInfoExW(PCWSTR name, PCWSTR svc, DWORD ns, LPGUID nsi
     int d = decide_name("dns", n, __builtin_return_address(0));
     if (d == D_BLOCK) { if (res) *res = NULL; if (h) *h = NULL; NOT_FOUND(); }
     bypass(1); int r = o_GetAddrInfoExW(name, svc, ns, nsid, hints, res, tv, ov, cr, h); bypass(0);
-    if (!r && !ov && res && d == D_ALLOW_REMEMBER) for (ADDRINFOEXW *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen);
+    if (!r && !ov && res && d >= D_ALLOW_REMEMBER) for (ADDRINFOEXW *a = *res; a; a = a->ai_next) remember_ip(a->ai_addr, a->ai_addrlen, d == D_ALLOW_REMEMBER_UPD);
     return r;
 }
 
@@ -354,10 +379,10 @@ static struct hostent *WSAAPI h_gethostbyname(const char *name) {
     int d = decide_name("dns", name, __builtin_return_address(0));
     if (d == D_BLOCK) { WSASetLastError(WSAHOST_NOT_FOUND); return NULL; }
     bypass(1); struct hostent *he = o_gethostbyname(name); bypass(0);
-    if (he && d == D_ALLOW_REMEMBER && he->h_addrtype == AF_INET)
+    if (he && d >= D_ALLOW_REMEMBER && he->h_addrtype == AF_INET)
         for (char **p = he->h_addr_list; p && *p; p++) {
             struct sockaddr_in a = {0}; a.sin_family = AF_INET; memcpy(&a.sin_addr, *p, 4);
-            remember_ip((struct sockaddr *)&a, sizeof a);
+            remember_ip((struct sockaddr *)&a, sizeof a, d == D_ALLOW_REMEMBER_UPD);
         }
     return he;
 }
@@ -582,6 +607,13 @@ void netguard_init(void) {
         LOG("netguard: LdrRegisterDllNotification unavailable; EOS falls back to DNS blocking only");
     LOG("netguard: armed, mode=%s, %d hooks, eos=%s, %d allowlist entr%s", mode_name(), g_hooks,
         g_eos_off ? "disable" : "leave", ncfg, ncfg == 1 ? "y" : "ies");
+}
+
+void netguard_updater_scope(int on, const char *extra_host) {
+    if (on) {
+        if (extra_host) { EnterCriticalSection(&cs); lower_trim(upd_extra, sizeof upd_extra, extra_host); LeaveCriticalSection(&cs); }
+        if (InterlockedIncrement(&g_upd_scope) == 1) LOG("netguard: updater scope open (GitHub release hosts allowed)");
+    } else if (InterlockedDecrement(&g_upd_scope) == 0) LOG("netguard: updater scope closed");
 }
 
 void netguard_allow_host(const char *addr) {

@@ -6,7 +6,9 @@
 #   Gobi/Binaries/Win64/X3DAudio1_7.dll   the mod (Windows and Linux/Steam Deck, no launch options)
 #   Gobi/Binaries/Win64/b4bcoop.ini       settings (all optional: no ini = host by default, Steam joins only)
 #   b4bcoop-README.txt, b4bcoop-COMMANDS.txt (docs/COMMANDS.md, CRLF), b4bcoop-LICENSE.txt
-# Plus dist/SHA256SUMS. The zip is reproducible. CI runs this on a v* tag (.github/workflows/release.yml).
+# Plus dist/SHA256SUMS and dist/b4bcoop-update.txt, the in-game updater's manifest (version, protocol, zip size and
+# SHA-256; tools/sign-release.sh manifest), which release.yml signs with the release key (#34). The zip is
+# reproducible. CI runs this on a v* tag (.github/workflows/release.yml).
 # b4bcoop-README.txt mirrors README.md's Install / Play / Options / Remove / Troubleshooting sections: keep them in sync.
 set -euo pipefail
 # Info-ZIP reads $ZIP and $ZIPOPT as default options; never let a caller's env change the archive.
@@ -16,7 +18,7 @@ version=$(sed -n 's/^version=//p' "$root/VERSION") protocol=$(sed -n 's/^protoco
 "$root/native/build.sh" --release >/dev/null
 rel="$root/native/out/release"
 dist="$root/dist"; out="$dist/b4bcoop"; zip="b4bcoop-$version.zip"
-rm -rf "$out" "$dist/b4bcoop-legacy" "$dist"/b4bcoop*.zip; mkdir -p "$out/Gobi/Binaries/Win64"
+rm -rf "$out" "$dist/b4bcoop-legacy" "$dist"/b4bcoop*.zip "$dist"/*.sig "$dist/b4bcoop-update.txt"; mkdir -p "$out/Gobi/Binaries/Win64"
 cp "$rel/xinput1_3.dll" "$out/"
 cp "$rel/X3DAudio1_7.dll" "$out/Gobi/Binaries/Win64/"
 cp "$root/LICENSE" "$out/b4bcoop-LICENSE.txt"
@@ -56,6 +58,9 @@ cat > "$ini" <<'INI'
 ; Then join=<host's IP> joins a host by address.
 ;host_ip=1
 
+; Hide the ~ window's Updates tab (updates from the game, only when you click).
+;updates=0
+
 ; Blocks all third-party network traffic (Epic/WB/Turtle Rock services) while you play. If something won't
 ; start or connect, try netguard=off and tell us.
 ;netguard=block
@@ -85,7 +90,7 @@ PLAY
 JOIN A FRIEND: in the Steam friends list, right-click your friend while they are in Back 4 Blood >
 Join Game, or accept their Steam invite. Works with your game closed or running.
 Only the host's Steam friends can join. Press ~ in game for the b4bcoop window (players, join/leave,
-camera, flashlight, keys, cheats); the same things work as chat commands (/help in the game's chat).
+camera, flashlight, keys, cheats, updates); the same things work as chat commands (/help in the game's chat).
 The window, all chat commands and options, with examples: b4bcoop-COMMANDS.txt (next to this file).
 
 OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, remove the ';' in front of a line.
@@ -100,13 +105,19 @@ Saved changes apply within a couple of seconds, also while you play (host, join,
                      forwarding (UDP 7777) and triggers the Windows Firewall prompt.
   More options and details: b4bcoop-COMMANDS.txt.
 
+UPDATE: press ~ in game, tab Updates > Check for updates > Download and install on next start, then restart
+the game. Nothing is downloaded or changed until you click; the download must carry the b4bcoop release signature,
+and your b4bcoop.ini, add-ons and bans stay as they are. "Go back to ..." in the same tab returns to the version you
+had. Or by hand: extract the new zip over the old files. Details: b4bcoop-COMMANDS.txt, "Updates".
+
 ADD-ONS (textures, models): put the add-on's .pak in a b4bcoop-addons folder next to Back4Blood.exe and
 restart the game; /addons lists them. Only you see your add-ons. Hosts let in players with cosmetic add-ons
 only, by default (addons_policy=). Details: b4bcoop-COMMANDS.txt, "Add-ons".
 
 REMOVE: delete these files from the game folder.
 1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt, and
-   the b4bcoop-addons folder (only there if you installed add-ons).
+   the b4bcoop-addons folder (only there if you installed add-ons), the b4bcoop-update folder (only there if you
+   updated from the game).
 2. In Gobi\Binaries\Win64: X3DAudio1_7.dll, b4bcoop.ini, all b4bcoop-*.log files, and b4bcoop-bans.txt
    (only there if you banned someone).
 3. Left over from older versions, if present, in Gobi\Binaries\Win64: dwmapi.dll, "Play B4B co-op.cmd",
@@ -117,8 +128,8 @@ Your offline progress stays either way.
 Making your own add-ons: see the modkit (b4bcoop-modkit-<version>.zip on the b4bcoop Releases page).
 
 TROUBLESHOOTING
-- "Everyone needs the same version": someone has another b4bcoop version. Everyone downloads the
-  latest release and extracts it again.
+- "Everyone needs the same version": someone has another b4bcoop version. Press ~, tab Updates: it
+  offers the host's version (or the latest). Or everyone downloads the latest release and extracts it again.
 - Play online / with Easy Anti-Cheat without removing the mod: add  -b4bcoop=off  to the launch options
   (Steam > right-click Back 4 Blood > Properties > Launch Options). Remove it again to play co-op.
 - The log: Gobi\Binaries\Win64\b4bcoop-<number>.log (the newest one). Its first lines show the version.
@@ -143,4 +154,5 @@ find "$out" -type d -exec chmod 755 {} + ; find "$out" -type f -exec chmod 644 {
 find "$out" -exec touch -d '2020-01-01 00:00:00 UTC' {} +
 (cd "$out" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort | TZ=UTC zip -qX -@ "$dist/$zip")
 (cd "$dist" && sha256sum "$zip" b4bcoop/xinput1_3.dll b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll > SHA256SUMS)
+"$root/tools/sign-release.sh" manifest "$dist/$zip" "$version" "$protocol" > "$dist/b4bcoop-update.txt"
 echo "$dist/$zip"

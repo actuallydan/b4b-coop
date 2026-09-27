@@ -48,6 +48,9 @@ jobs:
       - name: Fetch the pinned toolchain (zig 0.15.2 + MinHook)
         run: tools/fetch-deps.sh --build
 
+      - name: Updater unit tests (signature, hash, zip, manifest; native/test/run.sh)
+        run: native/test/run.sh
+
       - name: Dev build
         run: native/build.sh
 
@@ -74,6 +77,11 @@ jobs:
           grep -qaF "server: listening" native/out/dwmapi.dll
           ls -l native/out/*.dll $dlls
           cat dist/SHA256SUMS
+          # the in-game updater: the manifest release.yml signs, and the agent carries the committed release public key
+          grep -q "^zip=b4bcoop-$(sed -n 's/^version=//p' VERSION).zip$" dist/b4bcoop-update.txt
+          od -An -tx1 -v dist/b4bcoop/Gobi/Binaries/Win64/X3DAudio1_7.dll | tr -d ' \n' |
+            grep -q "$(tools/sign-release.sh pubhex docs/release-signing.pub.pem)" ||
+            { echo "::error::the player DLL does not carry docs/release-signing.pub.pem (native/src/updater.c RELEASE_PUBKEY)"; exit 1; }
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:

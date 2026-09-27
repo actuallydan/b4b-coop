@@ -125,6 +125,15 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `thirdperson_freelook_return`): standing still the mouse orbits the camera (UpdateRotation hook eats RotationInput,
     spring arm stops following), busy → swings back. Dev `thirdperson view|aim|arm|decals|watch|use|usables|lookat|
     itemfix|freelook|look|mouse|heroes|keys`, `fnprobe`. docs/investigations/third-person.md.
+  - `updater.c` in-game updates (#34): `~` tab **Updates** (ini `updates=0` hides it). Check = GitHub
+    `releases/latest` (or `tags/v<host's ver>` after a version refusal) + the release's signed manifest
+    `b4bcoop-update.txt`; Download = zip + `.sig` in memory, size/SHA-256/ed25519 checked (`updcore.c`, portable:
+    SHA-256, Monocypher, puff, zip, JSON; unit tests `native/test/run.sh`), then staged in `<game>\b4bcoop-update\` and
+    swapped by renames (running files → `backup\<ver>\`; never ini/bans/add-ons/logs); new version runs next start.
+    `updater_early` (DllMain) counts a fresh update's starts: 15 s of ticks = healthy, else the 3rd start reverts.
+    WinHTTP loaded on first use; netguard lets GitHub's hosts through only inside `netguard_updater_scope`. Dev: ini
+    `update_api=`, `update_repo=`, `update_pubkey=`, `update_never_healthy=1`; `update status|check [ver]|install|
+    goback|fetch <url> [noscope]`. Live test `tools/update-test.py`. docs/investigations/updater.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
@@ -172,10 +181,14 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
 
 ## Setup
-`tools/fetch-deps.sh` (zig 0.15.2 sha256-checked, MinHook pinned to commit 8af6b4a, Windows Python, .venv; `--build`
-= only zig + MinHook) → `launch/install.sh`. CI: `.github/workflows/ci.yml` builds dev + player on every push/PR;
-`release.yml` builds the zip on a `v<version>` tag (must match `VERSION`) and publishes it with `SHA256SUMS` and a
-build provenance attestation. No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the dev-only legacy
+`tools/fetch-deps.sh` (zig 0.15.2 sha256-checked, MinHook pinned to commit 8af6b4a, ImGui, Monocypher 4.0.2 and zlib
+1.3.1's puff (updater) pinned by commit + sha256, Windows Python, .venv; `--build` = only what native/build.sh needs) →
+`launch/install.sh`. CI: `.github/workflows/ci.yml` builds dev + player and runs `native/test/run.sh` (updater unit
+tests) on every push/PR; `release.yml` builds the zip on a `v<version>` tag (must match `VERSION`) and publishes it
+with `SHA256SUMS`, a build provenance attestation and the in-game updater's files: `b4bcoop-update.txt` (manifest)
+and ed25519 `.sig`s of it, the zip and SHA256SUMS (`tools/sign-release.sh`, secret `B4B_RELEASE_SIGNING_KEY`, public
+key `docs/release-signing.pub.pem` = `RELEASE_PUBKEY` in updater.c; private copy
+`~/.local/share/b4b-coop/keys/release-signing.key`, never commit; rotation/loss: updater.md §3). No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the dev-only legacy
 `dwmapi.dll` needs `WINEDLLOVERRIDES="dwmapi=n,b" %command%`). Steam's only public launch entry runs the root `Back4Blood.exe` stub →
 `start_protected_game.exe` (EAC) → `Gobi/Binaries/Win64/Back4Blood.exe Gobi -SaveToUserDir`. Game build pinned: Steam buildid 14216215;
 the agent verifies byte signatures and refuses to hook on mismatch.
@@ -188,6 +201,7 @@ the agent verifies byte signatures and refuses to hook on mismatch.
   forwarding rules, anything a client must understand or a host must expect from the client. The host refuses a
   login with another protocol (admin.c), and a Steam Join Game to a host with another protocol stops before
   connecting (presence.c). A pure host-side or client-side fix needs no protocol bump.
+- A version refusal points to the `~` Updates tab, which offers the host's version (updater.c).
 - Test a mismatch: dev ini `b4bcoop_protocol_override=N` fakes another protocol (e.g.
   `B4B_INI_EXTRA2="b4bcoop_protocol_override=2" launch/multi.sh 2`).
 
@@ -296,6 +310,10 @@ N --golden|--restore`; logged `profile testN: ...`; `--keep-profiles` skips it),
 breaks the next run; the profile checks still diff that run's before/after. A client joining during its own sign-in
 used to get its profile reset ("HydraPublicId mismatch"); joins now wait for the sign-in
 (docs/investigations/test-profiles.md).
+**Updater: `native/test/run.sh`** (unit, no game) and **`tools/update-test.py`** (live, one instance: fake signed
+release on a local fake GitHub API, refused bad downloads, install → restart → new version, go back, automatic revert;
+39 checks; `B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/update-test.py [--no-lock]`). `lane-restore.sh` also
+covers `<game>/b4bcoop-update/`.
 **Model mods (`models` branch): `tools/charsuite.py`**, the character suite (mesh-mods.md §17): builds every test
 character of a local manifest (models can't be committed: `~/.local/share/b4b-coop/characters/suite.json`, format +
 CC0 example `tools/charsuite-example.json`) with `b4bmod survivor --as` one at a time in its own extract folder
@@ -355,6 +373,10 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
   (3P + FP arms, alpha hair) and an AK replacing AR02 as add-ons; added outfits and weapon looks (`--as`, `/model`)
   that others without the add-on see as vanilla; Models and Add-ons tabs in the `~` window; the separate `modkit/`
   (b4bmod, own zip). Not run on real Windows (modkit .NET tools); no facial animation.
+
+- In-game updater (#34, 2026-09-27, lane 2 / Flatpak Proton): HTTPS check + download through WinHTTP under Proton,
+  netguard scope, signed manifest/zip, bad downloads refused, install on next start, go back, automatic revert
+  (`tools/update-test.py` 39/39). Not yet on native Windows; first real signed release = 0.6.2.
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.

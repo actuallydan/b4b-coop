@@ -33,6 +33,7 @@ of the window, and also in your chat.
 | **Models** | Your look now and your pick, the host's refusal when it said no, **Reset my look**; lists to wear with a search box (click a name): **Survivors** (per survivor: whole survivor, outfits, heads, torsos, legs), **NPC bodies** (Fort Hope NPCs, other survivors, cultists), **Add-on outfits** (by add-on); **Weapon looks** per weapon type (**Use**, which add-on it comes from, **Reset** for that weapon type); **Everyone's look** (every player and bot); host: **Change the look of** a player or bot (then click a look), their **Reset**, **Model swaps allowed** (greyed on a client, with the host's last announced state) | `/model`, `/model list ...`, `/model <name>`, `/model reset`, `/model <player> <name>\|reset`, `/models on\|off` |
 | **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`), every player's add-ons | `/addons`, `/addons on\|off`, `/addons info`, `/addons players`, `/addons policy`; ini `addons`, `addons_policy` |
 | **Settings** | The window's text size and key, the flashlight and third-person keys | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key` |
+| **Updates** | Your version; **Check for updates** (the latest release: version, protocol, short notes); **Download and install on next start**; the host's version after a "same version" refusal (**Check** it); **Go back to** the previous version. See [Updates](#updates) | ini `updates` (no chat command) |
 | **Help** | Your version, a box to run any chat command (without the `/`) | `/help` |
 
 Buttons that change something for everyone or permanently (Ban, Restart, Leave, Win, Lose, Unlock all, Add supply
@@ -395,6 +396,38 @@ Messages (in your chat after the game starts):
 Only install add-ons from people you trust. Making add-ons: the mod maker's kit (`b4bcoop-modkit-<version>.zip` from
 the releases, `modkit/` in the source repository); players don't need it.
 
+## Updates
+
+The **Updates** tab of the `~` window updates b4bcoop from inside the game. Nothing happens until you click, and
+nothing checks in the background.
+
+1. **Check for updates** asks GitHub for the latest b4bcoop release and shows its version, its protocol and the first
+   lines of its notes.
+   - "Same protocol as yours": after updating you can still play with friends who haven't updated.
+   - "Protocol N (yours: M)": after updating you can only play with friends who have updated too.
+2. **Download and install on next start** downloads the release zip, checks its size, its SHA-256 and the b4bcoop
+   release signature, and only then puts the new files in place. If any check fails, nothing changes and the tab says
+   why. The game you're playing keeps the version it started with.
+3. **Restart the game** to run the new version. (b4bcoop can't swap itself out while the game runs.)
+
+What an update changes: `X3DAudio1_7.dll`, `xinput1_3.dll` and the `b4bcoop-*.txt` files. It never touches
+`b4bcoop.ini`, your add-ons, `b4bcoop-bans.txt` or the logs. The files you had before go to the
+`b4bcoop-update\backup` folder next to `Back4Blood.exe`.
+
+- **Go back to ... on next start** (under "Previous version", with the backup's version) puts the backup back. Click twice.
+- If a new version fails to start twice in a row (the game crashes before you've played about 15 seconds), the third
+  start puts the previous version back by itself and runs without b4bcoop that one time. The tab then says
+  `<new> did not start properly 2 times, so <old> was put back`.
+- A host with another b4bcoop version refused you (`Everyone needs the same version`): the tab shows the host's
+  version with a **Check** button, which offers exactly that version.
+- The check and the download are the only time b4bcoop contacts anything besides Steam: `api.github.com`,
+  `github.com` and GitHub's download server, and only while that request runs. GitHub allows 60 checks an hour per
+  internet address; the tab tells you when that's used up.
+- Releases from before the updater (0.6.1 and older) can't be installed from the tab; it links the release page
+  instead.
+- `updates=0` in `b4bcoop.ini` hides the tab.
+- Updating by hand still works: extract the new zip over the old files, like the first install.
+
 ## b4bcoop.ini options
 
 **Where:** `Gobi\Binaries\Win64\b4bcoop.ini` in the game folder (Steam → right-click **Back 4 Blood** → **Manage** →
@@ -420,7 +453,7 @@ Rules:
   `flashlight_key`, `flashlight_sticky`,
   `flashlight_width`, `flashlight_range`, `flashlight_brightness`,
   `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
-  `overlay_scale`, `addons_policy`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
+  `overlay_scale`, `addons_policy`, `updates`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
   session. Deleting or commenting out a line = back to its default.
 - **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
   `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.
@@ -572,6 +605,7 @@ join=steam:7656119XXXXXXXXXX
 | `addons` | `1` | `0`: load no add-ons at all (troubleshooting) |
 | `addons_dir` | `<game>\b4bcoop-addons` | Another add-ons folder, a full Windows path, e.g. `addons_dir=D:\b4b-addons` |
 | `addons_policy` | `cosmetic` | Host: which add-ons joiners may have: `cosmetic`, `any`, `none`, `match` (see Add-ons) |
+| `updates` | `1` | `0`: hide the `~` window's Updates tab (see [Updates](#updates)) |
 
 ## Launch options & troubleshooting
 
@@ -607,7 +641,7 @@ your chat as `Could not join: ...` once the popup is closed.
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `Host runs b4bcoop X (protocol N); you have Y (protocol M). Everyone needs the same version.` | You and the host have different b4bcoop versions | Everyone installs the latest release (extract the zip again). Both versions are in the message; the host sees `<name> could not join: they have ...` |
+| `Host runs b4bcoop X (protocol N); you have Y (protocol M). Everyone needs the same version.` | You and the host have different b4bcoop versions | Press `~`, tab **Updates**: **Check** the host's version and install it (or everyone installs the latest release). Both versions are in the message; the host sees `<name> could not join: they have ...` |
 | `Host allows cosmetic add-ons only; you have gameplay add-ons: ...` (or `no add-ons`, `the same gameplay add-ons`) | The host's `addons_policy` refuses some of your add-ons | `/addons off <#>` for the ones named, restart the game, join again; or the host sets `/addons policy any` |
 | `Server full.` | Every survivor slot is taken by a player (bot slots count as free) | Wait for a free slot, or the host sets `teamsize=5` |
 | `This host only accepts their Steam friends. ...` | You're not on the host's Steam friends list | Become Steam friends, or the host adds you with `allow_steamids=` |

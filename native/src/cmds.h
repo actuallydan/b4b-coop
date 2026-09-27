@@ -230,6 +230,15 @@ void cheats_tick(float dt);
 int rewards_execute_local(UObject *ppc, void *cmd);     // rewards.c: a profile command on the host's own profile
 int cheats_cmd(const char *verb, char *rest, Out *o);   // dev builds: `cheat <cmd> ...`, `cheatprobe ...`
 
+// updater.c: in-game updates from the ~ window's Updates tab (#34, docs/investigations/updater.md)
+int updater_early(void *module);        // DllMain: count a fresh update's starts, revert one that failed; 1 = start nothing
+void updater_init(void);
+void updater_tick(float dt);
+int updater_live(const char *key, const char *val);          // ini updates=0 hides the tab
+void updater_note_host(const char *ver, const char *proto);  // a host with another protocol refused us (any thread)
+const char *updater_hint(void);                              // " Press ~, tab Updates, ..." or "" (updates=0)
+int updater_cmd(const char *verb, char *rest, Out *o);       // dev builds: `update status|check [ver]|install|goback`
+
 // poststats.c: remote players' post-round stats (docs/investigations/post-round-stats.md)
 int poststats_cmd(const char *verb, char *rest, Out *o);   // dev builds: `poststats` dumps every player's values
 void poststats_tick(float dt);                              // logs every player's values once per post-round screen
