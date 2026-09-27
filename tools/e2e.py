@@ -17,7 +17,8 @@ caller already holds it). Everything (logs, agent outputs, profile snapshots and
 to a timestamped directory, default /tmp/b4b-e2e-<time>. Exit status 1 if any check failed.
 Before each session every prefix it uses gets its golden profile back (tools/testprefix.py --restore; logged as
 "profile testN: ..."), so a profile the game wiped or a run left behind never breaks the next run; the profile checks
-still diff this run's before/after. --keep-profiles skips the restore.
+still diff this run's before/after. --keep-profiles skips the restore. B4B_STEAM=flatpak restores that account's own
+set (profile-golden-flatpak/: the native account's saves don't load under it).
 B4B_LANE=2 runs it on the second live-test lane (launch/lane.sh: Flatpak game copy, its own lock, prefixes, ports and
 window names; artifacts /tmp/b4b-e2e-l2-<time>); both lanes can run at the same time.
 """

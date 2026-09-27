@@ -3,6 +3,7 @@
 
     testprefix.py N [--fresh] [--blank] [--host | --join ADDR] [--force]   (--host: no join=, i.e. the default: host)
     testprefix.py N --golden [--force]    take the golden profile snapshot now (from the current profile)
+    testprefix.py N --golden-from M       copy test<M>'s golden profile to test<N> (same Steam mode)
     testprefix.py N --restore             put the golden profile back (tools/e2e.py does this before every run)
 
 Prefix:  ~/.local/share/b4b-coop/prefixes/test<N>  (cloned from steamapps/compatdata/924970, ~600 MB)
@@ -18,6 +19,9 @@ Golden profile: <prefix>/profile-golden/ holds a known-good copy of PlayerProfil
 time (or, for an older prefix, the first time it is needed: the current profile if it is healthy, else the real
 prefix's). tools/e2e.py restores it before every run, so a client profile the game wiped to a blank one (sign-in
 "HydraPublicId mismatch", docs/investigations/test-profiles.md) or a half-written save heals itself. --blank keeps it.
+One golden set per Steam mode (tools/lane.py STEAM): a save only loads under the account that wrote it, so
+B4B_STEAM=flatpak (account dreamsofants) uses <prefix>/profile-golden-flatpak/, made in the game (test-profiles.md
+"Flatpak mode"); it never falls back to the native account's profiles.
 """
 import datetime, json, os, re, shutil, subprocess, sys
 import lane
@@ -28,7 +32,12 @@ ROOT = lane.ROOT
 SAVED = "pfx/drive_c/users/steamuser/AppData/Local/Back4Blood/Steam/Saved"
 SAVES = SAVED + "/SaveGames"
 PROFILE_FILES = ("PlayerProfileSettings.sav", "PlayerProfileSettings.json")
-GOLDEN = "profile-golden"
+# Golden profile dir for this Steam mode: native = Dan's account (clones of the real prefix), flatpak = dreamsofants
+GOLDEN_NATIVE = "profile-golden"
+GOLDEN = GOLDEN_NATIVE if lane.STEAM == "native" else "profile-golden-" + lane.STEAM
+# The Flatpak account's offline id; a profile with any other id (or an online Hydra id "p...") is the native account's
+FLATPAK_ID = os.environ.get("B4B_FLATPAK_STEAMID", "76561198994546085")
+BURN = "Burn_"
 
 # Registered cvars in this build (strings next to their registration): skip intro movies/MOTD/tutorials, start
 # sign-in without "press any key". The Online/Offline popup has no cvar; the agent answers it (offline=1).
@@ -88,9 +97,10 @@ def blank_profile(dst):
         if os.path.exists(f): os.remove(f)
 
 
-def profile_health(saves_dir):
-    """(ok, why) for the profile in a SaveGames dir: ok = both files there and the .json export has decks and SP (a
-    profile the game reset is 'publicId offline.<id>', no decks, 0 SP)."""
+def profile_health(saves_dir, mode=lane.STEAM):
+    """(ok, why) for the profile in a SaveGames dir: ok = both files there and the .json export has SP and decks or burn
+    cards (a profile the game reset is 'publicId offline.<id>', no decks, 0 SP), and, in flatpak mode, is the Flatpak
+    account's (the native account's .sav fails to deserialize there and the game starts a blank one)."""
     if not all(os.path.exists(os.path.join(saves_dir, f)) for f in PROFILE_FILES): return False, "missing"
     try:
         prof = json.load(open(os.path.join(saves_dir, PROFILE_FILES[1])))
@@ -98,9 +108,13 @@ def profile_health(saves_dir):
         return False, f"unreadable .json ({e.__class__.__name__})"
     od = prof.get("offlineData", {})
     decks, sp = len(od.get("decks", [])), od.get("supplyPoints", {}).get("acquired", 0)
-    why = f"publicId {prof.get('publicId') or '-'}, {decks} deck(s), SP {sp}, " \
-          f"{os.path.getsize(os.path.join(saves_dir, PROFILE_FILES[0]))} B"
-    return decks > 0 and sp > 0, why
+    burn = sum(max(0, v.get("acquired", 0) - v.get("spent", 0)) for k, v in od.get("consumables", {}).items()
+               if f'RowDisplayName="{BURN}' in k)
+    pid = prof.get("publicId") or ""
+    foreign = pid not in ("", "offline." + FLATPAK_ID) if mode == "flatpak" else pid == "offline." + FLATPAK_ID
+    why = f"publicId {pid or '-'}, {decks} deck(s), SP {sp}, {burn} burn card(s), " \
+          f"{os.path.getsize(os.path.join(saves_dir, PROFILE_FILES[0]))} B" + (" (another account's)" if foreign else "")
+    return (decks > 0 or burn > 0) and sp > 0 and not foreign, why
 
 
 def _copy_profile(src_dir, dst_dir):
@@ -108,7 +122,7 @@ def _copy_profile(src_dir, dst_dir):
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
     for f in PROFILE_FILES: shutil.copy2(os.path.join(src_dir, f), os.path.join(tmp, f))
-    if os.path.basename(dst_dir.rstrip("/")) == GOLDEN:
+    if os.path.basename(dst_dir.rstrip("/")).startswith(GOLDEN_NATIVE):
         shutil.rmtree(dst_dir, ignore_errors=True)
         os.rename(tmp, dst_dir)
     else:   # the live SaveGames dir: replace the two files only (rename each, never a half-written file)
@@ -118,15 +132,27 @@ def _copy_profile(src_dir, dst_dir):
 
 
 def snapshot_golden(dst, allow_unhealthy=False):
-    """Golden = the prefix's current profile if healthy, else the real prefix's. Returns a one-line description."""
+    """Golden = the prefix's current profile if healthy, else (native mode) the real prefix's. One-line description."""
     src, note = os.path.join(dst, SAVES), "current profile"
     ok, why = profile_health(src)
     if not ok and not allow_unhealthy:
+        if lane.STEAM != "native":   # the real prefix holds the native account's profile: it doesn't load here
+            raise SystemExit(f"testprefix.py: no healthy {lane.STEAM} profile for a golden snapshot ({why}); make one in "
+                             f"the game: docs/investigations/test-profiles.md \"Flatpak mode\"")
         src, note = os.path.join(REAL, SAVES), f"real prefix's profile (current one: {why})"
         ok, why = profile_health(src)
         if not ok: raise SystemExit(f"testprefix.py: no healthy profile for a golden snapshot ({why})")
     _copy_profile(src, os.path.join(dst, GOLDEN))
-    return f"golden snapshot from the {note}: {why}"
+    return f"golden snapshot ({GOLDEN}) from the {note}: {why}"
+
+
+def golden_from(dst, src_prefix):
+    """Copy another prefix's golden profile (same mode) to this one: a .sav loads in any prefix of the same account."""
+    g = os.path.join(src_prefix, GOLDEN)
+    ok, why = profile_health(g)
+    if not ok: raise SystemExit(f"testprefix.py: {g} is not a healthy golden profile ({why})")
+    _copy_profile(g, os.path.join(dst, GOLDEN))
+    return f"golden profile ({GOLDEN}) copied from {os.path.basename(src_prefix)}: {why}"
 
 
 def restore_golden(dst):
@@ -139,7 +165,7 @@ def restore_golden(dst):
         return made + f"profile = golden ({was})"
     _copy_profile(g, saves)
     t = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(g, PROFILE_FILES[0])))
-    return made + f"restored golden profile of {t:%Y-%m-%d %H:%M} ({profile_health(saves)[1]}); was: {was}"
+    return made + f"restored {GOLDEN} of {t:%Y-%m-%d %H:%M} ({profile_health(saves)[1]}); was: {was}"
 
 
 def write_config(dst, n, join):
@@ -180,9 +206,13 @@ def main():
         shutil.rmtree(dst, ignore_errors=True)
         clone(dst)
         patch(dst)
-        if profile_health(os.path.join(dst, SAVES))[0]: snapshot_golden(dst)
+        if profile_health(os.path.join(dst, SAVES), "native")[0]:   # a clone holds the native account's profile
+            _copy_profile(os.path.join(dst, SAVES), os.path.join(dst, GOLDEN_NATIVE))
     if "--golden" in args:
         print(f"test{n}: " + snapshot_golden(dst, allow_unhealthy="--force" in args)); return
+    if "--golden-from" in args:
+        m = args[args.index("--golden-from") + 1]
+        print(f"test{n}: " + golden_from(dst, os.path.join(ROOT, f"test{m}"))); return
     if "--restore" in args:
         print(f"test{n}: " + restore_golden(dst)); return
     if "--blank" in args:

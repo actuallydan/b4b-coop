@@ -179,7 +179,9 @@ only test instances (SIGKILL by PID, matched on `B4B_PREFIX` in /proc/<pid>/envi
 - **Test prefixes are shared between sessions: change them (`testprefix.py`, `B4B_FRESH`, `B4B_BLANK`, editing their
   `b4bcoop.ini` or saves) only while holding `launch/gamelock.sh`.** `testprefix.py` refuses to touch a prefix a game
   process is running on (`B4B_PREFIX` in /proc/<pid>/environ) unless `--force`.
-- Each prefix keeps a golden profile copy in `profile-golden/` (clone time; e2e.py restores it).
+- Each prefix keeps a golden profile copy in `profile-golden/` (clone time; e2e.py restores it). `B4B_STEAM=flatpak`
+  uses its own set, `profile-golden-flatpak/` (dreamsofants' saves, made in the game: a save only loads under the
+  account that wrote it); docs/investigations/test-profiles.md "Flatpak mode".
 - The real prefix and its SaveGames are never written. Profile truth is the AES `PlayerProfileSettings.sav`; the
   `.json` is an export the game overwrites, so editing it does nothing. All copies share one Steam account: same
   name, same `offline.<steamid64>` id on the host.
