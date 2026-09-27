@@ -61,11 +61,12 @@ static float tp_arm_orig[4] = {-1}, tp_fov_orig = -1;               // length, s
 #define CAM_FOV(c)    ((float *)((char *)(c) + 0x230))
 
 // Free look (#31, section "Free look" below): the camera's offset from the control rotation while it orbits the hero
-static int fl_state;               // 0 off, 1 orbiting (look input turns only the camera), 2 swinging back
+static int fl_state;               // 0 off, 1 orbiting (look input turns only the camera)
 static float fl_off[2];            // camera = control rotation + (pitch, yaw) degrees
 static UObject *tp_use;            // the hero's HeroUseComponent
 static int32_t tp_usei = -1;
 static void fl_reset(void);
+static int fl_key_down(UObject *pc);
 
 typedef struct { UObject *obj; UFunction *fn; uint8_t p[1024]; } TpCall;
 static void *tc_prep(TpCall *c, UObject *obj, const char *fname) {
@@ -254,7 +255,7 @@ static void aim_correct(const float loc[3], float rot[3]) {
         memcpy(rot, aim_cache_rot, 12);
         return;
     }
-    // the camera looks along the eye rotation, plus the free-look offset while it orbits or swings back (#31)
+    // the camera looks along the eye rotation, plus the free-look offset while it orbits (#31)
     float cr[3] = {rot[0] + fl_off[0], rot[1] + fl_off[1], 0}, fe[3];
     float f[3], rt[3], up[3], s[3], hit[3], d[3];
     basis(cr, f, rt, up);
@@ -265,8 +266,9 @@ static void aim_correct(const float loc[3], float rot[3]) {
     if (!trace_ch(aim_pawn, s, f, 50000.f, aim_chan, hit)) for (int i = 0; i < 3; i++) hit[i] = s[i] + f[i] * 50000.f;
     for (int i = 0; i < 3; i++) d[i] = hit[i] - loc[i];
     float n = sqrtf(dot3(d, d));
-    // behind / sideways of where the hero looks (e.g. the camera still swinging back from its front): leave it
-    if (n < 1.f || dot3(d, fe) < 0.5f * n) { memcpy(aim_cache_rot, rot, 12); return; }
+    // behind / sideways of where the hero looks: leave it, except while the camera orbits (#31): a shot or use in the
+    // frame its key is pressed runs before the hero turns to the camera, and goes under the crosshair like after it
+    if (n < 1.f || (fl_state != 1 && dot3(d, fe) < 0.5f * n)) { memcpy(aim_cache_rot, rot, 12); return; }
     for (int i = 0; i < 3; i++) d[i] /= n;
     float np = asinf(d[2] > 1 ? 1 : d[2] < -1 ? -1 : d[2]) * 180.f / 3.14159265f, ny = atan2f(d[1], d[0]) * 180.f / 3.14159265f;
     float c = dot3(d, fe);
@@ -344,13 +346,15 @@ static void aim_update(UObject *pawn, UObject *pvc) {
     for (int i = 0; i < 3; i++) d[i] = cam[i] - el[i];
     aim_local[0] = dot3(d, f); aim_local[1] = dot3(d, rt); aim_local[2] = dot3(d, up);
     float lat = sqrtf(aim_local[1] * aim_local[1] + aim_local[2] * aim_local[2]);
-    aim_ok = lat > 0.5f && lat < 400.f && aim_local[0] < 0;   // offset camera behind the eyes (not centred, not 1P)
+    // offset camera behind the eyes (not centred unless orbiting, not 1P)
+    aim_ok = (lat > 0.5f || fl_state == 1) && lat < 400.f && aim_local[0] < 0;
 }
 
 // ---- Free look (#31) ----
 // While the hero stands still in our third person, the mouse orbits the camera around it (all the way round, to see
-// its front) instead of turning it; moving, firing, aiming, using, reloading, meleeing etc. swing the camera back
-// behind the hero (thirdperson_freelook_return seconds) and the mouse turns the hero again.
+// its front) instead of turning it. Moving, firing, aiming, using, reloading, meleeing etc. turn the HERO to where the
+// camera looks (control rotation = camera rotation, pitch included) and the camera stays where it is (it never swings
+// back: jarring, motion sickness); the mouse turns the hero again from there.
 // - The look input never reaches the control rotation: GobiPlayerController::UpdateRotation (0x141B9B8B0, a thunk that
 //   copies RotationInput (+0x4A0 pitch/yaw/roll, filled by AddYaw/PitchInput 0x143F68250/0x143F681E0 from mouse and
 //   gamepad) to +0x7C8 and jumps to APlayerController::UpdateRotation 0x143F5ADC0) is hooked; while orbiting,
@@ -362,7 +366,13 @@ static void aim_update(UObject *pawn, UObject *pvc) {
 //   the bitfield +0x254, bInheritPitch/Yaw/Roll bits 2-4). While we own it those bits are cleared and RelativeRotation
 //   is written as the camera's world rotation (USpringArmComponent::GetTargetRotation takes the relative rotation for
 //   every component it doesn't inherit; the game's own orbit view does the same, UpdateView 0x141C27590); the bits and
-//   the rotation are put back when the offset is 0 again. The aim correction builds its crosshair ray with the offset.
+//   the rotation are put back when free look ends. The aim correction builds its crosshair ray with the offset.
+// - The turn (fl_end): control rotation := the arm's world rotation (SetControlRotation), arm back to following it, so
+//   the camera's world rotation doesn't change. Keys are checked in our engine tick, before the world tick, so the
+//   same frame's movement input (W = away from the camera), shot and ADS already use the new rotation. Movement the
+//   key list misses (e.g. a gamepad stick below its threshold) shows up in UpdateRotation as the pawn's pending input
+//   (computed with the old rotation): rotated by the camera offset there, then the turn. The hero turns like after a
+//   fast mouse flick: a client's new control rotation reaches the server with its moves (retail path).
 #define ADDR_UPDROT VA(0x141B9B8B0ull)
 static const uint8_t SIG_UPDROT[] = {0xf2,0x0f,0x10,0x81,0xa0,0x04,0x00,0x00,0x8b,0x81,0xa8,0x04,0x00,0x00,0xf2,0x0f,
                                      0x11,0x81,0xc8,0x07,0x00,0x00};
@@ -371,19 +381,17 @@ static const uint8_t SIG_UPDROT[] = {0xf2,0x0f,0x10,0x81,0xa0,0x04,0x00,0x00,0x8
 #define ARM_FOLLOW      0x1E                                // bUsePawnControlRotation | bInheritPitch/Yaw/Roll
 #define FL_PITCH 70.f        // camera pitch limit while orbiting
 #define FL_IDLE_DELAY 0.25f  // standing still this long before the mouse orbits
-#define FL_RETURN_DEF 0.25f
 typedef void (*UpdRotFn)(UObject *pc, float dt);
 static UpdRotFn orig_updrot;
 static int updrot_hooked;          // 1 hooked, -1 failed
 static int fl_on = 1;              // ini thirdperson_freelook
-static float fl_return = FL_RETURN_DEF;   // ini thirdperson_freelook_return: seconds to swing back (0 = at once)
 static int fl_idle;                // this frame: standing still in our third person (the detour may orbit)
-static float fl_idle_t, fl_t, fl_from[2];
+static float fl_idle_t;
 static unsigned fl_busy;           // what kept the hero busy this frame (bits, dev status)
-static UObject *fl_pc;             // the local player controller this frame
+static UObject *fl_pc, *fl_pawn;   // the local player controller and hero this frame
 static uint8_t fl_bits = 0xff;     // the arm's follow bits before we took it (0xff = we don't own the arm)
 static float fl_rel[3];            // ... and its RelativeRotation
-static unsigned fl_n;              // orbits started (dev status)
+static unsigned fl_n, fl_turns, fl_mv_turns, fl_key_turns;   // orbits started, hero turns (of them from UpdateRotation)
 #ifndef B4B_RELEASE
 static float fl_dev_look[2], fl_dev_left;   // dev `thirdperson look`: look input (deg/s pitch, yaw) for fl_dev_left s
 #endif
@@ -408,12 +416,84 @@ static void fl_release(void) {
     }
     fl_bits = 0xff;
 }
-static void fl_end(void) { fl_release(); fl_state = 0; fl_off[0] = fl_off[1] = 0; }
+#ifndef B4B_RELEASE
+// dev: the camera (PlayerCameraManager POV of each frame) around a turn, logged: shows the camera doesn't jump
+typedef struct { float loc[3], rot[3], ctl, hero; } FlTrace;
+static FlTrace fl_ring[4];
+static unsigned fl_ring_n;
+static int fl_trace_post;          // frames still to log after a turn
+static void fl_trace_line(const char *tag, int f, const FlTrace *t) {
+    LOG("thirdperson: freelook trace %s f%+d cam (%.1f %.1f %.1f) rot (%.2f %.2f) control yaw %.2f hero yaw %.2f", tag, f,
+        t->loc[0], t->loc[1], t->loc[2], t->rot[0], norm180(t->rot[1]), norm180(t->ctl), norm180(t->hero));
+}
+static void fl_trace_tick(UObject *pc, UObject *pawn) {
+    static int32_t o_cache = -2;
+    UObject *pcm = pc ? ue_get_ptr(pc, "PlayerCameraManager") : NULL;
+    if (!pcm || !pawn) return;
+    if (o_cache == -2) o_cache = ue_prop_offset(pcm, "CameraCachePrivate");
+    if (o_cache < 0) return;
+    FlTrace t;
+    float *pov = (float *)((char *)pcm + o_cache + 0x10);
+    TpCall c;
+    memcpy(t.loc, pov, 12); memcpy(t.rot, pov + 3, 12);
+    t.ctl = ctrl_rot(pc)[1];
+    t.hero = 0;
+    if (tc_prep(&c, pawn, "K2_GetActorRotation")) { ue_process_event(c.obj, c.fn, c.p); t.hero = ((float *)tc_arg(&c, "ReturnValue"))[1]; }
+    fl_ring[fl_ring_n++ & 3] = t;
+    if (fl_trace_post > 0) fl_trace_line("after", 11 - fl_trace_post--, &t);
+}
+static void fl_trace_turn(void) {   // the last 4 frames before the turn, then 10 after
+    for (int i = 4; i > 0; i--) if (fl_ring_n >= (unsigned)i) fl_trace_line("before", -i + 1, &fl_ring[(fl_ring_n - i) & 3]);
+    fl_trace_post = 10;
+}
+#endif
+static void set_ctrl_rot(UObject *pc, const float r[3]) {
+    TpCall c;
+    float *a;
+    if (tc_prep(&c, pc, "SetControlRotation") && (a = tc_arg(&c, "NewRotation"))) { memcpy(a, r, 12); ue_process_event(c.obj, c.fn, c.p); }
+    else memcpy(ctrl_rot(pc), r, 12);
+}
+// free look ends: the hero turns to where the camera looks, the camera stays (control rotation = the camera's rotation,
+// exactly what fl_apply gives the arm, then the arm follows the control rotation again)
+static void fl_end(void) {
+    UObject *pc = fl_pc && fl_pc == ue_local_pc() ? fl_pc : NULL;
+    if (fl_state && pc && (fl_off[0] != 0 || fl_off[1] != 0)) {
+        float *cr = ctrl_rot(pc), r[3] = {norm180(cr[0]) + fl_off[0], norm180(cr[1] + fl_off[1]), 0};
+        if (r[0] < 0) r[0] += 360.f;   // FRotator::ClampAxis, as the camera manager's pitch limit stores it
+        set_ctrl_rot(pc, r);
+        fl_turns++;
+#ifndef B4B_RELEASE
+        fl_trace_turn();
+#endif
+    }
+    fl_release();
+    fl_state = 0; fl_off[0] = fl_off[1] = 0;
+    fl_idle = 0; fl_idle_t = 0;   // the mouse turns the hero again from here
+}
 static void fl_reset(void) { fl_state = 0; fl_off[0] = fl_off[1] = 0; fl_bits = 0xff; fl_idle = 0; fl_idle_t = 0; }
+
+// the pawn's movement input of this frame (APawn::ControlInputVector), not consumed yet while the controller ticks
+static float *pending_move(UObject *pawn) {
+    static int32_t o = -2;
+    if (!pawn) return NULL;
+    if (o == -2) o = ue_prop_offset(pawn, "ControlInputVector");
+    return o >= 0 ? (float *)((char *)pawn + o) : NULL;
+}
 
 static void updrot_detour(UObject *pc, float dt) {
     if (pc && pc == fl_pc && GetCurrentThreadId() == tp_tid) {
-        float *ri = PC_ROTINPUT(pc);
+        float *ri = PC_ROTINPUT(pc), *mv;
+        if (fl_state == 1 && fl_pawn && fl_pawn == tp_pawn && (mv = pending_move(fl_pawn)) &&
+            mv[0] * mv[0] + mv[1] * mv[1] > 0.0001f) {
+            // movement our tick didn't see coming: made with the old facing, turn it by the camera's offset
+            float a = fl_off[1] * 3.14159265f / 180.f, c = cosf(a), s = sinf(a), x = mv[0], y = mv[1];
+            mv[0] = x * c - y * s; mv[1] = x * s + y * c;
+            fl_end();
+            fl_mv_turns++;
+        } else if (fl_state == 1 && fl_key_down(pc)) {
+            fl_end();   // a key pressed this frame (the game's key state is updated when it processes input)
+            fl_key_turns++;
+        }
 #ifndef B4B_RELEASE
         if (fl_dev_left > 0) { ri[0] += fl_dev_look[0] * dt; ri[1] += fl_dev_look[1] * dt; fl_dev_left -= dt; }
 #endif
@@ -463,10 +543,14 @@ static int hero_bool(UObject *o, HeroFn *h, uint8_t arg0) { uint8_t p[64], *r = 
 // Keys of the hero's own actions that end free look, from the InputSettings mappings (the game's rebinds included):
 // actions Hero* (ADS, bash, crouch, sprint, use, quick turn; not HeroSuicide), Ability* (reload), Item* (alt use),
 // PlayerJump, Select* (weapon / consumable slots), Weapon* (quick swap); axes of those that aren't looking or moving,
-// and PrimaryAbility (fire: left mouse, right trigger). Checked with PlayerController.IsInputKeyDown (the game's input state: mouse buttons, gamepad).
+// PrimaryAbility (fire: left mouse, right trigger) and the movement axes (W/A/S/D, left stick: the hero turns before the
+// move is made). Checked with PlayerController.IsInputKeyDown (the game's input state: mouse buttons, gamepad), gamepad
+// axes with GetInputAnalogKeyState.
 static int fl_key_wanted(const char *nm, int axis) {
     static const char *const P[] = {"Hero", "Ability", "Item", "PlayerJump", "Select", "Weapon", "Primary", NULL};
     int hit = 0;
+    if (!strncmp(nm, "UI", 2) || !strncmp(nm, "Zombie", 6) || !strncmp(nm, "Demo", 4) || !strncmp(nm, "Spectat", 7)) return 0;
+    if (axis && (strstr(nm, "Move") || strstr(nm, "Strafe")) && !strstr(nm, "Look") && !strstr(nm, "Turn")) return 1;
     for (int j = 0; P[j] && !hit; j++) hit = !strncmp(nm, P[j], strlen(P[j]));
     if (!hit || strstr(nm, "Suicide")) return 0;
     if (axis) {   // looking / moving / zooming axes never count
@@ -475,7 +559,9 @@ static int fl_key_wanted(const char *nm, int axis) {
     }
     return 1;
 }
-static FName fl_keys[48];
+#define FL_MAX_KEYS 64
+static FName fl_keys[FL_MAX_KEYS];
+static uint8_t fl_key_analog[FL_MAX_KEYS];   // a gamepad axis: GetInputAnalogKeyState, not IsInputKeyDown
 static int n_fl_keys = -1;         // -1 = not read yet
 static void fl_keys_load(void) {
     UClass *k = ue_find_class("InputSettings");
@@ -489,39 +575,49 @@ static void fl_keys_load(void) {
         TArray *m = (TArray *)((char *)is + off);
         char nm[64];
         total += m->num;
-        for (int i = 0; i < m->num && n_fl_keys < 48; i++) {
+        for (int i = 0; i < m->num && n_fl_keys < FL_MAX_KEYS; i++) {
             uint8_t *e = (uint8_t *)m->data + (size_t)i * 0x28;   // {FName name, flags / float scale, FKey (+0x10)}
             if (!fl_key_wanted(ue_name(*(FName *)e, nm, sizeof nm), axis)) continue;
             FName key = *(FName *)(e + 0x10);
             int dup = 0;
             for (int j = 0; j < n_fl_keys && !dup; j++) dup = fl_keys[j].idx == key.idx && fl_keys[j].num == key.num;
-            if (!dup) fl_keys[n_fl_keys++] = key;
+            if (!dup) {
+                char kn[64];
+                fl_key_analog[n_fl_keys] = axis && !strncmp(ue_name(key, kn, sizeof kn), "Gamepad", 7);
+                fl_keys[n_fl_keys++] = key;
+            }
         }
     }
     LOG("thirdperson: free look: %d action keys (of %d mappings)", n_fl_keys, total);
 }
+typedef struct { UFunction *fn; int32_t o_key, o_ret, psize; } KeyFn;
+static int keyfn_init(KeyFn *f, const char *name) {
+    if (f->fn) return 1;
+    UClass *c = ue_find_class("PlayerController");
+    FField *k, *r;
+    UFunction *fn = c ? ue_find_function(c, name) : NULL;
+    if (!fn || !(k = ue_find_prop((UStruct *)fn, "Key")) || !(r = ue_find_prop((UStruct *)fn, "ReturnValue")) ||
+        UFN_PARMSSIZE(fn) > 64) return 0;
+    f->o_key = FP_OFFSET(k); f->o_ret = FP_OFFSET(r); f->psize = UFN_PARMSSIZE(fn); f->fn = fn;
+    return 1;
+}
 static int fl_key_down(UObject *pc) {
-    static UFunction *fn; static int32_t o_key = -1, o_ret = -1, psize;
+    static KeyFn down = {0}, analog = {0};
     if (n_fl_keys < 0) fl_keys_load();
-    if (!fn) {
-        UClass *c = ue_find_class("PlayerController");
-        FField *k, *r;
-        fn = c ? ue_find_function(c, "IsInputKeyDown") : NULL;
-        if (!fn || !(k = ue_find_prop((UStruct *)fn, "Key")) || !(r = ue_find_prop((UStruct *)fn, "ReturnValue")) ||
-            UFN_PARMSSIZE(fn) > 64) { n_fl_keys = 0; return 0; }
-        o_key = FP_OFFSET(k); o_ret = FP_OFFSET(r); psize = UFN_PARMSSIZE(fn);
-    }
+    if (!keyfn_init(&down, "IsInputKeyDown")) { n_fl_keys = 0; return 0; }
+    int an = keyfn_init(&analog, "GetInputAnalogKeyState");
     for (int i = 0; i < n_fl_keys; i++) {
+        KeyFn *f = fl_key_analog[i] && an ? &analog : &down;
         uint8_t p[64];
-        memset(p, 0, psize);
-        *(FName *)(p + o_key) = fl_keys[i];
-        ue_process_event(pc, fn, p);
-        if (p[o_ret]) return 1;
+        memset(p, 0, f->psize);
+        *(FName *)(p + f->o_key) = fl_keys[i];
+        ue_process_event(pc, f->fn, p);
+        if (f == &analog ? fabsf(*(float *)(p + f->o_ret)) > 0.25f : p[f->o_ret] != 0) return 1;
     }
     return 0;
 }
 
-// what keeps the hero busy (no free look; swing the camera back): bits for the dev status
+// what keeps the hero busy (no free look; the hero turns to the camera): bits for the dev status
 enum { FL_MOVE = 1, FL_FIRE = 2, FL_ADS = 4, FL_USE = 8, FL_KEY = 16, FL_INCAP = 32, FL_AIR = 64, FL_VIEW = 128 };
 static unsigned fl_busy_now(UObject *pawn, UObject *pvc, UObject *pc) {
     static HeroFn f_move = {"GetLastMovementInputVector"}, f_fire = {"IsFiring"}, f_cap = {"IsCapablePlayer"},
@@ -546,24 +642,17 @@ static unsigned fl_busy_now(UObject *pawn, UObject *pvc, UObject *pc) {
 // every tick while /thirdperson is on (after the camera tuning, before the view switch)
 static void fl_tick(UObject *pawn, UObject *pvc, float dt) {
     UObject *pc = ue_local_pc();
-    fl_pc = pc;
-    if (!fl_on || !pc || !tp_arm || !alive(tp_arm, tp_armi)) { fl_idle = 0; if (fl_state) fl_end(); return; }
+    fl_pc = pc; fl_pawn = pawn;
+#ifndef B4B_RELEASE
+    fl_trace_tick(pc, pawn);
+#endif
+    if (!fl_on || !pc || !tp_arm || !alive(tp_arm, tp_armi)) { if (fl_state) fl_end(); fl_idle = 0; return; }
     updrot_hook();
     unsigned b = fl_busy_now(pawn, pvc, pc);
     fl_busy = b;
     fl_idle_t = b ? 0 : fl_idle_t + dt;
     fl_idle = updrot_hooked == 1 && fl_idle_t >= FL_IDLE_DELAY;
-    if (b & (FL_VIEW | FL_ADS | FL_INCAP)) { if (fl_state) fl_end(); return; }   // another camera now: no swing
-    if (fl_state == 1 && b) {
-        if (fl_return <= 0.001f) { fl_end(); return; }
-        fl_state = 2; fl_t = 0; fl_from[0] = fl_off[0]; fl_from[1] = fl_off[1];
-    }
-    if (fl_state == 2) {
-        float a = (fl_t += dt) / fl_return;
-        if (a >= 1.f) { fl_end(); return; }
-        float s = 1.f - a * a * (3.f - 2.f * a);   // smoothstep back to 0
-        fl_off[0] = fl_from[0] * s; fl_off[1] = fl_from[1] * s;
-    }
+    if (b) { if (fl_state) fl_end(); return; }   // the hero acts: it turns to the camera, the camera stays
     if (fl_state) fl_apply();
 }
 
@@ -744,7 +833,7 @@ int thirdperson_live(const char *key, const char *v) {
     else if (!strcmp(key, "thirdperson_fov")) tp_fov = v && atof(v) > 0 ? clampf((float)atof(v), 60, 130) : 0;
     else if (!strcmp(key, "thirdperson_aimfix")) { aim_fix = v ? atoi(v) != 0 : 1; return 1; }
     else if (!strcmp(key, "thirdperson_freelook")) { fl_on = v ? atoi(v) != 0 : 1; return 1; }   // tick ends it
-    else if (!strcmp(key, "thirdperson_freelook_return")) { fl_return = v ? clampf((float)atof(v), 0, 2) : FL_RETURN_DEF; return 1; }
+    else if (!strcmp(key, "thirdperson_freelook_return")) return 1;   // 0.6.x camera swing-back: gone, ignored
     else return 0;
     if (tp_started) {   // camera settings: at once, like the chat command
         if (tp_fov <= 0) tune(0);
@@ -792,12 +881,10 @@ static void tp_panel(void) {
     ov_heading("Free look");
     int fl = fl_on;
     if (ov_checkbox("Look around your hero while standing still##freelook", &fl)) ov_setting("thirdperson_freelook", fl ? "1" : "0", 1);
-    ov_tooltip("Standing still, the mouse swings the camera around your hero (see its front) without turning it. Moving, "
-               "shooting, aiming, reloading, melee or using something swings the camera back behind it.");
-    float r = fl_return;
-    ov_width(14);
-    if (ov_slider("Swing back (seconds)##freelook_return", &r, 0, 1, "%.2f")) ov_setting_f("thirdperson_freelook_return", r, 0);
-    if (ov_edit_done()) ov_setting_f("thirdperson_freelook_return", r, 1);
+    ov_tooltip("Standing still, the mouse moves the camera around your hero (see its front) without turning it. When you "
+               "move, shoot, aim, reload, melee or use something, your hero turns to face where the camera looks; the "
+               "camera stays where it is.");
+    if (fl_on) ov_text_dim("When you act, your hero turns to face where the camera looks.");
     ov_text_dim("Ctrl+click a slider to type a value. Camera changes apply at once and are saved to b4bcoop.ini.");
 }
 
@@ -805,8 +892,8 @@ int thirdperson_init(void) {
     cmds_ini_each(ini_pair, NULL);
     tp_started = 1;
     overlay_add_panel("Camera", 30, tp_panel);
-    LOG("thirdperson: start %s, key=0x%02x, distance %.0f side %.0f height %.0f fov %.0f aimfix %d freelook %d return %.2f",
-        tp_on ? "on" : "off", tp_key, tp_dist, tp_side, tp_height, tp_fov, aim_fix, fl_on, fl_return);
+    LOG("thirdperson: start %s, key=0x%02x, distance %.0f side %.0f height %.0f fov %.0f aimfix %d freelook %d",
+        tp_on ? "on" : "off", tp_key, tp_dist, tp_side, tp_height, tp_fov, aim_fix, fl_on);
     return 0;
 }
 
@@ -1185,8 +1272,8 @@ static void fl_status(Out *o) {
     if (pawn && tc_prep(&c, pawn, "K2_GetActorRotation")) { ue_process_event(c.obj, c.fn, c.p); memcpy(ar, tc_arg(&c, "ReturnValue"), 12); }
     float *ctl = pc ? ctrl_rot(pc) : cr;
     out_printf(o, "freelook %d state %d offset (%.1f %.1f) idle %d %.2f s busy 0x%02x (1 move 2 fire 4 ads 8 use 16 key 32 incap "
-                  "64 ladder/ledge 128 view) return %.2f s hook %d orbits %u arm bits %s%02x\n",
-               fl_on, fl_state, fl_off[0], fl_off[1], fl_idle, fl_idle_t, fl_busy, fl_return, updrot_hooked, fl_n,
+                  "64 ladder/ledge 128 view) hook %d orbits %u turns %u (in UpdateRotation: %u movement, %u key) arm bits %s%02x\n",
+               fl_on, fl_state, fl_off[0], fl_off[1], fl_idle, fl_idle_t, fl_busy, updrot_hooked, fl_n, fl_turns, fl_mv_turns, fl_key_turns,
                fl_bits == 0xff ? "follow " : "saved ", tp_arm && alive(tp_arm, tp_armi) ? *ARM_BITS(tp_arm) : 0);
     out_printf(o, "control (%.1f %.1f) hero yaw %.1f camera (%.1f %.1f)\n", ctl[0], ctl[1], ar[1], cr[0], cr[1]);
 }
