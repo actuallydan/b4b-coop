@@ -111,8 +111,9 @@ and your b4bcoop.ini, add-ons and bans stay as they are. "Go back to ..." in the
 had. Or by hand: extract the new zip over the old files. Details: b4bcoop-COMMANDS.txt, "Updates".
 
 ADD-ONS (textures, models): put the add-on's .pak in a b4bcoop-addons folder next to Back4Blood.exe and
-restart the game; /addons lists them. Only you see your add-ons. Hosts let in players with cosmetic add-ons
-only, by default (addons_policy=). Details: b4bcoop-COMMANDS.txt, "Add-ons".
+restart the game; /addons lists them. Only you see your add-ons, and nobody learns which ones you have. Hosts
+let in players with cosmetic add-ons only, by default (addons_policy=; your game checks yours before
+joining). Details: b4bcoop-COMMANDS.txt, "Add-ons".
 
 REMOVE: delete these files from the game folder.
 1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt, and

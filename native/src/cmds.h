@@ -99,6 +99,8 @@ FName chat_notice_type(int kind);        // 0 notice, 1 kick, 2 data
 void chat_local_later(const char *text); // show after the next map load (e.g. why a join was refused)
 void chat_on_join_failed(const char *error);  // uelog.c: PendingConnectionFailure on this client
 void cmds_auto_join_stop(void);        // client: no more ini auto-join attempts this session
+const char *cmds_last_join_target(void); // the target of the last join attempt, as given ("steam:<id64>", "ip[:port]")
+void cmds_join_retry(const char *target, double delay);  // join that target again once back in our camp
 int admin_init(void);
 void admin_tick(float dt);
 int admin_cmd(const char *verb, char *rest, Out *o);
@@ -122,6 +124,7 @@ void presence_init(void);                      // presence.c: Steam rich presenc
 void presence_tick(float dt);
 int presence_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled
 int presence_has_friend(uint64_t id);          // 1 Steam friend, 0 not, -1 Steam not bound (any thread)
+void presence_note_host_addons(const char *target); // joiner: a steam: host's add-on policy from its rich presence
 const char *presence_persona(uint64_t id);     // persona name from the friends cache, "?" if unknown
 
 // steamnet.c: Steam P2P transport (docs/investigations/steam-p2p.md)
@@ -174,14 +177,18 @@ int addons_outfits(AddonOutfit *out, int max);
 // Added weapon looks (addoninfo weapon= lines): code = weapon code (AR02); mesh object paths, "" = none
 typedef struct { const char *name, *code, *fp, *sm3p, *skm3p, *title, *addon; } AddonWeapon;
 int addons_weapons(AddonWeapon *out, int max);
-// addons_mp.c: add-ons in multiplayer (#22): login summary, host addons_policy, /addons players|policy
+const char *addons_title_of(const char *id8);  // title of an installed add-on (on or off) with that short id, or NULL
+// addons_mp.c: add-ons in multiplayer (#22, private #35): the host announces addons_policy, joiners check themselves
 int addons_policy_set(const char *v);         // any|cosmetic|none|match; -1 if unknown
 const char *addons_policy_name(void);
-const char *addons_login_option(void);        // "?b4bcoopaddons=..." appended to every join URL (cmds.c)
-int addons_login_check(const char *value, const char *name, const char *key, char *err, size_t en);  // host: 1 = refuse
-void addons_login_record(UObject *conn, const char *name, const char *value);  // host: accepted login's summary
-int addons_mp_slash(const char *sub, char *arg, Out *o);  // /addons players|policy; 1 if handled
-void addons_mp_panel(void);                  // ~ window: the Add-ons tab's policy + players section (addons.c draws the tab)
+void addons_presence_token(char *out, size_t n);        // host: " addons:<policy>[:<ids>]" for the rich presence
+void addons_note_host(const char *targets, const char *tok);  // joiner: the host's announced policy (tok NULL = older host)
+int addons_join_refused(const char *target, char *msg, size_t n);  // joiner: 1 = our add-ons fail the host's policy
+const char *addons_login_option(const char *target);    // "?b4bcoopaddonsok=<policy>" (checked) or "" (cmds.c)
+int addons_on_refusal(const char *error, const char *target, char *msg, size_t n);  // 0 not ours, 1 join again, 2 stop
+int addons_login_check(const char *claim, const char *summary, const char *name, char *err, size_t en);  // host: 1 = refuse
+int addons_mp_slash(const char *sub, char *arg, Out *o);  // /addons policy (players: gone); 1 if handled
+void addons_mp_panel(void);                  // ~ window: the Add-ons tab's policy section (addons.c draws the tab)
 // models.c: runtime model swaps (#19, docs/investigations/model-swap.md)
 int models_init(void);
 void models_tick(float dt);

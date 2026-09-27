@@ -60,7 +60,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `addonlist.txt` on/off + load order (later wins, read order 1000+), embedded `b4bcoop-addoninfo.txt`, index SHA1
     checked, conflicts (same file; "mixed" = one package from two add-ons) logged + one chat notice; chat
     `/addons [on|off|info <#>]` (applies on restart); `~` Add-ons tab (on/off, Up/Down load order = `ord[]` + file,
-    details, host `addons_policy` + players; addons.md §8). Packer `modkit/addon.py pack|info|check`.
+    details, host `addons_policy`; addons.md §8). Packer `modkit/addon.py pack|info|check`. `addons_mp.c` (#22, private
+    #35): nothing about a player's add-ons is sent; the host announces `addons_policy` (presence ` addons:<policy>`,
+    else a login refusal ending `[addons:<policy>]`), the joiner checks itself, declines locally or logs in with
+    `?b4bcoopaddonsok=<policy>`; older clients' `?b4bcoopaddons=` summary still judged, never logged (`log_redact_addons`).
     Client-side only, no protocol bump. docs/investigations/addons.md.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
@@ -139,9 +142,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
     joins, `host_ip=1` only: the login's claimed id). docs/investigations/steam-p2p.md "Join policy".
   - `presence.c` Steam "Join Game": while hosting, rich presence `connect=+b4bcoop_join steam:<id64> proto:<n>
-    ver:<x.y.z>` (+ `addr:<ip:port>` only with `host_ip=1`); join requests (callback 337) and the same string on the
-    command line become a session join target (overrides host=/join=, auto sign-in Offline), or stop at once with the
-    version message if `proto:` differs. `presence [on|off]`, `steamjoin <string>` (simulate), `invite`, `friends`;
+    ver:<x.y.z> addons:<policy>` (+ `addr:<ip:port>` only with `host_ip=1`); join requests (callback 337) and the same
+    string on the command line become a session join target (overrides host=/join=, auto sign-in Offline), or stop at
+    once with the version message if `proto:` differs, or with the add-on message if our add-ons fail `addons:`. `presence [on|off]`, `steamjoin <string>` (simulate), `invite`, `friends`;
     ini `presence=0`, `presence_addr=` (host_ip=1 only). docs/investigations/steam-invites.md.
   - `steamnet.c` Steam P2P: UDP shim under the retail net driver (ws2_32 sendto/recvfrom ↔ ISteamNetworking P2P,
     Steam peers get fake 198.18.x.y addresses); `join steam:<id64>`, SteamID in `status`, `steamnet [on|off]`, ini

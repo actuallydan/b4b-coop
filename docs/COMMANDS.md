@@ -31,7 +31,7 @@ of the window, and also in your chat.
 | **Flashlight** | Your light (Toggle, On, Off; host: Automatic), its key, sticky mode; **Beam (your view)**: sliders for width, range and brightness, Reset beam | `/flashlight ...`; ini `flashlight_key`, `flashlight_sticky`, `flashlight_width`, `flashlight_range`, `flashlight_brightness` |
 | **Cheats** | Host: **Cheats on**, a player picker (`me`, everyone, a player) for the buttons marked `*`, then every cheat: god, heal, revive, infinite ammo, copper, cards, fly, noclip, walk, teleport, free camera, size, horde, kill all ridden, freeze, director phases, spawn, game speed, win, lose, and your own save's supply points / unlock all | every `/cheats` command |
 | **Models** | Your look now and your pick, the host's refusal when it said no, **Reset my look**; lists to wear with a search box (click a name): **Survivors** (per survivor: whole survivor, outfits, heads, torsos, legs), **NPC bodies** (Fort Hope NPCs, other survivors, cultists), **Add-on outfits** (by add-on); **Weapon looks** per weapon type (**Use**, which add-on it comes from, **Reset** for that weapon type); **Everyone's look** (every player and bot); host: **Change the look of** a player or bot (then click a look), their **Reset**, **Model swaps allowed** (greyed on a client, with the host's last announced state) | `/model`, `/model list ...`, `/model <name>`, `/model reset`, `/model <player> <name>\|reset`, `/models on\|off` |
-| **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`), every player's add-ons | `/addons`, `/addons on\|off`, `/addons info`, `/addons players`, `/addons policy`; ini `addons`, `addons_policy` |
+| **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`; nobody sees other players' add-ons) | `/addons`, `/addons on\|off`, `/addons info`, `/addons policy`; ini `addons`, `addons_policy` |
 | **Settings** | The window's text size and key, the flashlight and third-person keys | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key` |
 | **Updates** | Your version; **Check for updates** (the latest release: version, protocol, short notes); **Download and install on next start**; the host's version after a "same version" refusal (**Check** it); **Go back to** the previous version. See [Updates](#updates) | ini `updates` (no chat command) |
 | **Help** | Your version, a box to run any chat command (without the `/`) | `/help` |
@@ -177,7 +177,6 @@ sent to the host.
 | `/say <message>` | A message every player sees in their chat | `/say back in 5 min` |
 | `/model <player> <name\|reset>` | Changes a player's or a bot's look; everyone is told | `/model 2 doc_elite_03` |
 | `/models on\|off` | Allows or stops model swaps for everyone (on by default) | `/models off` |
-| `/addons players` | Which add-ons each player runs (cosmetic/gameplay, ids) | `/addons players` |
 | `/addons policy [any\|cosmetic\|none\|match]` | Shows or sets (this session) which add-ons joiners may have | `/addons policy none` |
 
 **`<player>`** is the number from `/players` (`2` or `#2`), or a name: exact (any case) or the start of a name, if
@@ -358,32 +357,33 @@ add-on says about itself doesn't count):
 
 `/addons` shows the kind of each add-on, `/addons info <#>` the first file that made it "gameplay".
 
-**Joining someone with add-ons:** when you join, your game tells the host how many cosmetic and gameplay add-ons you
-run and their ids (plus the titles of gameplay ones). The host's `addons_policy` decides:
+**Joining someone with add-ons:** which add-ons you have **stays on your PC**: your game sends nobody a list, names,
+ids or counts, and nobody can see what you run (not even the host). Instead the host **announces** which add-ons it
+allows (`addons_policy`), and **your game checks your own add-ons** before joining:
 
 | `addons_policy=` | Who may join |
 |---|---|
-| `cosmetic` (default) | Everyone with cosmetic add-ons only. Gameplay add-ons are refused, by name |
+| `cosmetic` (default) | Everyone with cosmetic add-ons only (no gameplay add-ons) |
 | `any` | Everyone, whatever they run |
 | `none` | Only players with no add-ons at all |
-| `match` | Cosmetic add-ons are free; gameplay add-ons must be exactly the host's (same ids) |
+| `match` | Cosmetic add-ons are free; gameplay add-ons must be exactly the host's. The host's own gameplay add-ons' short ids are shown to people joining (that's how they can match them); the other policies reveal nothing about the host's add-ons |
 
-Refused, you see `Could not join: Host allows cosmetic add-ons only; you have gameplay add-ons: <titles>. Switch them
-off (/addons off <#>) and restart the game.` (or the `none`/`match` version); the host sees `<name> could not join:
-they have gameplay add-ons (<titles>); addons_policy=cosmetic.` Add-ons apply at game start, so switch them off and
-restart before joining again. The host's own add-ons don't matter under `cosmetic`, `any` and `none`.
+If yours don't fit, your game doesn't join and tells only you, e.g. `Could not join: This host allows only cosmetic
+add-ons; turn off Walker data table test (~ window, tab Add-ons, or /addons off <#>) and restart the game.` (or `This
+host allows no add-ons; ...`, `This host requires the same gameplay add-ons as theirs. Turn off: ... Turn on or
+install: ...`). The host sees nothing about it. Add-ons apply at game start, so switch them off and restart before
+joining again. The host's own add-ons don't matter under `cosmetic`, `any` and `none`.
 
-**`/addons players`** (host): every player's add-ons, e.g.
-```
-add-ons policy: cosmetic
-you (host): 0 cosmetic, 0 gameplay
-#1 Bob:
-  1 cosmetic, 0 gameplay
-  cosmetic 33c6d9d8 Walker checker outfit (you have it too)
-```
-Titles show for gameplay add-ons and for ones you have too; others show their id (`/addons info` on Bob's side shows
-the same id). **`/addons policy <x>`** changes the policy until the host quits; `addons_policy=` in `b4bcoop.ini`
-keeps it (the `~` window's Add-ons tab sets both).
+- Steam **Join Game** / invites: the check happens before connecting.
+- Joining by IP address (`host_ip=1`): your game doesn't know the rule yet, so the host's first answer tells it; if
+  your add-ons fit, your game joins again at once by itself (you may see "Unable to join" flash by).
+- A host on an **older b4bcoop** (0.7.0 and before) doesn't announce its rule: your game assumes `cosmetic` (their
+  default). Over an IP address an older host doesn't check you at all.
+- A player on an older b4bcoop (0.7.0 and before) still sends its add-on list when joining; a newer host checks it
+  as before but never shows or logs it. Update to stop sending it.
+
+**`/addons policy <x>`** (host) changes the policy until the host quits; `addons_policy=` in `b4bcoop.ini` keeps it
+(the `~` window's Add-ons tab sets both). There is no list of other players' add-ons (`/addons players` is gone).
 
 Messages (in your chat after the game starts):
 - `Add-on conflict: "B" overrides "A". /addons`: both change the same files; B wins (it is further down the list).
@@ -603,7 +603,7 @@ join=steam:7656119XXXXXXXXXX
 | `netguard_allow` | none | With `netguard=block`: host names to let through anyway, comma-separated, `*.example.com` for a whole domain (troubleshooting only) |
 | `addons` | `1` | `0`: load no add-ons at all (troubleshooting) |
 | `addons_dir` | `<game>\b4bcoop-addons` | Another add-ons folder, a full Windows path, e.g. `addons_dir=D:\b4b-addons` |
-| `addons_policy` | `cosmetic` | Host: which add-ons joiners may have: `cosmetic`, `any`, `none`, `match` (see Add-ons) |
+| `addons_policy` | `cosmetic` | Host: which add-ons joiners may have: `cosmetic`, `any`, `none`, `match` (see Add-ons; joiners check themselves, `match` shows them your gameplay add-ons' ids) |
 | `updates` | `1` | `0`: hide the `~` window's Updates tab (see [Updates](#updates)) |
 
 ## Launch options & troubleshooting
@@ -641,7 +641,7 @@ your chat as `Could not join: ...` once the popup is closed.
 | Message | Meaning | What to do |
 |---|---|---|
 | `Host runs b4bcoop X (protocol N); you have Y (protocol M). Everyone needs the same version.` | You and the host have different b4bcoop versions | Press `~`, tab **Updates**: **Check** the host's version and install it (or everyone installs the latest release). Both versions are in the message; the host sees `<name> could not join: they have ...` |
-| `Host allows cosmetic add-ons only; you have gameplay add-ons: ...` (or `no add-ons`, `the same gameplay add-ons`) | The host's `addons_policy` refuses some of your add-ons | `/addons off <#>` for the ones named, restart the game, join again; or the host sets `/addons policy any` |
+| `This host allows only cosmetic add-ons; turn off ...` (or `allows no add-ons`, `requires the same gameplay add-ons`) | Your game checked your add-ons against the host's `addons_policy`: some don't fit. Only you see this | `/addons off <#>` (or the `~` Add-ons tab) for the ones named, restart the game, join again; or the host sets `/addons policy any` |
 | `Server full.` | Every survivor slot is taken by a player (bot slots count as free) | Wait for a free slot, or the host sets `teamsize=5` |
 | `This host only accepts their Steam friends. ...` | You're not on the host's Steam friends list | Become Steam friends, or the host adds you with `allow_steamids=` |
 | `Could not reach the host over Steam. Is it still hosting? ...` | The host quit, or refused you (not friends) | Check the host is in Fort Hope or a mission; see the line above |

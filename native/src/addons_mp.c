@@ -1,42 +1,56 @@
-// Add-ons in multiplayer (#22, epic #23). docs/investigations/addons.md §7, player page docs/COMMANDS.md "Add-ons".
+// Add-ons in multiplayer (#22, private since #35). docs/investigations/addons.md §7, player page docs/COMMANDS.md
+// "Add-ons".
 //
-// L4D-like: add-ons stay local. Every player sees the add-ons they installed; nothing is sent to other machines
-// except a small summary in the join URL, so the host can decide who may join:
-//   client: every join and rejoin carries ?b4bcoopaddons=<C>c<G>g[,g<id8>-<Title>...][,c<id8>...][,+<n>]
-//     C/G = cosmetic / gameplay-affecting add-ons mounted in this game (addonclass.c decides, not the author),
-//     id8 = first 8 hex digits of the content id (pak index SHA1), Title only for gameplay ones (letters/digits/_,
-//     24 max). The whole value is capped at SUMMARY_MAX (the login URL is one FString, max 1024 chars on the wire);
-//     entries that don't fit are counted in +<n>. No option at all = an older b4bcoop (no add-on loader).
-//   host (admin.c PreLogin, after the join policy and the protocol check): ini addons_policy=
+// L4D-like: add-ons stay local, and which add-ons a player has never leaves their PC (#35: no ids, names or counts
+// go to anyone). The host announces its addons_policy; the joiner checks its own add-ons against it and, if they
+// don't pass, doesn't join, telling only its own player what to switch off.
+//   policies (host, ini addons_policy=, /addons policy <x> for the session):
 //     any       everyone may join, whatever they run
-//     cosmetic  (default, ADDONS_POLICY_DEFAULT) gameplay-affecting add-ons are refused, naming them
+//     cosmetic  (default, ADDONS_POLICY_DEFAULT) no gameplay-affecting add-ons (addonclass.c decides, not the author)
 //     none      no add-ons at all
-//     match     cosmetic ones are free; gameplay ones must be exactly the host's (same content ids)
-//   Both sides get the reason: the joiner as its login error ("Could not join: Host allows ..."), the host as a chat
-//   line. /addons players (host) lists what everyone runs; /addons policy [x] shows or sets it for this session.
-// No protocol bump: an older client sends no summary and has no add-on loader, so "absent" really means "none", and
-// an older host ignores the option (addons.md §7).
+//     match     cosmetic ones are free; gameplay ones must be exactly the host's. Choosing it is the host's opt-in to
+//               reveal its OWN gameplay add-on ids (first 8 hex digits of the content id), which the joiner needs.
+//   announce (host): the Steam rich presence connect string carries " addons:<policy>" ("addons:match:<id8>.<id8>..."
+//     for match, up to MATCH_MAX ids) (presence.c, addons_presence_token); a login that doesn't say it checked gets
+//     a login error ending in the same token in brackets, "[addons:<policy>]".
+//   joiner: the policy is known from the presence it joined through (or read from the host's presence for a
+//     steam:<id64> target), else from that refusal. Passes -> the login carries ?b4bcoopaddonsok=<policy> ("I checked
+//     against your policy": the host learns nothing it wouldn't learn from a successful join). Fails -> no connection
+//     (presence path) or no second attempt (refusal path), and a local chat line naming the joiner's own add-ons.
+//     After a refusal that passes, the client joins again at once (cmds_join_retry).
+//   compatibility (no protocol bump, addons.md §7): an older host (0.6.0-0.7.0) announces nothing: the joiner assumes
+//     cosmetic (every older version's default), and an IP join to it isn't checked (the older host sees no summary and
+//     lets it in). An older client (0.6.0-0.7.0) still sends its summary ?b4bcoopaddons=<C>c<G>g,...: the host checks
+//     it as before, but never logs, keeps or shows it; the refusal (with the joiner's own add-on names) goes only to
+//     the joiner. A modified client can ignore the policy; that was always true (the summary was self-reported).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <windows.h>
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
 #include "overlay.h"
 
-enum { POL_ANY, POL_COSMETIC, POL_NONE, POL_MATCH };
+enum { POL_ANY, POL_COSMETIC, POL_NONE, POL_MATCH, POL_UNKNOWN };
 #define ADDONS_POLICY_DEFAULT POL_COSMETIC   // the one place to change the default (docs: COMMANDS.md, addons.md)
 static const char *POLICY_NAMES[] = {"any", "cosmetic", "none", "match"};
 static int policy = ADDONS_POLICY_DEFAULT;
 
-#define SUMMARY_MAX 400
+#define MATCH_MAX 16     // host gameplay ids announced for match (the rich presence value is 256 chars max)
 #define TITLE_MAX 24
 #define MAX_ENTRIES 64
 
-int addons_policy_set(const char *v) {
-    for (int i = 0; i < 4; i++) if (!_stricmp(v, POLICY_NAMES[i])) { policy = i; return 0; }
+static int policy_of(const char *v, size_t n) {
+    for (int i = 0; i < 4; i++) if (strlen(POLICY_NAMES[i]) == n && !_strnicmp(v, POLICY_NAMES[i], n)) return i;
     return -1;
+}
+int addons_policy_set(const char *v) {
+    int p = policy_of(v, strlen(v));
+    if (p < 0) return -1;
+    policy = p;
+    return 0;
 }
 const char *addons_policy_name(void) { return POLICY_NAMES[policy]; }
 
@@ -49,58 +63,199 @@ int addons_live(const char *key, const char *v) {
     return 1;
 }
 
-// ---- summary ----
-typedef struct { char g; char id[9]; char title[TITLE_MAX + 1]; } Entry;
-typedef struct { int present, nc, ng, omitted, n; Entry e[MAX_ENTRIES]; } Summary;
-
-static void title_token(const char *in, char *out, size_t n) {   // "Heavy physics!" -> "Heavy_physics"
-    size_t k = 0;
-    int us = 0;
-    for (; *in && k + 1 < n; in++) {
-        if (isalnum((unsigned char)*in) && (unsigned char)*in < 128) { out[k++] = *in; us = 0; }
-        else if (!us && k) { out[k++] = '_'; us = 1; }
-    }
-    while (k && out[k - 1] == '_') k--;
-    out[k] = 0;
-}
-static void title_show(const char *tok, char *out, size_t n) {   // "Heavy_physics" -> "Heavy physics"
-    snprintf(out, n, "%s", tok);
-    for (char *c = out; *c; c++) if (*c == '_') *c = ' ';
-}
-
 static int own(AddonRef *r, int max) { return addons_active(r, max); }
 
-const char *addons_login_option(void) {
-    static char opt[SUMMARY_MAX + 32];
+// ---- announcing (host) ----
+// "addons:cosmetic", or "addons:match:<id8>.<id8>..." with our own gameplay add-ons
+static void policy_token(char *out, size_t n) {
+    size_t k = (size_t)snprintf(out, n, "addons:%s", POLICY_NAMES[policy]);
+    if (policy != POL_MATCH) return;
     AddonRef r[MAX_ADDONS];
-    int n = own(r, MAX_ADDONS), nc = 0, ng = 0, omitted = 0;
-    for (int i = 0; i < n; i++) { if (r[i].gameplay) ng++; else nc++; }
-    char v[SUMMARY_MAX + 1];
-    int k = snprintf(v, sizeof v, "%dc%dg", nc, ng);
-    for (int pass = 1; pass >= 0; pass--)   // gameplay ones first: they are the ones a host checks
-        for (int i = 0; i < n; i++) {
-            if (r[i].gameplay != pass) continue;
-            char e[48], t[TITLE_MAX + 1];
-            if (pass) { title_token(r[i].title, t, sizeof t); snprintf(e, sizeof e, ",g%.8s%s%s", r[i].hash, t[0] ? "-" : "", t); }
-            else snprintf(e, sizeof e, ",c%.8s", r[i].hash);
-            if (k + (int)strlen(e) + 6 > SUMMARY_MAX) { omitted++; continue; }
-            k += snprintf(v + k, sizeof v - k, "%s", e);
+    int m = own(r, MAX_ADDONS), shown = 0;
+    for (int i = 0; i < m; i++) {
+        if (!r[i].gameplay) continue;
+        if (shown == MATCH_MAX) {
+            static int told;
+            if (!told++) LOG("addons: match announces only %d gameplay add-ons; joiners can't match the rest", MATCH_MAX);
+            break;
         }
-    if (omitted) snprintf(v + k, sizeof v - k, ",+%d", omitted);
-    snprintf(opt, sizeof opt, "?b4bcoopaddons=%s", v);
+        k += (size_t)snprintf(out + k, k < n ? n - k : 0, "%c%.8s", shown ? '.' : ':', r[i].hash);
+        shown++;
+    }
+}
+
+// presence.c: appended to the rich presence connect string while we host
+void addons_presence_token(char *out, size_t n) {
+    if (n < 2) return;
+    out[0] = ' ';
+    policy_token(out + 1, n - 1);
+}
+
+// ---- the host's policy as the joiner knows it, per join target ("steam:<id64>" or "ip[:port]", as joined) ----
+// src: 1 = the host's rich presence (current: re-read at every Join Game / steam: join), 2 = its login refusal (may be
+// stale: the host can change its policy, so it only decides the ?b4bcoopaddonsok= claim, never a local refusal)
+typedef struct { char target[112]; int pol, nid, assumed, tries, src; unsigned long long last; char ids[MATCH_MAX][9]; } Note;
+static Note notes[8];
+static int n_notes;
+
+static Note *note_of(const char *target, int create) {
+    for (int i = 0; i < n_notes; i++) if (!strcmp(notes[i].target, target)) return &notes[i];
+    if (!create) return NULL;
+    Note *n = n_notes < 8 ? &notes[n_notes++] : &notes[7];
+    memset(n, 0, sizeof *n);
+    snprintf(n->target, sizeof n->target, "%s", target);
+    return n;
+}
+
+// "cosmetic" / "match:ab12cd34.ef567890" (the part after "addons:") into a note; NULL = an older host (assumed cosmetic)
+static void parse_token(const char *tok, Note *n) {
+    n->nid = 0; n->assumed = !tok;
+    if (!tok) { n->pol = POL_COSMETIC; return; }
+    size_t pl = strcspn(tok, ":] ");
+    int p = policy_of(tok, pl);
+    n->pol = p < 0 ? POL_UNKNOWN : p;
+    if (n->pol != POL_MATCH || tok[pl] != ':') return;
+    for (const char *q = tok + pl + 1; n->nid < MATCH_MAX;) {
+        int k = 0;
+        while (k < 8 && isxdigit((unsigned char)q[k])) { n->ids[n->nid][k] = (char)tolower((unsigned char)q[k]); k++; }
+        n->ids[n->nid][k] = 0;
+        if (k == 8) n->nid++;
+        q += k;
+        if (*q != '.') break;
+        q++;
+    }
+}
+
+// presence.c: the host's connect string said "addons:<tok>" (tok NULL: no addons: token, an older b4bcoop). targets =
+// the comma-separated join targets from that connect string.
+void addons_note_host(const char *targets, const char *tok) {
+    char list[300];
+    snprintf(list, sizeof list, "%s", targets ? targets : "");
+    for (char *t = strtok(list, ","); t; t = strtok(NULL, ",")) {
+        while (*t == ' ') t++;
+        if (!*t) continue;
+        Note *n = note_of(t, 1);
+        parse_token(tok, n);
+        n->src = 1;
+        LOG("addons: host %s announces add-on policy %s%s", t, tok ? tok : "cosmetic", tok ? "" : " (assumed: older b4bcoop)");
+    }
+}
+
+// "A, B, C and 2 more": our add-ons that fail (gameplay only, or all), skipping ids the host has (match)
+static int list_own(const AddonRef *r, int n, int gameplay_only, const Note *skip, char *out, size_t on) {
+    size_t k = 0; int all = 0;
+    out[0] = 0;
+    for (int i = 0; i < n; i++) {
+        if (gameplay_only && !r[i].gameplay) continue;
+        int has = 0;
+        for (int j = 0; skip && j < skip->nid; j++) if (!strncmp(skip->ids[j], r[i].hash, 8)) has = 1;
+        if (has) continue;
+        if (all++ < 3) k += (size_t)snprintf(out + k, k < on ? on - k : 0, "%s%.40s", k ? ", " : "", r[i].title);
+    }
+    if (all > 3) snprintf(out + k, k < on ? on - k : 0, " and %d more", all - 3);
+    return all;
+}
+
+// Do our add-ons pass the host's policy? 1 = they don't (msg: the line for our own player), 0 = they do
+static int fails(const Note *n, char *msg, size_t mn) {
+    AddonRef r[MAX_ADDONS];
+    int m = own(r, MAX_ADDONS);
+    char list[240];
+    msg[0] = 0;
+    switch (n->pol) {
+    case POL_ANY: return 0;
+    case POL_COSMETIC:
+        if (!list_own(r, m, 1, NULL, list, sizeof list)) return 0;
+        snprintf(msg, mn, "This host allows only cosmetic add-ons%s; turn off %s (~ window, tab Add-ons, or /addons off <#>) "
+                 "and restart the game.", n->assumed ? " (an older b4bcoop: its default)" : "", list);
+        return 1;
+    case POL_NONE:
+        if (!list_own(r, m, 0, NULL, list, sizeof list)) return 0;
+        snprintf(msg, mn, "This host allows no add-ons; turn off %s (~ window, tab Add-ons, or /addons off <#>) and "
+                 "restart the game.", list);
+        return 1;
+    case POL_MATCH: {
+        int extra = list_own(r, m, 1, n, list, sizeof list), lack = 0;
+        char need[240]; size_t k = 0;
+        need[0] = 0;
+        for (int j = 0; j < n->nid; j++) {   // the host's gameplay add-ons we don't run
+            int has = 0;
+            for (int i = 0; i < m; i++) if (r[i].gameplay && !strncmp(n->ids[j], r[i].hash, 8)) has = 1;
+            if (has) continue;
+            const char *t = addons_title_of(n->ids[j]);   // installed here but off?
+            if (lack++ < 3) k += (size_t)snprintf(need + k, k < sizeof need ? sizeof need - k : 0, "%s%.40s%s", k ? ", " : "",
+                                                   t ? t : n->ids[j], t ? "" : " (id; not installed here)");
+        }
+        if (lack > 3) snprintf(need + k, k < sizeof need ? sizeof need - k : 0, " and %d more", lack - 3);
+        if (!extra && !lack) return 0;
+        k = (size_t)snprintf(msg, mn, "This host requires the same gameplay add-ons as theirs.");
+        if (extra) k += (size_t)snprintf(msg + k, k < mn ? mn - k : 0, " Turn off: %s.", list);
+        if (lack) k += (size_t)snprintf(msg + k, k < mn ? mn - k : 0, " Turn on or install: %s.", need);
+        snprintf(msg + k, k < mn ? mn - k : 0, " Then restart the game.");
+        return 1;
+    }
+    default:
+        snprintf(msg, mn, "This host uses an add-on rule this b4bcoop doesn't know; update b4bcoop (~ window, tab Updates).");
+        return 1;
+    }
+}
+
+// cmds.c (every join attempt) and presence.c (before arming a Steam join): 1 = our add-ons don't pass the policy
+// the host announced in its rich presence; msg = what to tell our player. Unknown policy = 0 (the host asks at login).
+int addons_join_refused(const char *target, char *msg, size_t mn) {
+    char first[112];
+    snprintf(first, sizeof first, "%.*s", (int)strcspn(target, ","), target);
+    Note *n = note_of(first, 0);
+    msg[0] = 0;
+    if (!n || n->src != 1 || !fails(n, msg, mn)) return 0;
+    LOG("addons: not joining %s: our add-ons don't pass its policy %s (told only to us)", first,
+        n->pol < POL_UNKNOWN ? POLICY_NAMES[n->pol] : "unknown");
+    return 1;
+}
+
+// cmds.c: appended to the join URL: "?b4bcoopaddonsok=<policy>" once we know the host's policy and pass it
+const char *addons_login_option(const char *target) {
+    static char opt[48];
+    Note *n = note_of(target, 0);
+    char msg[8];
+    opt[0] = 0;
+    if (n && !n->assumed && n->pol != POL_ANY && n->pol != POL_UNKNOWN && !fails(n, msg, sizeof msg))
+        snprintf(opt, sizeof opt, "?b4bcoopaddonsok=%s", POLICY_NAMES[n->pol]);
     return opt;
 }
 
-static void parse(const char *v, Summary *s) {
+// chat.c: a join to `target` failed with `error`. Ours = the host asked us to check ("[addons:<policy>]").
+// Returns 0 (not ours), 1 (we pass: join again, cmds_join_retry), 2 (we don't pass or it keeps asking: msg).
+int addons_on_refusal(const char *error, const char *target, char *msg, size_t mn) {
+    const char *t = strstr(error, "[addons:");
+    if (!t || !target || !*target) return 0;
+    Note *n = note_of(target, 1);
+    parse_token(t + 8, n);
+    n->src = 2;
+    LOG("addons: host %s asks us to check our add-ons against its policy %.*s", target, (int)strcspn(t + 8, "]"), t + 8);
+    if (fails(n, msg, mn)) return 2;
+    unsigned long long now = GetTickCount64();   // a host that asks again right after we checked: stop, don't loop
+    n->tries = now - n->last < 60000 ? n->tries + 1 : 1;
+    n->last = now;
+    if (n->tries > 2) {
+        snprintf(msg, mn, "The host keeps asking for an add-on check (policy %.*s); join again later.", (int)strcspn(t + 8, "]:"), t + 8);
+        return 2;
+    }
+    return 1;
+}
+
+// ---- the gate (host, admin.c PreLogin) ----
+// Older clients' summary: "<C>c<G>g[,g<id8>-<Title>...][,c<id8>...][,+<n>]"
+typedef struct { char g; char id[9]; char title[TITLE_MAX + 1]; } Entry;
+typedef struct { int nc, ng, n; Entry e[MAX_ENTRIES]; } Summary;
+
+static void parse_summary(const char *v, Summary *s) {
     memset(s, 0, sizeof *s);
-    if (!v || !*v) return;
-    s->present = 1;
     if (sscanf(v, "%dc%dg", &s->nc, &s->ng) != 2) { s->nc = s->ng = 0; }
     if (s->nc < 0 || s->nc > 9999) s->nc = 0;
     if (s->ng < 0 || s->ng > 9999) s->ng = 0;
     for (const char *p = strchr(v, ','); p; p = strchr(p + 1, ',')) {
         const char *q = p + 1;
-        if (*q == '+') { s->omitted = atoi(q + 1); continue; }
         if ((*q != 'g' && *q != 'c') || s->n == MAX_ENTRIES) continue;
         Entry *e = &s->e[s->n];
         e->g = *q == 'g';
@@ -110,177 +265,71 @@ static void parse(const char *v, Summary *s) {
         if (k != 8) continue;
         if (*q == '-') {
             k = 0;
-            for (q++; *q && *q != ',' && k < TITLE_MAX; q++) e->title[k++] = isalnum((unsigned char)*q) ? *q : '_';
+            for (q++; *q && *q != ',' && k < TITLE_MAX; q++) e->title[k++] = isalnum((unsigned char)*q) ? *q : ' ';
             e->title[k] = 0;
         }
         s->n++;
     }
 }
 
-// "Heavy physics, Big guns and 2 more" from the gameplay (g=1) or cosmetic (g=0) entries; "" if none is listed
-static void names_of(const Summary *s, int g, char *out, size_t n) {
-    size_t k = 0; int shown = 0;
-    out[0] = 0;
-    for (int i = 0; i < s->n; i++) {
-        if (s->e[i].g != g) continue;
-        if (shown == 3) continue;
-        char t[TITLE_MAX + 1];
-        if (s->e[i].title[0]) title_show(s->e[i].title, t, sizeof t); else snprintf(t, sizeof t, "%s", s->e[i].id);
-        k += (size_t)snprintf(out + k, k < n ? n - k : 0, "%s%s", shown ? ", " : "", t);
-        shown++;
-    }
-    int all = g ? s->ng : s->nc;
-    if (all > shown && shown) snprintf(out + k, k < n ? n - k : 0, " and %d more", all - shown);
-}
-
-// Host: is this joiner's summary acceptable under our policy? 1 = refused, err = login error for the joiner.
-int addons_login_check(const char *value, const char *name, const char *key, char *err, size_t en) {
+// An older client's summary against our policy: 1 = refused, err = its login error (its own add-ons, for it only)
+static int summary_fails(const char *v, char *err, size_t en) {
     Summary s;
-    parse(value, &s);
-    char list[200], why[240] = "";
-    err[0] = 0;
-    if (policy == POL_ANY) return 0;
-    if (policy == POL_COSMETIC && s.ng > 0) {
-        names_of(&s, 1, list, sizeof list);
-        if (!list[0]) snprintf(list, sizeof list, "%d unlisted", s.ng);
-        snprintf(err, en, "Host allows cosmetic add-ons only; you have gameplay add-ons: %s. Switch them off (/addons off <#>) and restart the game.", list);
-        snprintf(why, sizeof why, "they have gameplay add-ons (%s); addons_policy=cosmetic", list);
-    } else if (policy == POL_NONE && s.nc + s.ng > 0) {
-        names_of(&s, 1, list, sizeof list);
-        snprintf(err, en, "Host allows no add-ons; you have %d%s%s%s. Switch them off (/addons off <#>) and restart the game.",
-                 s.nc + s.ng, list[0] ? " (gameplay: " : "", list, list[0] ? ")" : "");
-        snprintf(why, sizeof why, "they have %d add-on(s); addons_policy=none", s.nc + s.ng);
-    } else if (policy == POL_MATCH) {
+    parse_summary(v, &s);
+    if (policy == POL_COSMETIC && s.ng > 0)
+        snprintf(err, en, "Host allows cosmetic add-ons only; you have %d gameplay add-on(s). Switch them off (/addons off <#>) "
+                 "and restart the game.", s.ng);
+    else if (policy == POL_NONE && s.nc + s.ng > 0)
+        snprintf(err, en, "Host allows no add-ons; you have %d. Switch them off (/addons off <#>) and restart the game.", s.nc + s.ng);
+    else if (policy == POL_MATCH) {
         AddonRef r[MAX_ADDONS];
-        int n = own(r, MAX_ADDONS);
-        char lack[200] = "", extra[200] = "";
-        size_t kl = 0, ke = 0;
-        int nl = 0, nx = 0;
-        for (int i = 0; i < n; i++) {   // host's gameplay add-ons the joiner doesn't have
+        int n = own(r, MAX_ADDONS), bad = 0, listed = 0;
+        for (int i = 0; i < n; i++) {   // our gameplay add-ons it lacks
             if (!r[i].gameplay) continue;
             int have = 0;
             for (int j = 0; j < s.n; j++) if (s.e[j].g && !strncmp(s.e[j].id, r[i].hash, 8)) have = 1;
-            if (have) continue;
-            if (nl++ < 3) kl += (size_t)snprintf(lack + kl, kl < sizeof lack ? sizeof lack - kl : 0, "%s%.24s", kl ? ", " : "", r[i].title);
+            bad += !have;
         }
-        for (int j = 0; j < s.n; j++) {   // joiner's gameplay add-ons the host doesn't have
+        for (int j = 0; j < s.n; j++) {   // its gameplay add-ons we don't have
             if (!s.e[j].g) continue;
+            listed++;
             int have = 0;
             for (int i = 0; i < n; i++) if (r[i].gameplay && !strncmp(s.e[j].id, r[i].hash, 8)) have = 1;
-            if (have) continue;
-            char t[TITLE_MAX + 1];
-            if (s.e[j].title[0]) title_show(s.e[j].title, t, sizeof t); else snprintf(t, sizeof t, "%s", s.e[j].id);
-            if (nx++ < 3) ke += (size_t)snprintf(extra + ke, ke < sizeof extra ? sizeof extra - ke : 0, "%s%s", ke ? ", " : "", t);
+            bad += !have;
         }
-        int listed = 0;
-        for (int j = 0; j < s.n; j++) listed += s.e[j].g;
-        if (s.ng > listed) {   // gameplay ids cut from the summary: can't be matched
-            nx += s.ng - listed;
-            ke += (size_t)snprintf(extra + ke, ke < sizeof extra ? sizeof extra - ke : 0, "%s%d unlisted", ke ? ", " : "", s.ng - listed);
-        }
-        if (nl || nx) {
-            size_t k = (size_t)snprintf(err, en, "Host requires the same gameplay add-ons as theirs.");
-            if (nl) k += (size_t)snprintf(err + k, k < en ? en - k : 0, " You lack: %s%s.", lack, nl > 3 ? " ..." : "");
-            if (nx) k += (size_t)snprintf(err + k, k < en ? en - k : 0, " Switch off: %s%s.", extra, nx > 3 ? " ..." : "");
-            snprintf(err + k, k < en ? en - k : 0, " Then restart the game.");
-            snprintf(why, sizeof why, "their gameplay add-ons differ (%d missing, %d extra); addons_policy=match", nl, nx);
-        }
+        if (s.ng > listed || bad)
+            snprintf(err, en, "Host requires the same gameplay add-ons as theirs; yours differ. Update b4bcoop to see which, "
+                     "then restart the game.");
     }
-    if (!err[0]) return 0;
-    LOG("addons: login %s (%s) refused: %s [summary %s]", name, key, err, value && *value ? value : "none");
-    static char told[16][96]; static int n_told;   // one host notice per player and policy per session (clients retry)
-    char tk[96];
-    snprintf(tk, sizeof tk, "%s|%d", key, policy);
-    for (int i = 0; i < n_told; i++) if (!strcmp(told[i], tk)) return 1;
-    if (n_told < 16) snprintf(told[n_told++], sizeof told[0], "%s", tk);
-    chat_local("%s could not join: %s.", name && *name ? name : "A player", why);
+    return err[0] != 0;
+}
+
+// Returns 1 = refuse (err = the joiner's login error). claim = ?b4bcoopaddonsok= (a b4bcoop that checked itself),
+// summary = ?b4bcoopaddons= (an older b4bcoop). Nothing about the joiner's add-ons is logged or kept.
+int addons_login_check(const char *claim, const char *summary, const char *name, char *err, size_t en) {
+    err[0] = 0;
+    if (policy == POL_ANY) return 0;
+    if (claim && *claim) {
+        if (!_stricmp(claim, POLICY_NAMES[policy])) { LOG("addons: login %s: checked its add-ons against addons_policy=%s", name, POLICY_NAMES[policy]); return 0; }
+    } else if (summary && *summary) {   // an older b4bcoop sends its list; judged as before, never logged
+        if (!summary_fails(summary, err, en)) return 0;
+        LOG("addons: login %s: refused by addons_policy=%s (an older b4bcoop; its add-on list isn't logged)", name, POLICY_NAMES[policy]);
+        return 1;
+    }
+    char tok[200];
+    policy_token(tok, sizeof tok);
+    snprintf(err, en, "Host allows %s. Your b4bcoop checks your add-ons and joins again. [%s]",
+             policy == POL_COSMETIC ? "cosmetic add-ons only" : policy == POL_NONE ? "no add-ons" : "only its own gameplay add-ons", tok);
+    LOG("addons: login %s: asked to check its add-ons against addons_policy=%s%s", name, POLICY_NAMES[policy],
+        claim && *claim ? " (its check was for another policy)" : "");
     return 1;
 }
 
-// ---- who runs what (host): the summary of each accepted login, by its connection ----
-typedef struct { UObject *conn; int32_t idx; char name[64], value[SUMMARY_MAX + 1]; } Rec;
-static Rec recs[16];
-
-void addons_login_record(UObject *conn, const char *name, const char *value) {
-    if (!conn) { LOG("addons: login %s: no connection found, /addons players won't list its add-ons", name); return; }
-    Rec *slot = NULL;
-    for (int i = 0; i < 16 && !slot; i++) if (recs[i].conn == conn) slot = &recs[i];
-    for (int i = 0; i < 16 && !slot; i++) if (!recs[i].conn || ue_object_at(recs[i].idx) != recs[i].conn) slot = &recs[i];
-    if (!slot) slot = &recs[0];
-    slot->conn = conn; slot->idx = U_INDEX(conn);
-    snprintf(slot->name, sizeof slot->name, "%s", name);
-    snprintf(slot->value, sizeof slot->value, "%s", value ? value : "");
-    Summary s; parse(value, &s);
-    LOG("addons: login %s: %s", name, !s.present ? "no add-on summary (older b4bcoop)" : value);
-}
-
-static const Rec *rec_of(UObject *conn) {
-    for (int i = 0; i < 16; i++) if (conn && recs[i].conn == conn && ue_object_at(recs[i].idx) == conn) return &recs[i];
-    return NULL;
-}
-
-static void show_summary(const char *value, Out *o) {
-    Summary s; parse(value, &s);
-    if (!s.present) { out_printf(o, "  unknown (older b4bcoop without add-ons)\n"); return; }
-    if (!s.nc && !s.ng) { out_printf(o, "  no add-ons\n"); return; }
-    AddonRef r[MAX_ADDONS];
-    int n = own(r, MAX_ADDONS);
-    out_printf(o, "  %d cosmetic, %d gameplay\n", s.nc, s.ng);
-    for (int j = 0; j < s.n; j++) {
-        char t[TITLE_MAX + 1] = "";
-        if (s.e[j].title[0]) title_show(s.e[j].title, t, sizeof t);
-        const char *mine = NULL;
-        for (int i = 0; i < n; i++) if (!strncmp(r[i].hash, s.e[j].id, 8)) mine = r[i].title;
-        out_printf(o, "  %s %s %s%s\n", s.e[j].g ? "gameplay" : "cosmetic", s.e[j].id, mine ? mine : t[0] ? t : "(not installed here)",
-                   mine ? " (you have it too)" : "");
-    }
-    if (s.omitted) out_printf(o, "  ... %d more not listed\n", s.omitted);
-}
-
-// Host: the other human players (player state index, name, their login's add-on summary or NULL if unknown)
-typedef struct { int idx; char name[64]; const Rec *rec; } Remote;
-static int remotes(Remote *out, int max) {
-    UObject **pa; int n = admin_player_array(&pa), k = 0;
-    static UClass *pcc;
-    if (!pcc) pcc = ue_find_class("PlayerController");
-    UObject *me = ue_local_pc();
-    for (int i = 0; i < n && k < max; i++) {
-        UObject *pc = ue_get_ptr(pa[i], "Owner");
-        if (!pc || !pcc || !ue_is_a(pc, pcc) || pc == me) continue;   // bots, the host
-        out[k].idx = i;
-        admin_display_name(pa[i], out[k].name, sizeof out[k].name);
-        out[k].rec = rec_of(ue_get_ptr(pc, "Player"));
-        k++;
-    }
-    return k;
-}
-
-static void players(Out *o) {
-    Remote pl[16];
-    int n = remotes(pl, 16);
-    AddonRef r[MAX_ADDONS];
-    int mine = own(r, MAX_ADDONS), ng = 0;
-    for (int i = 0; i < mine; i++) ng += r[i].gameplay;
-    out_printf(o, "add-ons policy: %s\n", POLICY_NAMES[policy]);
-    out_printf(o, "you (host): %d cosmetic, %d gameplay\n", mine - ng, ng);
-    for (int i = 0; i < n; i++) {
-        out_printf(o, "#%d %s:\n", pl[i].idx, pl[i].name);
-        if (pl[i].rec) show_summary(pl[i].rec->value, o); else out_printf(o, "  unknown (joined before the host's agent saw the login)\n");
-    }
-}
-
-// /addons players|policy; returns 1 if handled
+// /addons policy [x]; /addons players is gone (#35). Returns 1 if handled.
 int addons_mp_slash(const char *sub, char *arg, Out *o) {
     if (!strcmp(sub, "players") || !strcmp(sub, "who")) {
-        if (admin_is_client()) {
-            AddonRef r[MAX_ADDONS];
-            int n = own(r, MAX_ADDONS), ng = 0;
-            for (int i = 0; i < n; i++) ng += r[i].gameplay;
-            out_printf(o, "/addons players: host only. You: %d cosmetic, %d gameplay (the host sees this summary)\n", n - ng, ng);
-            return 1;
-        }
-        if (!ue_is_listen_server(ue_world())) { out_printf(o, "not hosting a session\n"); return 1; }
-        players(o);
+        out_printf(o, "/addons players: gone. Which add-ons someone has stays on their PC (joiners check themselves against "
+                      "the host's policy). Yours: /addons\n");
         return 1;
     }
     if (!strcmp(sub, "policy")) {
@@ -293,17 +342,18 @@ int addons_mp_slash(const char *sub, char *arg, Out *o) {
         if (admin_is_client()) { out_printf(o, "/addons policy: host only (you are a client)\n"); return 1; }
         if (addons_policy_set(arg)) { out_printf(o, "usage: /addons policy any|cosmetic|none|match\n"); return 1; }
         LOG("addons: policy %s (chat)", POLICY_NAMES[policy]);
-        out_printf(o, "add-ons policy: %s for this session (new joiners; ini addons_policy= keeps it)\n", POLICY_NAMES[policy]);
+        out_printf(o, "add-ons policy: %s for this session (new joiners; ini addons_policy= keeps it)%s\n", POLICY_NAMES[policy],
+                   policy == POL_MATCH ? ". match shows joiners the ids of your own gameplay add-ons" : "");
         return 1;
     }
     return 0;
 }
 
-// ~ window, Add-ons tab (addons.c): the host's policy (saved to b4bcoop.ini, like editing addons_policy=) and what
-// each player runs (/addons players). A client sees its own policy greyed out, with the reason.
+// ~ window, Add-ons tab (addons.c): the host's policy (saved to b4bcoop.ini, like editing addons_policy=). A client
+// sees the radios greyed out, with the reason.
 void addons_mp_panel(void) {
     static const char *DESC[] = {"everyone, whatever they run", "cosmetic add-ons only (default)", "only players without add-ons",
-                                 "cosmetic free; gameplay add-ons must be the same as yours"};
+                                 "cosmetic free; gameplay add-ons must be the same as yours (joiners see your gameplay add-ons' ids)"};
     ov_heading("Who may join with add-ons (host)");
     ov_begin_perm(CMD_HOST);
     for (int i = 0; i < 4; i++) {
@@ -314,34 +364,6 @@ void addons_mp_panel(void) {
         ov_text_dim("%s", DESC[i]);
     }
     ov_end_perm();
-    ov_text_dim("addons_policy in b4bcoop.ini; applies to the next player who joins.");
-    ov_heading("Players' add-ons");
-    AddonRef r[MAX_ADDONS];
-    int mine = own(r, MAX_ADDONS), ng = 0;
-    for (int i = 0; i < mine; i++) ng += r[i].gameplay;
-    ov_text("You: %d cosmetic, %d gameplay", mine - ng, ng);
-    if (admin_is_client()) {
-        ov_text_dim("You are in someone else's session: the host saw this summary when you joined and decides with its "
-                    "own policy. Hosts don't send their add-ons or policy.");
-        return;
-    }
-    if (!ue_is_listen_server(ue_world())) { ov_text_dim("Not hosting a session."); return; }
-    Remote pl[16];
-    int n = remotes(pl, 16);
-    static Out o;
-    if (!n) ov_text_dim("No other players.");
-    else if (ov_table_begin("addonplayers", 2)) {
-        static const char *H[] = {"Player", "Add-ons (from their login)"};
-        ov_table_header(H, 2);
-        for (int i = 0; i < n; i++) {
-            ov_table_next(); ov_text("#%d %s", pl[i].idx, pl[i].name);
-            ov_table_next();
-            out_reset(&o);
-            if (pl[i].rec) show_summary(pl[i].rec->value, &o); else out_printf(&o, "unknown (joined before the host's agent saw the login)");
-            while (o.len && o.buf[o.len - 1] == '\n') o.buf[--o.len] = 0;
-            ov_text("%s", o.buf[0] == ' ' ? o.buf + 2 : o.buf);
-        }
-        ov_table_end();
-    }
-    if (ov_button("List in the log (/addons players)")) ov_run("addons players");
+    ov_text_dim("addons_policy in b4bcoop.ini; applies to the next player who joins. Joiners check their own add-ons "
+                "against it: nobody's add-ons are sent to anyone, so there is no list of what others run.");
 }

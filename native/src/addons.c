@@ -13,7 +13,7 @@
 //   one package's files (.uasset/.uexp/.ubulk) end up from different add-ons, which can crash the game.
 //   Each add-on is classified from its files (addonclass.c, #22): cosmetic or gameplay-affecting; the addoninfo's
 //   own `content=` line is only compared. Add-ons stay client-side (each player sees their own); what a joiner runs is
-//   summarized in the login options and checked against the host's addons_policy (addons_mp.c).
+//   checked by the joiner itself against the host's announced addons_policy, never sent (addons_mp.c).
 //   `~` window: the Add-ons tab (addons_panel, below): list, on/off (= /addons on|off), load order (Up/Down rewrite
 //   addonlist.txt: A[] keeps the mounted order, ord[] is the order in the file), details, host policy (addons_mp.c).
 #include <windows.h>
@@ -597,7 +597,7 @@ int addons_scan(void) {
     return n_mount;
 }
 
-// Add-ons mounted in this game, in load order (addons_mp.c: login summary, host policy)
+// Add-ons mounted in this game, in load order (addons_mp.c: the joiner's own policy check, match ids)
 int addons_active(AddonRef *out, int max) {
     int k = 0;
     for (int i = 0; i < nA && k < max; i++) {
@@ -608,6 +608,11 @@ int addons_active(AddonRef *out, int max) {
         k++;
     }
     return k;
+}
+
+const char *addons_title_of(const char *id8) {
+    for (int i = 0; i < nA; i++) if (A[i].present && A[i].hash[0] && !_strnicmp(A[i].hash, id8, 8)) return A[i].title;
+    return NULL;
 }
 
 void addons_unavailable(const char *why) { snprintf(unavailable, sizeof unavailable, "%s", why); }
@@ -714,7 +719,7 @@ void addons_slash(const char *verb, char *rest, Out *o) {
             if (C[i].nfiles) out_printf(o, "conflict: %s overrides %s (%d file(s))\n", A[C[i].winner].name, A[C[i].loser].name, C[i].nfiles);
             if (C[i].mixed) out_printf(o, "conflict: %s and %s mix parts of one asset: may crash, switch one off\n", A[C[i].loser].name, A[C[i].winner].name);
         }
-        out_printf(o, "/addons on|off <#>  /addons info <#>  /addons players  /addons policy\n");
+        out_printf(o, "/addons on|off <#>  /addons info <#>  /addons policy\n");
         return;
     }
     int num = 0;
@@ -751,7 +756,7 @@ void addons_slash(const char *verb, char *rest, Out *o) {
         return;
     }
     if (addons_mp_slash(sub, arg, o)) return;
-    out_printf(o, "usage: /addons [list]  /addons on|off <#>  /addons info <#>  /addons players  /addons policy [any|cosmetic|none|match]\n");
+    out_printf(o, "usage: /addons [list]  /addons on|off <#>  /addons info <#>  /addons policy [any|cosmetic|none|match]\n");
 }
 
 // ---- ~ window: Add-ons tab (overlay.h; game thread). On/off runs /addons on|off (ov_run), the order buttons
@@ -768,15 +773,15 @@ static void panel_details(Addon *a) {
     if (!a->valid) ov_text_warn("Not loaded: %s", a->why);
     else {
         ov_text("Content: %s", addon_class_str(a, b, sizeof b));
-        if (a->cls.gameplay) ov_text_dim("First gameplay file: %s. Hosts with addons_policy=cosmetic (the default) or none refuse "
-                                         "players who run it.", a->cls.reason);
+        if (a->cls.gameplay) ov_text_dim("First gameplay file: %s. With it on, you can't join hosts with "
+                                         "addons_policy=cosmetic (the default) or none.", a->cls.reason);
         int claim_g = !_strnicmp(a->claim, "gameplay", 8), claim_c = !_strnicmp(a->claim, "cosmetic", 8);
         if ((claim_g || claim_c) && claim_g != a->cls.gameplay)
             ov_text_dim("Its author labels it %s; the files decide.", a->claim);
         ov_text("Id: %.8s", a->hash);
         ov_same_line();
         if (ov_button("Copy##id")) ov_copy(a->hash);
-        ov_tooltip("The content id (pak index SHA1). The host's /addons players shows the first 8 digits.");
+        ov_tooltip("The content id (pak index SHA1). Only a host with addons_policy=match shows joiners its own (first 8 digits).");
     }
     int no = 0;
     for (int i = 0; i < nOF; i++) {

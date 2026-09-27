@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include "log.h"
 
 static FILE *fp;
@@ -29,4 +30,16 @@ void logf_(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); vfprintf(fp, fmt, ap); va_end(ap);
     fputc('\n', fp); fflush(fp);
     LeaveCriticalSection(&cs);
+}
+
+// An older b4bcoop's add-on summary (login option b4bcoopaddons=<list>) never reaches the log (#35): the value is cut
+// in place, in our own lines and in captured engine lines (login URLs). s must hold at least strlen(s)+1 bytes.
+void log_redact_addons(char *s) {
+    static const char KEY[] = "b4bcoopaddons=";
+    for (char *p = s; (p = strstr(p, KEY));) {
+        char *v = p + sizeof KEY - 1, *e = v;
+        while (*e && *e != '?' && *e != ' ' && *e != '\'' && *e != '"' && *e != '&') e++;
+        if (e > v) { *v = '-'; memmove(v + 1, e, strlen(e) + 1); }
+        p = v;
+    }
 }

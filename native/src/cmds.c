@@ -128,9 +128,19 @@ int coop_is_loopback(const char *hostport) {
 
 // target: "ip[:port]" (default 7777) or "steam:<steamid64>" (Steam P2P, steamnet.c)
 // Returns 0 when the join started, -1 for a bad target, -2 for a Steam target without Steam P2P, -3 for an IP join to
-// another machine while host_ip=0.
+// another machine while host_ip=0, -4 when our add-ons fail the host's announced addons_policy (join_refused_msg).
+static char last_target[112], join_refused_msg[400];
+const char *cmds_last_join_target(void) { return last_target; }
 static int cmd_join(const char *target, Out *o) {
     char url[800], cmd[900];
+    snprintf(last_target, sizeof last_target, "%s", target);
+    // add-ons (#35): the host announces its policy (rich presence, or its first login refusal) and we check ourselves;
+    // nothing about our add-ons is sent
+    presence_note_host_addons(target);   // steam: targets: its current policy, if Steam has its rich presence
+    if (addons_join_refused(target, join_refused_msg, sizeof join_refused_msg)) {
+        out_printf(o, "not joining %s: %s\n", target, join_refused_msg);
+        return -4;
+    }
     int steam = steamnet_resolve_target(target, url, sizeof url);   // steam: -> a fake address carried over Steam P2P
     if (steam == -1) { LOG("join: bad target '%s'", target); out_printf(o, "bad join target: %s (ip[:port] or steam:<id64>)\n", target); return -1; }
     if (steam == -2) { out_printf(o, "cannot join %s: Steam P2P unavailable here (%s)\n", target, steamnet_last_error()); return -2; }
@@ -141,9 +151,9 @@ static int cmd_join(const char *target, Out *o) {
     }
     if (!steam) netguard_allow_host(url);   // a host given by name must still resolve
     // our version and protocol go with the login (checked by the host's PreLogin gate, admin.c) and every rejoin,
-    // and so does the summary of our add-ons (addons_mp.c: the host's addons_policy)
+    // and so does "checked against your add-on policy" once we know it (addons_mp.c)
     size_t ul = strlen(url);
-    snprintf(url + ul, sizeof url - ul, "?b4bcoop=%d?b4bcoopver=%s%s", coop_protocol(), coop_version(), addons_login_option());
+    snprintf(url + ul, sizeof url - ul, "?b4bcoop=%d?b4bcoopver=%s%s", coop_protocol(), coop_version(), addons_login_option(target));
     snprintf(cmd, sizeof cmd, "open %s", url);
     travel_set_host(url);        // the follow/rejoin logic reopens exactly this URL (travel.c), same Steam peer
     game_exec(cmd);
@@ -571,6 +581,24 @@ void coop_join(const char *target) {
     if (r == -1) chat_local("bad join target %s, use /join steam:<id64>", target);
     if (r == -2) chat_local("Steam P2P is not available here (%s)%s", steamnet_last_error(), host_ip ? ", use /join <ip[:port]>" : "");
     if (r == -3) chat_local("%s", coop_ip_join_off_msg());
+    if (r == -4) {   // only a restart can change add-ons: no more automatic attempts
+        cmds_auto_join_stop();
+        if (session_join[0]) cmds_set_session_join(NULL);
+        char line[440];
+        snprintf(line, sizeof line, "Could not join: %s", join_refused_msg);
+        if (ue_local_pc() && !signin_on_title()) chat_local("%s", line); else chat_local_later(line);
+    }
+}
+
+// The host asked us to check our add-ons and they pass (addons_on_refusal): join the same target again soon, from
+// wherever the failed attempt left us (auto_tick).
+static char retry_target[112];
+static double retry_at, retry_until;
+void cmds_join_retry(const char *target, double delay) {
+    snprintf(retry_target, sizeof retry_target, "%s", target);
+    retry_at = auto_clock + delay;
+    retry_until = auto_clock + delay + 120;
+    LOG("auto: joining %s again in %.0fs (add-on check passed)", target, delay);
 }
 
 // coop_host: host the offline camp we are in (and keep hosting it after missions, like host=1). Any thread.
@@ -637,8 +665,20 @@ void cmds_join_now(void) {
     auto_next = auto_clock + 20;
 }
 
+static int ready_to_join(void);
 static void auto_tick(float dt) {
     auto_clock += dt;
+    if (retry_target[0] && auto_clock >= retry_at) {
+        if (auto_clock > retry_until) { LOG("auto: gave up joining %s again", retry_target); retry_target[0] = 0; }
+        else if (ready_to_join()) {
+            char t[112];
+            snprintf(t, sizeof t, "%s", retry_target);
+            retry_target[0] = 0;
+            coop_join(t);
+            auto_next = auto_clock + 20;
+            return;
+        } else retry_at = auto_clock + 1;
+    }
     const char *join = session_join[0] ? session_join : auto_join;
     if ((!cmds_auto_host() && !join[0]) || auto_clock < auto_next) return;
     auto_next = auto_clock + 2;
@@ -664,6 +704,15 @@ static void auto_tick(float dt) {
         cmds_set_session_join(NULL);
     }
     else { join_next(join); auto_next = auto_clock + 20; }
+}
+
+// In our own offline camp (or an empty camp we host), signed in, not connected: a join may start now
+static int ready_to_join(void) {
+    UObject *w = ue_world();
+    UObject *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
+    if (!w || (nd && (ue_get_ptr(nd, "ServerConnection") || ue_num_clients(w) > 0))) return 0;
+    char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
+    return strstr(pkg, "FortHope") && ue_local_pc() && !signin_pending() && !signin_on_title();
 }
 
 void cmds_init(void) { load_config(); }
