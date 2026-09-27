@@ -252,10 +252,10 @@ crosshair (3P) or the eyes (1P) on the item, read `PotentialUsableComponent`); "
 
 ## Free look (#31, 2026-09-27, lane 2 Flatpak, `multi.sh 2`)
 Standing still in our 3P, the mouse orbits the camera around the hero (yaw 360°, camera pitch ±70°) without turning
-it; moving, firing, ADS, use, reload, melee, jump/crouch/sprint, weapon keys swing the camera back behind the hero in
-`thirdperson_freelook_return` s (default 0.25, smoothstep) and the mouse turns the hero again. Ini
-`thirdperson_freelook=1` (default), `thirdperson_freelook_return`, both live; `~` Camera tab. Client-side only, no
-protocol change.
+it; moving, firing, ADS, use, reload, melee, jump/crouch/sprint, weapon keys turn the **hero** to where the camera
+looks and the camera stays put (2026-09-27, Dan: no camera swing-back, it is jarring / motion sickness; the first
+version swung the camera back in `thirdperson_freelook_return` s, that key is now ignored). Ini
+`thirdperson_freelook=1` (default, live); `~` Camera tab. Client-side only, no protocol change.
 
 Game's own orbit view (view byte 3), not used:
 - UpdateView 0x141C27250 with view 3 clears the current spring arm's (weak +0x170) `bUsePawnControlRotation` and
@@ -279,23 +279,58 @@ What we do instead (thirdperson.c "Free look"):
 - Camera: `ThirdPersonSpringArm` bits 1-4 cleared and `RelativeRotation` = control rotation + offset (GetTargetRotation
   uses the relative rotation for every component it doesn't inherit, like the game's orbit), written in the detour
   (the arm ticks after the controller) and every tick; bits (0x1E of 0x9F) and rotation restored when the offset is 0.
+- The turn (`fl_end`): `SetControlRotation(camera rotation)` (pitch = the camera's clamped pitch, stored 0..360 like
+  the camera manager's limit), then the arm's bits and RelativeRotation back: the arm follows the control rotation,
+  which is now its own world rotation, so the camera doesn't move. The hero then turns at the game's rate (6°/frame at
+  60 fps, `bUseControllerRotationYaw`); a client's control rotation reaches the server with its moves.
+- Where the turn happens: the game's key state (`IsInputKeyDown`) is updated only when the controller processes input
+  (UPlayerInput's EvaluateKeyMapState), so a key pressed this frame is not visible in our engine tick yet. The
+  UpdateRotation detour (after input processing, before the pawn and weapons tick) checks the keys while orbiting and
+  turns there (`turns ... key`); movement input already made with the old facing (APawn.ControlInputVector, reflected)
+  is rotated by the camera's yaw offset first (`turns ... movement`), so W walks away from the camera from the first
+  frame. The engine-tick check stays as a fallback. Movement axes are in the key list (HeroMoveForward/Right: W A S D,
+  Gamepad_LeftX/Y); gamepad axes (sticks, Gamepad_RightTriggerAxis) are read with `GetInputAnalogKeyState` (> 0.25).
+- A shot fired inside the input handler, before the turn: while orbiting the aim correction points the eyes at the
+  point under the crosshair even when it is behind the hero (the 60° gate only applies when not orbiting) and even with
+  a centred camera, so the first shot lands under the crosshair.
 - "Busy" (dev `thirdperson freelook` shows bits): `GetLastMovementInputVector` non-zero, `HeroCharacter.IsFiring`,
   ADS (`hero_ads`), `HeroUseComponent.ActiveUsableComponent`, `IsCapablePlayer(true)` false (downed, grabbed; ends at
   once), ladder/ledge/mantle, not our view 2, or a key of the hero's mappings down (InputSettings actions `Hero*`
   (not HeroSuicide), `Ability*` (AbilityReload), `Item*`, `PlayerJump`, `Select*`, `Weapon*`; axis `PrimaryAbility` =
-  fire: LeftMouseButton, Gamepad_RightTriggerAxis; `PlayerController.IsInputKeyDown`, 26 keys). Orbit needs 0.25 s
-  without any of them. ADS / incap / another view end it at once (no swing).
-- Aim correction: the crosshair ray is built from eye rotation + offset; a crosshair point more than 60° off where the
-  hero looks is left alone (shots go where the hero faces while the camera is still swinging back).
+  fire: LeftMouseButton, Gamepad_RightTriggerAxis; `PlayerController.IsInputKeyDown`, 34 keys with the movement axes). Orbit needs 0.25 s
+  without any of them. Any of them ends it with the hero turn (ADS, incap, another view too).
+- Aim correction: the crosshair ray is built from eye rotation + offset.
 
 Verified live (dev `thirdperson mouse <dx> <dy> [frames]` = SendInput relative moves, the real mouse path; `thirdperson
 look` injects RotationInput in the detour; `thirdperson heroes` = every hero's yaw):
-- Camp, host: behind → side → front (screenshots); control rotation (0, 94.7) and hero yaw 94.7 unchanged while the
-  camera went to -85.3; mouse up/down pitches the camera (dy -5 → +5.2°). W (SendInput) → busy 0x01, state 2, offset
-  -99 → 0 in 0.25 s, arm bits back to 9F. Left mouse → busy 0x10, back. Right mouse → view 1 at the hero's facing,
+- (First version, camera swing-back.) Camp, host: behind → side → front (screenshots); control rotation (0, 94.7) and
+  hero yaw 94.7 unchanged while the camera went to -85.3; mouse up/down pitches the camera (dy -5 → +5.2°). W
+  (SendInput) → busy 0x01, state 2, offset -99 → 0 in 0.25 s, arm bits back to 9F. Left mouse → busy 0x10, back. Right mouse → view 1 at the hero's facing,
   free look ended; view 2 again after release.
 - Camp, client: orbit to the front (screenshot), its hero yaw 107.2 on the client and on the host throughout.
 - Evansburgh B, host: orbit 126°, left mouse → busy 0x02 (IsFiring), SMG clip 32 → 28, camera back; `thirdperson aim`:
   eyes-ray hit 0.00° off the crosshair. Client: orbit ~98° (host's `heroes` shows its hero at -171.2 before and during),
   R → busy 0x10 and back, left mouse → back, `thirdperson aim` 0.00°. Downed (`cheatprobe hp #0 0`) → busy 0x20, ended.
 - Cramped saferooms: the spring arm's collision pulls the camera in, so a full front view needs some room.
+
+### Hero turns instead of the camera swinging back (2026-09-27, lane 2 Flatpak, `multi.sh 2`)
+Dev `thirdperson freelook` (turns, and which UpdateRotation path), per-frame log `thirdperson: freelook trace` (the
+camera manager's POV 4 frames before and 10 after each turn, dev builds).
+- Camp, host: orbit to the front (offset -6.9 / -179.4), W (SendInput 0.6 s): turn via the movement path, control
+  (353.1, -79.7) = the camera's rotation; camera rotation (-6.93, -79.72) identical in every frame before and after,
+  camera location moves only with the walk (-906.4 → -906.6 → -907.4 → -909.0 ...), hero yaw 99.7 → 93.7 → 87.7 ...;
+  the hero walks away from the camera (screenshots).
+- Camp, client: orbit 168°, W: client hero on the host 97.6 → -118.4 (0.4 s) → -94.4 and stays (4 samples, 2 s later
+  still -94.4); client's own copy -94.4. No snap back.
+- Evansburgh B, host: orbit 126°, one shot (left mouse 0.05 s): turn via the key path in UpdateRotation; decal at
+  (11465.9, 66.8, 744.1), crosshair point (11464.9, 71.4, 745.7): 5 units (spread). `thirdperson aim` before and
+  after: 0.00°. Camera location/rotation identical after (only the recoil kick follows: pitch -4.20 → -3.43 over 5
+  frames). Second shot: 7.7 units. Reload (R) after orbiting 115°: camera location and rotation bit-identical for all
+  14 logged frames while the hero turns 6°/frame (screenshot sequence).
+- Host ADS after orbiting to (5.6, 162.0): control rotation (5.6, 162.0), view 1 (first person looking there).
+- Client, Evansburgh B: orbit 90°, one shot: decal (11444.7, 15.8, 739.0) vs crosshair point (11439.8, 15.2, 742.6):
+  6 units; `thirdperson aim` 0.00° before and after; host sees the client hero at -81.4 (= the client's camera yaw)
+  from 0.3 s on, stable. Client ADS after orbiting: control = camera (-154.9), view 1.
+- Cramped rooms: while walking right after a turn the camera location wobbles ±3 units for a few frames (spring-arm
+  collision; smooth in the open camp).
+- Not tested: a real gamepad (stick/trigger paths are code-only).
