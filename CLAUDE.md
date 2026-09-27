@@ -52,7 +52,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     frames a face, `face walk` makes a bot run somewhere), `fnprobe <va>` (count
     a native function's calls/return values, for investigations).
   - `paks.c` (model mods #23) the engine's pak layer. Both builds: mounts our unsigned paks right after the retail
-    ones, exempted by identity from the three signature paths (player builds hook nothing when there is no add-on).
+    ones, exempted by identity from the three signature paths (player builds without add-ons hook only Initialize,
+    to remember the pak layer for the shop, or nothing with `shop=0`; the exemptions come with the first mount).
+    `paks_mount_runtime` mounts later on the game thread (shop), `paks_file_exists` asks the pak layer.
     Dev only: `dumpassets <glob> [outdir]` extracts files as the engine reads them (IterateDirectory + OpenRead on
     FPakPlatformFile), `paks`, `mountpak <path> [order]`, ini `modpaks=<windows dir>` (raw paks, order 3000+). Pak
     writer: `modkit/b4bpak.py` (`tools/b4bpak.py` forwards). docs/investigations/model-mods-paks.md.
@@ -64,7 +66,16 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     #35): nothing about a player's add-ons is sent; the host announces `addons_policy` (presence ` addons:<policy>`,
     else a login refusal ending `[addons:<policy>]`), the joiner checks itself, declines locally or logs in with
     `?b4bcoopaddonsok=<policy>`; older clients' `?b4bcoopaddons=` summary still judged, never logged (`log_redact_addons`).
-    Client-side only, no protocol bump. docs/investigations/addons.md.
+    Client-side only, no protocol bump. docs/investigations/addons.md. `addons_add_runtime` (shop): a new pak read and
+    appended to addonlist.txt, mounted at once only if cosmetic and every file path is new to the pak layer (added
+    outfits/weapon looks; `models_outfits_refresh`/`wlooks_refresh`), else next start; never as a client.
+  - `shop.c` the `~` **Browse** tab (#36, add-on shop; ini `shop=0` hides it): on click `catalog.json` + `.sig`
+    (ed25519, release key; `upd_catalog_*` in updcore.c) from the public shop repo (raw.githubusercontent.com, inside
+    netguard's updater scope), thumbnails (SHA-256 from the signed list, then stb_image in `imgdecode.c`, `ov_texture`),
+    Add = pak streamed to `b4bcoop-addons\.shop\<id>.pak.part`, size + SHA-256 checked, renamed to `<id>.pak`,
+    `addons_add_runtime`; Remove/Update via `.shop\pending.txt`, applied by `shop_early` (DllMain, from addons_scan).
+    Nothing about installed add-ons is sent. Dev: ini `shop_catalog=`, `shop_pubkey=`; `shop status|list|fetch|add|
+    remove|undo <id>`. Catalog tool `tools/shop-catalog.py build|sign|verify`. docs/investigations/shop.md.
   - `teamsize.c` opt-in 5+ player team (`teamsize=N` ini/command, raises `Config.TeamSize` before InitSlots; `slots`
     dumps the slot layout). docs/investigations/five-players.md.
   - `lineup.c` post-round/pre-round/character-select lineup with 5+ heroes (#8): spawns an extra mannequin when the
@@ -185,7 +196,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 
 ## Setup
 `tools/fetch-deps.sh` (zig 0.15.2 sha256-checked, MinHook pinned to commit 8af6b4a, ImGui, Monocypher 4.0.2 and zlib
-1.3.1's puff (updater) pinned by commit + sha256, Windows Python, .venv; `--build` = only what native/build.sh needs) →
+1.3.1's puff (updater), stb_image 2.30 (shop thumbnails) pinned by commit + sha256, Windows Python, .venv; `--build` = only what native/build.sh needs) →
 `launch/install.sh`. CI: `.github/workflows/ci.yml` builds dev + player and runs `native/test/run.sh` (updater unit
 tests) on every push/PR; `release.yml` builds the zip on a `v<version>` tag (must match `VERSION`) and publishes it
 with `SHA256SUMS`, a build provenance attestation and the in-game updater's files: `b4bcoop-update.txt` (manifest)
@@ -317,6 +328,11 @@ used to get its profile reset ("HydraPublicId mismatch"); joins now wait for the
 release on a local fake GitHub API, refused bad downloads, install → restart → new version, go back, automatic revert;
 39 checks; `B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/update-test.py [--no-lock]`). `lane-restore.sh` also
 covers `<game>/b4bcoop-update/`.
+**Add-on shop: `tools/shop-test.py`** (live, one instance: local catalog signed with a throwaway key on 127.0.0.1,
+own `addons_dir=`; bad signature, damaged/truncated downloads refused, Add outfit in Fort Hope + weapon look in a
+mission mounted at once and worn, replacement after restart, Remove and Update at the next start; 32 checks;
+`B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/shop-test.py [--no-lock]`; test paks in
+`~/.local/share/b4b-coop/shop-test/src/`, never committed).
 **Model mods (`models` branch): `tools/charsuite.py`**, the character suite (mesh-mods.md §17): builds every test
 character of a local manifest (models can't be committed: `~/.local/share/b4b-coop/characters/suite.json`, format +
 CC0 example `tools/charsuite-example.json`) with `b4bmod survivor --as` one at a time in its own extract folder
@@ -380,6 +396,10 @@ Verified live (2026-09-23/24; details and evidence in `docs/investigations/*.md`
 - In-game updater (#34, 2026-09-27, lane 2 / Flatpak Proton): HTTPS check + download through WinHTTP under Proton,
   netguard scope, signed manifest/zip, bad downloads refused, install on next start, go back, automatic revert
   (`tools/update-test.py` 39/39). Not yet on native Windows; first real signed release = 0.6.2.
+
+- Add-on shop (#36, 2026-09-27, lane 2 / Flatpak Proton, dev build + local catalog): Browse tab, signed catalog,
+  thumbnails, runtime mount of new-path cosmetic add-ons (outfit worn right after Add, weapon look added mid-mission),
+  replacements/removals/updates at the next start (`tools/shop-test.py` 32/32). No real shop repo yet.
 
 Known issues / open:
 - #8 (fixed): the 5th hero in the post-round lineup stands in the back row, dimmer and without a name plate.

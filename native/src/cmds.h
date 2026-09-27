@@ -162,6 +162,9 @@ int rewardguard_cmd(const char *verb, char *rest, Out *o);  // dev builds: `rewa
 void paks_early_init(void);                                // DllMain: hook FPakPlatformFile::Initialize (if needed)
 int paks_mount_unsigned(const wchar_t *path, uint32_t order); // addons_mount only: mount one of our unsigned paks
 int paks_cmd(const char *verb, char *rest, Out *o);        // dev builds: `paks`, `mountpak`, `dumpassets`; 1 if handled
+int paks_runtime_ready(void);                              // the pak layer is known (runtime mounts possible)
+int paks_file_exists(const char *key);                     // "gobi/content/..." exists in the engine's file system
+int paks_mount_runtime(const wchar_t *path, uint32_t order, char *err, size_t en);  // game thread: mount now
 // addons.c: L4D-style add-ons, <game>\b4bcoop-addons\*.pak + addonlist.txt (docs/investigations/addons.md)
 #define MAX_ADDONS 128
 int addons_scan(void);                        // DllMain: config, folder, load order, conflicts; number to mount
@@ -178,6 +181,24 @@ int addons_outfits(AddonOutfit *out, int max);
 typedef struct { const char *name, *code, *fp, *sm3p, *skm3p, *title, *addon; } AddonWeapon;
 int addons_weapons(AddonWeapon *out, int max);
 const char *addons_title_of(const char *id8);  // title of an installed add-on (on or off) with that short id, or NULL
+// runtime (the add-on shop, shop.c; game thread)
+int addons_runtime_wanted(void);              // add-ons on and shop not off: paks.c keeps the pak layer reachable
+int addons_enabled(void);
+const wchar_t *addons_dir_w(void);            // the add-ons folder (may not exist yet)
+const char *addons_dir8(void);
+typedef struct { int on, on_at_start, mounted, valid, gameplay; char hash[41], state[40]; } AddonState;
+int addons_state(const char *file, AddonState *st);   // 1 = present in the folder (st filled)
+int addons_set_on(const char *file, int on);          // addonlist.txt on/off (next start); 1 = saved
+int addons_add_runtime(const char *file, char *msg, size_t mn);   // 2 mounted now, 1 next start, 0 not added
+void models_outfits_refresh(void);            // models.c: add outfits of add-ons mounted at runtime
+void wlooks_refresh(void);                    // weaponlooks.c: same for weapon looks
+// shop.c: the Browse tab (#36, docs/investigations/shop.md)
+void shop_early(const wchar_t *dir);          // DllMain (addons_scan): pending removals/updates from the last session
+int shop_forget(const char *file);            // addons_scan: 1 = removed at this start, drop its addonlist.txt line
+void shop_init(void);
+void shop_tick(float dt);
+int shop_live(const char *key, const char *val);
+int shop_cmd(const char *verb, char *rest, Out *o);  // dev builds: `shop status|fetch|add <id>|remove <id>|undo <id>`
 // addons_mp.c: add-ons in multiplayer (#22, private #35): the host announces addons_policy, joiners check themselves
 int addons_policy_set(const char *v);         // any|cosmetic|none|match; -1 if unknown
 const char *addons_policy_name(void);

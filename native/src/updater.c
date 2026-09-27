@@ -239,9 +239,11 @@ static int winhttp_load(char *err, size_t en) {
 
 static volatile LONG64 dl_got;   // bytes of the running download (progress)
 
-// GET url into a malloc'd buffer (max bytes). 1 = HTTP 200 and the body read.
-static int http_get(const char *url, const char *accept, size_t max, uint8_t **out, size_t *outn, char *err, size_t en) {
-    *out = NULL; *outn = 0;
+// GET url; the body goes to sink in pieces (max bytes, else "larger than expected"). 1 = HTTP 200 and the whole body
+// taken by the sink. progress (may be NULL): bytes so far.
+typedef int (*HttpSink)(const uint8_t *p, size_t n, void *ctx, char *err, size_t en);   // 1 = go on
+static int http_fetch(const char *url, const char *accept, uint64_t max, HttpSink sink, void *ctx, volatile LONG64 *progress,
+                      char *err, size_t en) {
     if (!winhttp_load(err, en)) return 0;
     wchar_t wurl[1024], host[256], path[1024];
     if (!MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1024)) { snprintf(err, en, "bad URL"); return 0; }
@@ -263,7 +265,8 @@ static int http_get(const char *url, const char *accept, size_t max, uint8_t **o
     HINTERNET s = pWinHttpOpen(ua, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     HINTERNET c = NULL, r = NULL;
     int ok = 0;
-    uint8_t *buf = NULL; size_t n = 0, cap = 0;
+    uint8_t *buf = NULL;
+    uint64_t n = 0;
     if (!s) { snprintf(err, en, "WinHttpOpen failed (%lu)", GetLastError()); goto done; }
     pWinHttpSetTimeouts(s, 15000, 15000, 20000, 30000);
     c = pWinHttpConnect(s, host, u.nPort, 0);
@@ -292,23 +295,17 @@ static int http_get(const char *url, const char *accept, size_t max, uint8_t **o
         else snprintf(err, en, "GitHub answered HTTP %lu", status);
         goto done;
     }
+    buf = malloc(65536);
+    if (!buf) { snprintf(err, en, "out of memory"); goto done; }
     for (;;) {
-        if (n + 65536 + 1 > cap) {
-            size_t nc = cap ? cap * 2 : 131072;
-            while (nc < n + 65536 + 1) nc *= 2;
-            uint8_t *nb = realloc(buf, nc);
-            if (!nb) { snprintf(err, en, "out of memory"); goto done; }
-            buf = nb; cap = nc;
-        }
         DWORD got = 0;
-        if (!pWinHttpReadData(r, buf + n, 65536, &got)) { snprintf(err, en, "download interrupted (%lu)", GetLastError()); goto done; }
+        if (!pWinHttpReadData(r, buf, 65536, &got)) { snprintf(err, en, "download interrupted (%lu)", GetLastError()); goto done; }
         if (!got) break;
         n += got;
-        InterlockedExchange64(&dl_got, (LONG64)n);
-        if (n > max) { snprintf(err, en, "download larger than expected (over %zu bytes)", max); goto done; }
+        if (progress) InterlockedExchange64(progress, (LONG64)n);
+        if (n > max) { snprintf(err, en, "download larger than expected (over %llu bytes)", (unsigned long long)max); goto done; }
+        if (!sink(buf, got, ctx, err, en)) goto done;
     }
-    buf[n] = 0;   // text replies are NUL-terminated
-    *out = buf; *outn = n; buf = NULL;
     ok = 1;
 done:
     free(buf);
@@ -317,6 +314,59 @@ done:
     if (s) pWinHttpCloseHandle(s);
     return ok;
 }
+
+typedef struct { uint8_t *p; size_t n, cap; } MemSink;
+static int mem_sink(const uint8_t *p, size_t n, void *ctx, char *err, size_t en) {
+    MemSink *m = ctx;
+    if (m->n + n + 1 > m->cap) {
+        size_t nc = m->cap ? m->cap * 2 : 131072;
+        while (nc < m->n + n + 1) nc *= 2;
+        uint8_t *nb = realloc(m->p, nc);
+        if (!nb) { snprintf(err, en, "out of memory"); return 0; }
+        m->p = nb; m->cap = nc;
+    }
+    memcpy(m->p + m->n, p, n);
+    m->n += n;
+    return 1;
+}
+// GET url into a malloc'd buffer (max bytes), NUL-terminated (text replies). 1 = HTTP 200 and the body read.
+static int http_get(const char *url, const char *accept, size_t max, uint8_t **out, size_t *outn, char *err, size_t en) {
+    MemSink m = {0};
+    *out = NULL; *outn = 0;
+    if (!http_fetch(url, accept, max, mem_sink, &m, &dl_got, err, en) || !mem_sink((const uint8_t *)"", 0, &m, err, en)) { free(m.p); return 0; }
+    m.p[m.n] = 0;
+    *out = m.p; *outn = m.n;
+    return 1;
+}
+
+// For the add-on shop (shop.c): the same HTTPS path (the caller opens netguard's updater scope around it).
+int updater_http_get(const char *url, size_t max, uint8_t **out, size_t *n, char *err, size_t en) {
+    return http_get(url, "application/octet-stream", max, out, n, err, en);
+}
+typedef struct { HANDLE h; UpdSha sha; } FileSink;
+static int file_sink(const uint8_t *p, size_t n, void *ctx, char *err, size_t en) {
+    FileSink *f = ctx;
+    DWORD w = 0;
+    upd_sha256_update(&f->sha, p, n);
+    if (!WriteFile(f->h, p, (DWORD)n, &w, NULL) || w != n) { snprintf(err, en, "can't write the file (Windows error %lu; disk full?)", GetLastError()); return 0; }
+    return 1;
+}
+// GET url into a new file (created or truncated), SHA-256 on the way. 1 = the whole body written; *got = its size.
+int updater_http_to_file(const char *url, const wchar_t *path, uint64_t max, uint8_t sha256[32], uint64_t *got,
+                         volatile LONG64 *progress, char *err, size_t en) {
+    FileSink f;
+    *got = 0;
+    upd_sha256_init(&f.sha);
+    f.h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f.h == INVALID_HANDLE_VALUE) { snprintf(err, en, "can't create the file (Windows error %lu)", GetLastError()); return 0; }
+    int ok = http_fetch(url, "application/octet-stream", max, file_sink, &f, progress, err, en);
+    ok = FlushFileBuffers(f.h) && ok;
+    CloseHandle(f.h);
+    upd_sha256_final(&f.sha, sha256);
+    *got = f.sha.n;
+    return ok;
+}
+const uint8_t *updater_release_pubkey(void) { return RELEASE_PUBKEY; }
 
 // ---- the update state machine (worker thread + game-thread UI) ----
 enum { P_IDLE, P_CHECKING, P_CHECKED, P_DOWNLOADING, P_INSTALLED, P_ERROR };

@@ -134,6 +134,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     models_init();
     addons_init();
     updater_init();
+    shop_init();
 #ifndef B4B_RELEASE
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
 #endif

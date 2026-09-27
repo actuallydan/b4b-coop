@@ -98,7 +98,8 @@ typedef void (*DtorFn)(void *fh, uint32_t flags);
 
 static InitFn orig_init;
 static void *g_pf;              // the FPakPlatformFile
-static int g_ok;                // signatures verified and all hooks in
+static int g_ok;                // signatures verified and the Initialize hook in (g_pf gets known)
+static int g_exempt;            // the two signature exemption hooks are in (needed before any of our paks is mounted)
 #ifndef B4B_RELEASE
 static char g_modpaks[520];     // ini modpaks=<windows dir> (dev)
 #endif
@@ -144,7 +145,7 @@ static void mount_dir(const char *dir) {
 #endif
 
 // Add-ons (addons.c): only from the Initialize hook, right after the retail paks.
-int paks_mount_unsigned(const wchar_t *path, uint32_t order) { return pf_ok() && mount_pak(path, order, 0); }
+int paks_mount_unsigned(const wchar_t *path, uint32_t order) { return pf_ok() && g_exempt && mount_pak(path, order, 0); }
 
 static int is_mod_pak(char *path) {   // path is folded in place (lower case, backslashes)
     for (char *c = path; *c; c++) *c = (char)tolower(*c == '/' ? '\\' : *c);
@@ -216,12 +217,24 @@ static void load_config(void) {
 
 #endif
 
+static int install_exemptions(void) {   // GetPakSignatureFile + the precacher's chunk check, for our paks only
+    if (g_exempt) return 1;
+    if (MH_CreateHook((void *)ADDR_PRECACHE_CB, (void *)precache_cb_detour, (void **)&orig_precache_cb) != MH_OK ||
+        MH_EnableHook((void *)ADDR_PRECACHE_CB) != MH_OK ||
+        MH_CreateHook((void *)ADDR_GETPAKSIG, (void *)getpaksig_detour, (void **)&orig_getpaksig) != MH_OK ||
+        MH_EnableHook((void *)ADDR_GETPAKSIG) != MH_OK) return 0;
+    g_exempt = 1;
+    return 1;
+}
+
 // DllMain: hook before the engine builds its platform file chain.
 void paks_early_init(void) {
     g_base_delta = (uint64_t)GetModuleHandleW(NULL) - 0x140000000ull;
     int n = addons_scan();   // b4bcoop.ini addons keys, the add-ons folder, addonlist.txt
 #ifdef B4B_RELEASE
-    if (!n) return;          // nothing to mount: the engine's pak code stays untouched
+    // nothing to mount and no add-on shop: the engine's pak code stays untouched. With the shop (shop.c) only the
+    // Initialize hook goes in (it just remembers the pak layer); the exemptions follow with the first add-on mounted.
+    if (!n && !addons_runtime_wanted()) return;
 #else
     load_config();
 #endif
@@ -236,23 +249,41 @@ void paks_early_init(void) {
         return;
     }
     MH_STATUS st = MH_Initialize();
+    int need_exempt = n;
+#ifndef B4B_RELEASE
+    if (g_modpaks[0]) need_exempt = 1;   // dev: mountpak installs them on its first use, like the shop in player builds
+#endif
     if ((st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED) ||
+        (need_exempt && !install_exemptions()) ||
         MH_CreateHook((void *)ADDR_PAKPF_INIT, (void *)init_detour, (void **)&orig_init) != MH_OK ||
-        MH_EnableHook((void *)ADDR_PAKPF_INIT) != MH_OK ||
-        MH_CreateHook((void *)ADDR_PRECACHE_CB, (void *)precache_cb_detour, (void **)&orig_precache_cb) != MH_OK ||
-        MH_EnableHook((void *)ADDR_PRECACHE_CB) != MH_OK ||
-        MH_CreateHook((void *)ADDR_GETPAKSIG, (void *)getpaksig_detour, (void **)&orig_getpaksig) != MH_OK ||
-        MH_EnableHook((void *)ADDR_GETPAKSIG) != MH_OK) {
+        MH_EnableHook((void *)ADDR_PAKPF_INIT) != MH_OK) {
         LOG("paks: hook failed, add-ons off");
         addons_unavailable("hook failed");
         return;
     }
     g_ok = 1;   // only now: an add-on mounted without all three exemptions would be a Fatal
 #ifdef B4B_RELEASE
-    LOG("paks: FPakPlatformFile::Initialize hooked (%d add-on(s) to mount)", n);
+    LOG("paks: FPakPlatformFile::Initialize hooked (%d add-on(s) to mount%s)", n, g_exempt ? "" : "; exemptions with the first shop add-on");
 #else
     LOG("paks: FPakPlatformFile::Initialize hooked (%d add-on(s) to mount)%s%s", n, g_modpaks[0] ? ", modpaks=" : "", g_modpaks);
 #endif
+}
+
+// ---- runtime (game thread; add-on shop, shop.c/addons.c) ----
+int paks_runtime_ready(void) { return pf_ok(); }
+// A file in the engine's file system (paks and loose files): key = "gobi/content/..." as addons.c normalizes it
+int paks_file_exists(const char *key) {
+    if (!pf_ok()) return 0;
+    wchar_t w[700];
+    swprintf(w, 700, L"../../../%hs", key);
+    return ((ExistsFn)VT(g_pf)[VT_FILEEXISTS])(g_pf, w) != 0;
+}
+// Mount one of our paks now (after the engine started): the exemptions go in first if they aren't yet.
+int paks_mount_runtime(const wchar_t *path, uint32_t order, char *err, size_t en) {
+    if (!pf_ok()) { snprintf(err, en, "the game's pak layer was not found"); return 0; }
+    if (!g_exempt && !install_exemptions()) { snprintf(err, en, "hook failed"); LOG("paks: runtime exemption hooks FAILED"); return 0; }
+    if (!mount_pak(path, order, 0)) { snprintf(err, en, "the game refused to mount it"); return 0; }
+    return 1;
 }
 
 #ifndef B4B_RELEASE
@@ -397,6 +428,7 @@ int paks_cmd(const char *verb, char *rest, Out *o) {
         }
         wchar_t w[520]; swprintf(w, 520, L"%hs", path);
         int keep = !strcmp(sig, "signed");
+        if (!keep && !install_exemptions()) { out_printf(o, "exemption hooks failed\n"); return 1; }
         out_printf(o, "mount %s order %u%s: %s\n", path, order, keep ? " signed" : "", mount_pak(w, order, keep) ? "ok" : "FAILED");
         return 1;
     }

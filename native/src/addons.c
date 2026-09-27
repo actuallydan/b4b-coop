@@ -47,7 +47,7 @@ typedef struct {
 } Addon;
 static Addon A[MAX_ADDONS];
 static int nA, n_mount;
-static int enabled_cfg = 1, list_dirty;
+static int enabled_cfg = 1, shop_cfg = 1, list_dirty;
 static char unavailable[80];
 static wchar_t dirw[MAX_PATH];
 static char dir8[MAX_PATH * 3];
@@ -467,6 +467,7 @@ static void read_list(void) {
         *v++ = 0;
         l = unquote(l); v = unquote(v);
         if (!*l || by_name(l)) continue;
+        if (shop_forget(l)) { list_dirty = 1; continue; }   // removed from the Browse tab, deleted at this start
         Addon *a = add(l);
         if (a) a->on = !(!strcmp(v, "0") || !_stricmp(v, "off") || !_stricmp(v, "false"));
     }
@@ -539,6 +540,7 @@ static void config(void) {
         *v++ = 0;
         v = trim(v);
         if (!strcmp(l, "addons")) enabled_cfg = atoi(v) != 0;
+        else if (!strcmp(l, "shop")) shop_cfg = atoi(v) != 0;
         else if (!strcmp(l, "addons_dir") && *v) snprintf(custom, sizeof custom, "%s", v);
         else if (!strcmp(l, "addons_policy") && addons_policy_set(v)) LOG("addons: bad addons_policy=%s (any|cosmetic|none|match), keeping %s", v, addons_policy_name());
     }
@@ -565,6 +567,7 @@ int addons_scan(void) {
     if (!enabled_cfg) { LOG("addons: off (addons=0)"); return 0; }
     DWORD at = GetFileAttributesW(dirw);
     if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) { LOG("addons: no add-ons folder (%s)", dir8); return 0; }
+    shop_early(dirw);   // the Browse tab's pending removals/updates (files replaced or deleted before anything is read)
     read_list();
     // *.pak in the folder: listed ones keep their place, new ones are appended sorted by name, switched on
     char *fresh[MAX_ADDONS]; int nfresh = 0;
@@ -650,6 +653,96 @@ const char *addons_title_of(const char *id8) {
 }
 
 void addons_unavailable(const char *why) { snprintf(unavailable, sizeof unavailable, "%s", why); }
+
+// ---- runtime (add-on shop, shop.c; game thread) ----
+static const char *state_of(const Addon *a);
+int addons_runtime_wanted(void) { return enabled_cfg && shop_cfg; }
+int addons_enabled(void) { return enabled_cfg; }
+const wchar_t *addons_dir_w(void) { return dirw; }
+const char *addons_dir8(void) { return dir8; }
+int addons_state(const char *name8, AddonState *st) {
+    memset(st, 0, sizeof *st);
+    Addon *a = by_name(name8);
+    if (!a || !a->present) return 0;
+    st->on = a->on; st->on_at_start = a->on_at_start; st->mounted = a->mounted; st->valid = a->valid;
+    st->gameplay = a->cls.gameplay;
+    snprintf(st->hash, sizeof st->hash, "%s", a->hash);
+    snprintf(st->state, sizeof st->state, "%s", state_of(a));
+    return 1;
+}
+// on/off in addonlist.txt (applies at the next start), like /addons on|off. 1 = saved
+int addons_set_on(const char *name8, int on) {
+    Addon *a = by_name(name8);
+    if (!a) return 0;
+    EnterCriticalSection(&cs);
+    int was = a->on;
+    a->on = on;
+    int ok = was == on || write_list();
+    if (!ok) a->on = was;
+    LeaveCriticalSection(&cs);
+    LOG("addons: %s %s (Browse tab) -> %s", on ? "on" : "off", a->name, ok ? "saved" : "write FAILED");
+    return ok;
+}
+// A pak just put into the folder (the Browse tab's Add): read it like at start, append it to addonlist.txt (switched
+// on, last = wins), and mount it right away when that is safe: cosmetic and every file new to the game (nothing
+// loaded can use a path that didn't exist, so no half-replaced asset is possible). Anything that replaces a file of
+// the game or of another mounted add-on, or is gameplay-affecting, waits for the next start.
+// 2 = mounted now, 1 = added (next start), 0 = not added; msg says why/what.
+int addons_add_runtime(const char *name8, char *msg, size_t mn) {
+    if (!enabled_cfg) { snprintf(msg, mn, "add-ons are off (addons=0)"); return 0; }
+    Addon *a = by_name(name8);
+    int fresh = !a;
+    if (!a && !(a = add(name8))) { snprintf(msg, mn, "more than %d add-ons", MAX_ADDONS); return 0; }
+    if (fresh || !a->present) {
+        a->present = 1;
+        int pos = 0;
+        for (int i = 0; i < nA; i++) pos += A[i].present;
+        a->pos0 = pos;
+        a->order = ADDON_ORDER + (uint32_t)pos - 1;
+    } else if (a->mounted > 0) { snprintf(msg, mn, "already loaded"); return 2; }
+    a->on = 1;
+    a->on_at_start = 0;
+    wchar_t full[MAX_PATH * 2];
+    swprintf(full, MAX_PATH * 2, L"%ls\\%ls", dirw, a->file);
+    if (!a->valid && !a->nfiles) {   // not read at start (new file): read it now
+        memset(&a->cls, 0, sizeof a->cls);
+        if (!is_ascii(a->name) || !is_ascii(dir8)) snprintf(a->why, sizeof a->why, "rename it (and its folder path) to plain letters, digits, - and _");
+        else a->valid = load_pak(a, full);
+        if (!a->title[0]) snprintf(a->title, sizeof a->title, "%.*s", (int)(strlen(a->name) - 4), a->name);
+    }
+    EnterCriticalSection(&cs);
+    int wrote = write_list();
+    LeaveCriticalSection(&cs);
+    LOG("addons: added %s \"%s\" (Browse tab), %d file(s), id %s%s%s%s", a->name, a->title, a->nfiles, a->hash[0] ? a->hash : "-",
+        a->valid ? "" : ", NOT LOADABLE: ", a->why, wrote ? "" : "; addonlist.txt write FAILED");
+    if (!a->valid) { free_keys(a); snprintf(msg, mn, "it can't load: %s", a->why); return 1; }
+    const char *later = NULL;
+    char ex[200] = "";
+    if (a->cls.gameplay) later = "it changes gameplay";
+    else if (unavailable[0]) later = unavailable;
+    else if (!paks_runtime_ready()) later = "the game's pak layer was not found";
+    else if (admin_is_client()) later = "you are in someone else's session (their add-on rules were checked when you joined)";
+    else if (!a->keys) later = "it was read at game start";
+    else
+        for (int i = 0; i < a->nfiles && !later; i++)
+            if (paks_file_exists(a->keys[i])) { later = "it replaces files of the game or of another add-on"; snprintf(ex, sizeof ex, "%s", a->keys[i]); }
+    free_keys(a);
+    if (later) {
+        LOG("addons: %s: next start (%s%s%s)", a->name, later, ex[0] ? ", e.g. " : "", ex);
+        snprintf(msg, mn, "applies after a restart (%s)", later);
+        return 1;
+    }
+    char err[120];
+    a->mounted = paks_mount_runtime(full, a->order, err, sizeof err) ? 1 : -1;
+    LOG("addons: %s -> %s (read order %u, at runtime)%s%s", a->name, a->mounted > 0 ? "mounted" : "MOUNT FAILED", a->order,
+        a->mounted > 0 ? "" : ": ", a->mounted > 0 ? "" : err);
+    if (a->mounted < 0) { snprintf(msg, mn, "could not be loaded now (%s): applies after a restart", err); a->mounted = 0; return 1; }
+    a->on_at_start = 1;   // loaded now: nothing pending
+    models_outfits_refresh();
+    wlooks_refresh();
+    snprintf(msg, mn, "ready now");
+    return 2;
+}
 
 // FPakPlatformFile::Initialize hook, right after the retail paks: mount in load order (later = higher read order).
 void addons_mount(void) {

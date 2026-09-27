@@ -19,7 +19,7 @@ extern "C" {
 
 typedef void (*OverlayDrawFn)(void);
 // order: tab position (lower first). Built-in: Session 10, Players 20, Camera 30, Flashlight 40, Cheats 50,
-// Add-ons 70 (addons.c), Settings 90, Updates 95 (updater.c), Help 100. Up to 24 panels; a second call with the same
+// Add-ons 70 (addons.c), Browse 72 (shop.c), Settings 90, Updates 95 (updater.c), Help 100. Up to 24 panels; a second call with the same
 // name replaces the draw function, draw NULL removes the tab.
 void overlay_add_panel(const char *name, int order, OverlayDrawFn draw);
 int overlay_is_open(void);
@@ -55,6 +55,11 @@ void ov_table_header(const char *const *names, int n); // column labels, first r
 void ov_table_next(void);                              // next cell (wraps to the next row)
 void ov_table_end(void);
 void ov_copy(const char *text);               // to the clipboard
+// Pictures: ov_texture copies an RGBA image (max 512x512) into a texture for the rest of the session (0 = failed or
+// the limit of OV_MAX_TEX is reached); ov_image draws it (w/h in font heights; tex 0 = empty space of that size).
+#define OV_MAX_TEX 160
+int ov_texture(const unsigned char *rgba, int w, int h);
+void ov_image(int tex, float w_em, float h_em);
 
 // ---- permissions (cmds.h CMD_ANYONE / CMD_HOST / CMD_CHEAT): disabled block with a reason ----
 int ov_allowed(int perm, const char **why);   // 1 if this machine may run such a command now
