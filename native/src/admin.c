@@ -9,7 +9,7 @@
 //
 // Host-side enforcement (hook AGameModeBase::PreLogin override, the function that calls slotguard's ApproveLogin):
 // the join policy (joinpolicy.c: by default Steam friends only) is checked first, then the joiner's b4bcoop protocol
-// (version_refused), then its add-ons against addons_policy (addons_refused, addons_mp.c), all before the game's own
+// (version_refused), then addons_policy (addons_refused, addons_mp.c: the joiner checked itself), all before the game's own
 // PreLogin runs; then a banned player id, or any new player while the
 // session is locked, gets a login error before a PlayerController exists. Bans persist in b4bcoop-bans.txt next to the agent config (cmds_config_path()).
 #include <stdio.h>
@@ -288,6 +288,7 @@ static int version_refused(const TArray *opts, const void *uid, FString *err) {
     char o[1024], proto[32], ver[40], want[16];
     options_str(opts, o, sizeof o);
 #ifndef B4B_RELEASE
+    log_redact_addons(o);   // an older b4bcoop's add-on summary is never logged (#35)
     LOG("admin: PreLogin options: %s", o);
 #endif
     opt_value(o, "b4bcoop", proto, sizeof proto);
@@ -315,31 +316,18 @@ static int version_refused(const TArray *opts, const void *uid, FString *err) {
     return 1;
 }
 
-// Add-ons (#22): the joiner's summary (?b4bcoopaddons=, cmds.c) against our addons_policy (addons_mp.c).
+// Add-ons (#22, #35): the joiner says it checked its own add-ons against our addons_policy (?b4bcoopaddonsok=,
+// cmds.c); an older b4bcoop sends its summary instead (?b4bcoopaddons=). addons_mp.c decides; nothing is kept.
 static int addons_refused(const TArray *opts, const void *uid, FString *err) {
-    char o[1600], v[512], name[64], key[80], msg[320];
+    char o[1600], claim[32], summary[512], name[64], msg[320];
     options_str(opts, o, sizeof o);
-    opt_value(o, "b4bcoopaddons", v, sizeof v);
+    opt_value(o, "b4bcoopaddonsok", claim, sizeof claim);
+    opt_value(o, "b4bcoopaddons", summary, sizeof summary);
     opt_value(o, "Name", name, sizeof name);
-    if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
-    if (!addons_login_check(v, name, key, msg, sizeof msg)) return 0;
+    if (!addons_login_check(claim, summary, name, msg, sizeof msg)) return 0;
     if (!err || fstring_assign_game(err, msg)) { LOG("admin: could not set the login error, allowing"); return 0; }
     n_refused++;
     return 1;
-}
-
-// The NetConnection logging in: B4B passes Connection->PlayerId as the unique id (UWorld::NotifyControlMessage).
-static UObject *conn_of_uid(const void *uid) {
-    UObject *w = ue_world(), *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
-    int32_t co = nd ? ue_prop_offset(nd, "ClientConnections") : -1;
-    if (co < 0 || !uid) return NULL;
-    TArray *cc = (TArray *)((char *)nd + co);
-    for (int i = 0; i < cc->num; i++) {
-        UObject *c = ((UObject **)cc->data)[i];
-        int32_t po = c ? ue_prop_offset(c, "PlayerId") : -1;
-        if (po >= 0 && (const char *)c + po == (const char *)uid) return c;
-    }
-    return NULL;
 }
 
 static void prelogin_detour(UObject *gm, const TArray *opts, const FString *addr, const void *uid, FString *err) {
@@ -361,7 +349,6 @@ static void prelogin_detour(UObject *gm, const TArray *opts, const FString *addr
         if (!ok) why = "The host locked the session.";
     }
     LOG("admin: login %s from %s (%s): %s", name, ip, key, why ? why : "ok");
-    if (!why) { char v[512]; opt_value(o, "b4bcoopaddons", v, sizeof v); addons_login_record(conn_of_uid(uid), name, v); }
     if (!why || !err) return;
     if (fstring_assign_game(err, why)) { LOG("admin: could not set the login error, allowing"); return; }
     n_refused++;
@@ -646,7 +633,7 @@ static const struct { const char *name; int perm; const char *usage; } CMDS[] = 
     {"restart", CMD_HOST, "/restart"}, {"ready", CMD_HOST, "/ready [vote]"}, {"bots", CMD_HOST, "/bots on|off|default"},
     {"say", CMD_HOST, "/say <message>"},
     {"model", CMD_ANYONE, "/model list|<name>|reset"}, {"models", CMD_ANYONE, "/models [on|off]"},   // host parts checked in models.c
-    {"addons", CMD_ANYONE, "/addons [on|off|info <#>|players|policy]"}, {"addon", CMD_ANYONE, "/addons [on|off|info <#>|players|policy]"},
+    {"addons", CMD_ANYONE, "/addons [on|off|info <#>|policy]"}, {"addon", CMD_ANYONE, "/addons [on|off|info <#>|policy]"},
 };
 #define N_CMDS ((int)(sizeof CMDS / sizeof CMDS[0]))
 

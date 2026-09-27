@@ -1,10 +1,12 @@
 // presence: join friends through Steam's own UI (docs/investigations/steam-invites.md).
 //   advertise   while we host (listen server: offline Fort Hope or a mission; on by default), Steam rich presence
-//               `connect` = "+b4bcoop_join steam:<our id64> proto:<n> ver:<x.y.z>" (+ " addr:<ip:port>" with
-//               host_ip=1) -> friends get "Join Game"; cleared when we stop.
+//               `connect` = "+b4bcoop_join steam:<our id64> proto:<n> ver:<x.y.z> addons:<policy>" (+ " addr:<ip:port>"
+//               with host_ip=1) -> friends get "Join Game"; cleared when we stop. addons: = our addons_policy, which
+//               joiners check their own add-ons against (addons_mp.c, #35; match adds our gameplay add-on ids).
 //   join        GameRichPresenceJoinRequested_t (337, friend clicked Join Game / accepted an invite while running)
 //               or the same string on the command line (Steam started the game for it) -> refused at once if the
-//               host's protocol differs from ours; else session join target (cmds_set_session_join: overrides
+//               host's protocol differs from ours, or if our add-ons fail its addons: policy (told only to
+//               us; no addons: = an older host, cosmetic assumed); else session join target (cmds_set_session_join: overrides
 //               host=/join= from the ini), auto sign-in Offline (signin.c), then the auto-join machinery joins from
 //               offline Fort Hope; steam: first, the address (host_ip=1 only) as fallback.
 //   friends     presence_has_friend(): ISteamFriends::HasFriend for the host's join policy (joinpolicy.c)
@@ -151,13 +153,18 @@ static int valid_version(const char *s) {   // 0.3.0, 1.2.3-beta.1
     return 1;
 }
 
-// "... +b4bcoop_join steam:<id64> proto:<n> ver:<x.y.z> addr:<host:port> ..." -> targets "steam:<id64>,<host:port>"
-// (either may be missing), proto/ver the host's b4bcoop protocol and version ("" if absent: an older b4bcoop).
-// An address on another machine is dropped unless host_ip=1 (IP joins are off). Returns 0 if the text carries no
-// b4bcoop join.
-static int parse_connect(const char *text, char *targets, size_t n, char proto[16], char ver[40]) {
+// "... +b4bcoop_join steam:<id64> proto:<n> ver:<x.y.z> addons:<policy> addr:<host:port> ..." -> targets
+// "steam:<id64>,<host:port>" (either may be missing), proto/ver the host's b4bcoop protocol and version ("" if absent:
+// an older b4bcoop), addons its add-on policy token ("" if absent: older than 0.7.1). An address on another machine
+// is dropped unless host_ip=1 (IP joins are off). Returns 0 if the text carries no b4bcoop join.
+static int valid_addons(const char *s) {
+    if (!*s || strlen(s) > 150) return 0;
+    for (; *s; s++) if (!islower((unsigned char)*s) && !isdigit((unsigned char)*s) && *s != ':' && *s != '.') return 0;
+    return 1;
+}
+static int parse_connect(const char *text, char *targets, size_t n, char proto[16], char ver[40], char addons[160]) {
     const char *p = text ? strstr(text, JOIN_TOKEN) : NULL;
-    proto[0] = ver[0] = 0;
+    proto[0] = ver[0] = addons[0] = 0;
     if (!p) return 0;
     p += strlen(JOIN_TOKEN);
     char steam[32] = "", addr[112] = "";
@@ -172,6 +179,7 @@ static int parse_connect(const char *text, char *targets, size_t n, char proto[1
             snprintf(proto, 16, "%s", tok + 6);
         else if (!strncmp(tok, "ver:", 4) && valid_version(tok + 4)) snprintf(ver, 40, "%s", tok + 4);
         else if (!strncmp(tok, "addr:", 5) && valid_host(tok + 5)) snprintf(addr, sizeof addr, "%s", tok + 5);
+        else if (!strncmp(tok, "addons:", 7) && valid_addons(tok + 7)) snprintf(addons, 160, "%s", tok + 7);
         else if (valid_host(tok) && strchr(tok, '.')) snprintf(addr, sizeof addr, "%s", tok);
         else LOG("presence: ignoring connect token '%s'", tok);
     }
@@ -360,7 +368,9 @@ static void advertise_tick(void) {
     char id[40] = "";
     if (p2p) snprintf(id, sizeof id, " steam:%llu", (unsigned long long)my_id);
     // proto/ver: a joiner with another b4bcoop protocol stops right away (handle_connect) instead of timing out
-    snprintf(connect, sizeof connect, JOIN_TOKEN "%s proto:%d ver:%s%s%s", id, coop_protocol(), coop_version(),
+    char pol[200];
+    addons_presence_token(pol, sizeof pol);   // " addons:<policy>": joiners check their own add-ons against it
+    snprintf(connect, sizeof connect, JOIN_TOKEN "%s proto:%d ver:%s%s%s%s", id, coop_protocol(), coop_version(), pol,
              addr[0] ? " addr:" : "", addr);
     int players = ue_num_clients(w) + 1;
     ue_world_package(w, pkg, sizeof pkg);
@@ -387,8 +397,8 @@ static void advertise_tick(void) {
 
 // ---- join handling (game thread) ----
 static void handle_connect(const char *connect, uint64_t friend_id, const char *source) {
-    char targets[300], proto[16], ver[40];
-    if (!parse_connect(connect, targets, sizeof targets, proto, ver)) {
+    char targets[300], proto[16], ver[40], addons[160];
+    if (!parse_connect(connect, targets, sizeof targets, proto, ver, addons)) {
         LOG("presence: %s from %llu is not a b4bcoop join, ignored: %s", source, (unsigned long long)friend_id, connect);
         if (strstr(connect, JOIN_TOKEN) && !coop_host_ip())   // an IP-only host (host_ip=1 there, not here)
             chat_local_later("That host only takes joins by IP address, which are off here (host_ip=0).");
@@ -408,6 +418,15 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
         else chat_local_later(line);   // shown once the player is in Fort Hope
         return;
     }
+    addons_note_host(targets, addons[0] ? addons : NULL);   // its addons_policy; we check ourselves, nothing is sent
+    char amsg[400];
+    if (addons_join_refused(targets, amsg, sizeof amsg)) {
+        char line[440];
+        snprintf(line, sizeof line, "Could not join: %s", amsg);
+        if (ue_local_pc() && !signin_on_title()) chat_local("%s", line);
+        else chat_local_later(line);
+        return;
+    }
     cmds_set_session_join(targets);
     signin_arm();
     UObject *w = ue_world();
@@ -415,6 +434,18 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
         LOG("presence: leaving the current session to join");
         cmds_join_now();
     }   // else: the auto-join machinery joins once we are signed in and in offline Fort Hope (alone)
+}
+
+// cmds.c, before joining "steam:<id64>" without a known add-on policy (not through its Join Game): read it from the
+// host's rich presence if Steam has it (friends' presence is cached). Game thread.
+void presence_note_host_addons(const char *target) {
+    if (bound <= 0 || !target || strncmp(target, "steam:", 6) || !valid_id64(target + 6)) return;
+    uint64_t id = _strtoui64(target + 6, NULL, 10);
+    char targets[300], proto[16], ver[40], addons[160], want[8];
+    if (!parse_connect(S.GetFriendRichPresence(friends, id, "connect"), targets, sizeof targets, proto, ver, addons)) return;
+    snprintf(want, sizeof want, "%d", coop_protocol());
+    if (!strstr(targets, target) || strcmp(proto, want)) return;   // someone else's session, or another protocol
+    addons_note_host(target, addons[0] ? addons : NULL);
 }
 
 static void session_panel(void);   // the overlay tab, below
@@ -498,9 +529,9 @@ static void friends_refresh(void) {
         f->id = id; f->b4b = b4b;
         snprintf(f->name, sizeof f->name, "%s", S.GetFriendPersonaName(friends, id));
         if (b4b) {
-            char t[300];
+            char t[300], a[160];
             S.RequestFriendRichPresence(friends, id);
-            f->joinable = parse_connect(S.GetFriendRichPresence(friends, id, "connect"), t, sizeof t, f->proto, f->ver);
+            f->joinable = parse_connect(S.GetFriendRichPresence(friends, id, "connect"), t, sizeof t, f->proto, f->ver, a);
         }
     }
 }
