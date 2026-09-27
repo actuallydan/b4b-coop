@@ -331,10 +331,14 @@ def motion(S, r, ic):
                                    f"/b4bcoop/outfits/{name}/".lower() in h["mesh"].lower()), None), 15, 1)
     if not b:
         log(f"  motion: bot #{bots[0]} doesn't wear {name}"); return
-    look(b["idx"], 350, 0); time.sleep(2)
+    look(b["idx"], 400, 0); time.sleep(2)
     x, y, z = b["at"]
-    e2e.agent(H, "face", "walk", b["idx"], round(x), round(y + 800), round(z))
-    time.sleep(1.2); shot(r, H, "m_run", "bot running in the outfit")
+    me = mine(H)
+    dx, dy = (me["at"][0] - x, me["at"][1] - y) if me else (1.0, 0.0)
+    n = max(1e-3, (dx * dx + dy * dy) ** 0.5)
+    # across the host's view (perpendicular to host -> bot), 3 m: the bot stays in the picture while it runs
+    e2e.agent(H, "face", "walk", b["idx"], round(x - dy / n * 300), round(y + dx / n * 300), round(z))
+    time.sleep(0.8); shot(r, H, "m_run", "bot running in the outfit")
     e2e.agent(H, "model", "#" + bots[0], "reset")
 
 

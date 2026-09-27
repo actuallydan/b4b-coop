@@ -1045,10 +1045,13 @@ def fit_character(o):
         unit_hint((hi.z - lo.z) / 1.13, k)             # the head joint sits about 1/1.13 of the stature up
         # arms in another pose than the template's A-pose (T-pose, hanging down): pose the template's arms like the
         # model's, take the weights from the posed template, then un-pose the model into the template's bind pose
-        unpose_arms(tpl, meshes, chain=mode == "fp")
+        fitted = unpose_arms(tpl, meshes, chain=mode == "fp")
         o["weights"] = "done"
         if mode == "3p" and o.get("rigged_out"):
-            save_rigged(o["rigged_out"], tpl.arm, meshes)
+            if fitted:
+                save_rigged(o["rigged_out"], tpl.arm, meshes)
+            else:                                   # arms too unlike the survivor's: FP from the joint-by-joint un-pose
+                log("unrigged: first-person arms from the model itself (the arms didn't fit onto the survivor's)")
     if own_bind:
         # the template (skeleton + meshes) takes the model's proportions too: later steps (twist weights, the face)
         # compare against it, and its joints become the mesh's bind skeleton (manifest extras bind_bones_m)
@@ -1063,12 +1066,18 @@ def fit_character(o):
         smeshes = secondary_motion(o, tpl, smeshes)
     if mode == "fp":
         segs = body_segments(tpl) if not arms else None
+        saved = {m: m.data.copy() for m in smeshes} if segs else {}
         for m in smeshes:
-            r = part_bones(m.name)
-            if r and "upperarm" in r.get("prefixes", ()):   # a part named as an arm (blocky figures): all of it
-                log(f"fp: {m.name}: kept whole (named as an arm)")
-                continue
             keep_arms(m, fp_arm_mask(tpl, m, segs) if segs else None)
+        if segs and not any(len(m.data.polygons) for m in smeshes):
+            # nothing left by the body-segment test (blocky figures: arm boxes far from the survivor's arm bones):
+            # the faces skinned to the arms, as before that test
+            log("fp: no arm faces by the survivor's skeleton: keeping the faces skinned to the arms")
+            for m in smeshes:
+                old_me = m.data; m.data = saved[m]; bpy.data.meshes.remove(old_me)
+                keep_arms(m, None)
+        else:
+            for me in saved.values(): bpy.data.meshes.remove(me)
         smeshes = [m for m in smeshes if len(m.data.polygons)]
     if o.get("probe") == "regions":
         body_regions(tpl, smeshes, os.path.join(o["out"], "regions.json"))
@@ -1385,7 +1394,7 @@ def part_bones(name):
     if not p: return None
     part, sd = p[0], p[1]
     arm_all = ("clavicle", "upperarm", "lowerarm", "hand", "wrist", "elbow", "shoulder") + tuple(FINGERS)
-    fam = {"upperarm": arm_all, "arm": arm_all, "lowerarm": ("lowerarm", "hand", "wrist", "elbow") + tuple(FINGERS),
+    fam = {"upperarm": arm_all, "lowerarm": ("lowerarm", "hand", "wrist", "elbow") + tuple(FINGERS),
            "hand": ("hand", "wrist") + tuple(FINGERS), "clavicle": ("clavicle", "upperarm", "shoulder"),
            "thigh": ("thigh", "calf", "foot", "ball", "knee", "hip"), "calf_or_thigh": ("thigh", "calf", "foot", "ball", "knee", "hip"),
            "calf": ("calf", "foot", "ball", "knee"), "foot": ("foot", "ball"), "ball": ("ball",)}.get(part)
@@ -1408,7 +1417,8 @@ def unpose_arms(tpl, meshes, chain=False):
     chain (first person): the FP bind pose bends the elbow (~40 deg) and the hand, so the model's straight arm is
     matched joint by joint (elbow and wrist on its shoulder-tip line at the template's proportions): upperarm, lowerarm
     and hand each turned. Turning only the upperarm left the model's hand on the template's metacarpals, so in game the
-    hand hung below the view (no hands in first person)."""
+    hand hung below the view (no hands in first person). Returns True when both arms fitted onto the model's surface
+    (fit_arm_pose; the FP arms are then made from this fit, save_rigged)."""
     arm = tpl.arm
     tv = [tm.matrix_world @ v.co for tm in tpl.meshes for v in tm.data.vertices]
     mv = [(m, m.matrix_world @ v.co) for m in meshes for v in m.data.vertices]
@@ -1423,6 +1433,7 @@ def unpose_arms(tpl, meshes, chain=False):
     for i, (m, p) in enumerate(mv): mkd.insert(p, i)
     mkd.balance()
     graph = None
+    fits = {}
     for sd, sign in (("l", 1), ("r", -1)):          # heroes face +X: their left is +Y
         ua = tpl.pos.get(f"upperarm_{sd}")
         if ua is None: continue
@@ -1494,6 +1505,7 @@ def unpose_arms(tpl, meshes, chain=False):
         # hanging behind the template's by 8 cm, which took forearm and thigh weights (and missed the FP view)
         if graph is None: graph = model_graph(meshes)
         fit = fit_arm_pose(tpl, mkd, graph, sd, q if ang > 8 else Quaternion(), side)
+        fits[sd] = bool(fit)
         if fit:
             rot[sd] = fit
         elif ang > 8:
@@ -1546,7 +1558,8 @@ def unpose_arms(tpl, meshes, chain=False):
             out.append(fold_face({n: x / tot for n, x in acc.items()}, face) if tot else {"pelvis": 1.0})
         set_weights(m, out)
     log("weights: copied from the template" + (" (posed like the model)" if rot else ""))
-    if not rot: return
+    fitted = len(fits) == 2 and all(fits.values())    # both arms fitted onto the model's surface
+    if not rot: return fitted
     # un-pose: skin to the template with the inverse arm rotation, apply
     pose(True)
     for m in meshes:
@@ -1557,6 +1570,7 @@ def unpose_arms(tpl, meshes, chain=False):
         pb.matrix_basis = Matrix.Identity(4)
     bpy.context.view_layer.update()
     log("unrigged: arms moved into the template's pose")
+    return fitted
 
 
 ARM_PARTS = (("clavicle", ("clavicle_",)), ("upperarm", ("upperarm_", "shoulder_")),
