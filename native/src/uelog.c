@@ -26,6 +26,7 @@ static void logf_detour(const char *file, int line, const FName *cat, uint8_t ve
     for (; wbuf[i] && i < sizeof buf - 1; i++) buf[i] = wbuf[i] < 128 ? (char)wbuf[i] : '?';
     buf[i] = 0;
     ue_name(*cat, cname, sizeof cname);
+    if (strstr(buf, "b4bcoopaddons=")) log_redact_addons(buf);   // login URLs of older clients: their add-ons (#35)
     LOG("UE %s %s: %s", cname, VERB[(verb & 0xF) < 8 ? verb & 0xF : 0], buf);
     if ((verb & 0xF) == 2 /*Error*/ && !strcmp(cname, "LogDTLSHandler")) travel_on_handshake_failed();
     steamnet_on_log(cname, buf);

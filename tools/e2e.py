@@ -7,8 +7,9 @@
     join, mission follow, client flashlight replicated to the host, a host and a client burn card (charged to their
     own profiles), chat `/players` typed on the client, ready + endmission success with the client's SP forwarded,
     seamless chapter transition, profile diffs after the deferred save, the 0.3.0 defaults (host with no host= line,
-    Steam-only presence with the protocol, protocol in the login options), the add-on summary in the login and
-    /addons players on the host (#22), and (ss, all along) no public TCP/UDP peer and no game socket bound off loopback.
+    Steam-only presence with the protocol, protocol in the login options), add-on privacy (#35: the host announces its
+    addons_policy, the client checks itself and logs in with only "checked", no add-on list anywhere in the host's
+    log, /addons players gone), and (ss, all along) no public TCP/UDP peer and no game socket bound off loopback.
 --full (~15 min in all): also 5 instances without teamsize (the 5th is refused with "Server full.", host survives) and a
     teamsize=5 round (5 humans follow into the mission, rewards forwarded to all 4 clients).
 
@@ -376,13 +377,21 @@ def duo(args):
         ok = bool(dflt) and bool(adv) and "steam:" in adv[-1] and "proto:" in adv[-1] and "addr:" not in adv[-1]
         c.done(ok and bool(login), f"connect={adv[-1] if adv else '-'}; default host={bool(dflt)}; login={bool(login)}")
 
-        # add-ons (#22): the client's login carries its add-on summary (none here), the host applies addons_policy
-        c = Check("duo", "add-ons: summary in the login, host policy, /addons players")
-        summ = hl.grep(r"addons: login \S+: (\d+c\d+g\S*)", since_mark=False)
+        # add-ons (#22, private since #35): the host announces addons_policy (presence addons:, and its first refusal
+        # of the loopback join, which knows no presence); the client checks itself and logs in with only
+        # ?b4bcoopaddonsok=<policy>. Nothing about the client's add-ons in the host's log; /addons players is gone.
+        c = Check("duo", "add-ons: host announces its policy, client checks itself, nothing sent")
         pol = hl.grep(r"addons: policy for joiners: (\w+)", since_mark=False)
+        asked = cl.grep(r"addons: host \S+ asks us to check our add-ons against its policy (\S+)", since_mark=False)
+        ok_login = hl.grep(r"admin: PreLogin options: .*\?b4bcoopaddonsok=(\w+)", since_mark=False)
+        checked = hl.grep(r"addons: login \S+: checked its add-ons against addons_policy=(\w+)", since_mark=False)
+        leaks = hl.grep(r"b4bcoopaddons=[^-?\s'\"]", since_mark=False) + hl.grep(r"addons: login \S+: \d+c\d+g", since_mark=False)
         who = agent(H, "slash", "/addons players")
-        ok = bool(summ) and bool(pol) and "add-ons policy:" in who and "no add-ons" in who
-        c.done(ok, f"summary={summ[-1] if summ else '-'}; policy={pol[-1] if pol else '-'}; players={' | '.join(who.split(chr(10))[:3])}")
+        pol_adv = bool(adv) and pol and f"addons:{pol[-1]}" in adv[-1]
+        ok = bool(pol) and pol_adv and bool(asked) and bool(ok_login) and bool(checked) and not leaks and "gone" in who
+        c.done(ok, f"policy={pol[-1] if pol else '-'}; presence addons:={pol_adv}; client asked={asked[-1] if asked else '-'}; "
+                   f"login ok={ok_login[-1] if ok_login else '-'}; host checked={bool(checked)}; leaks={len(leaks)}; "
+                   f"players={who.strip()[:60]}")
 
         c = Check("duo", "mission follow (client hero in Evansburgh_B)")
         agent(H, "mission", "Easy")

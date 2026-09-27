@@ -237,7 +237,19 @@ static void later_tick(float dt) {
 // (retrying can't help); locked / not a friend -> retry less often.
 void chat_on_join_failed(const char *error) {
     const char *e = strstr(error, "Error: '");
-    char msg[320];
+    char msg[440];
+    // the host asked us to check our add-ons against its policy ("[addons:<policy>]", addons_mp.c, #35): pass -> join
+    // again at once, quietly; fail -> say why, to us only, and stop (only a restart changes add-ons)
+    char amsg[400];
+    switch (addons_on_refusal(error, cmds_last_join_target(), amsg, sizeof amsg)) {
+    case 1: cmds_join_retry(cmds_last_join_target(), 1); return;
+    case 2:
+        cmds_auto_join_stop();
+        if (cmds_session_join()[0]) cmds_set_session_join(NULL);
+        snprintf(msg, sizeof msg, "Could not join: %s", amsg);
+        chat_local_later(msg);
+        return;
+    }
     snprintf(msg, sizeof msg, "Could not join: %.*s", e ? (int)strcspn(e + 8, "'") : 40, e ? e + 8 : "connection failed");
     const char *hv = strstr(error, "Host runs b4bcoop ");   // admin.c's refusal: "Host runs b4bcoop X (protocol N); ..."
     if (hv && strstr(error, "same version")) {

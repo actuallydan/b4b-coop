@@ -18,8 +18,9 @@ Player page: docs/COMMANDS.md "Add-ons".
 - Player builds: paks.c installs **no hook** unless at least one add-on will be mounted. Retail paks keep every
   signature check either way.
 - Multiplayer (#22, §6-§7): add-ons stay local (each player sees their own, others see vanilla). Each add-on is
-  classified from its files as cosmetic or gameplay-affecting; joiners send a summary in the login URL and the host's
-  `addons_policy=any|cosmetic|none|match` (default `cosmetic`) refuses the rest with a message on both sides. No
+  classified from its files as cosmetic or gameplay-affecting. The host announces its
+  `addons_policy=any|cosmetic|none|match` (default `cosmetic`); since #35 the joiner checks its own add-ons against
+  it and doesn't join if they fail, telling only its own player. Nothing about a player's add-ons is sent. No
   protocol bump (§7).
 
 ## 1. Format
@@ -132,37 +133,84 @@ written as `content=`): same rules, kept in sync. The author's label is never tr
   Walker_Customization_DT.uasset`; `its addoninfo says content=cosmetic; the files say gameplay (the files decide)`.
   `/addons` shows `[on, cosmetic]`, `/addons info` the kind, the first gameplay file and the short id.
 
-## 7. Multiplayer (#22)
-L4D-like: add-ons are local content. Nothing is sent to other machines except a summary at login; nothing is
-downloaded. A player sees their own add-ons on everyone (e.g. a survivor skin on every survivor wearing that outfit),
-the others see vanilla. Code: `native/src/addons_mp.c`, gate in `admin.c` PreLogin, option in `cmds.c` `cmd_join`.
-- **Summary** (client, every join and rejoin: cmds.c appends it to the join URL that travel.c reopens):
-  `?b4bcoopaddons=<C>c<G>g[,g<id8>-<Title>...][,c<id8>...][,+<n>]` = counts of mounted cosmetic/gameplay add-ons,
-  then gameplay entries (8-hex short content id + title as `[A-Za-z0-9_]`, 24 max), then cosmetic ids. Capped at 400
-  chars (the whole login URL is one FString, max 1024 on the wire; with the game's own options it was ~95 chars);
-  what doesn't fit is counted in `+<n>`. Always sent (`0c0g` with no add-ons), so "absent" = older b4bcoop.
-- **Host gate** (`admin.c` PreLogin: join policy, protocol, then add-ons, all before the game's own PreLogin), ini
-  `addons_policy=` / chat `/addons policy <x>` (session only), default = `ADDONS_POLICY_DEFAULT` in addons_mp.c:
-  `cosmetic` refuses G > 0; `none` refuses any add-on; `match` needs the joiner's gameplay ids = the host's (cosmetic
-  free); `any` never refuses. Joiner's login error, e.g. `Host allows cosmetic add-ons only; you have gameplay
-  add-ons: Walker data table test. Switch them off (/addons off <#>) and restart the game.` / `Host requires the same
-  gameplay add-ons as theirs. You lack: X. Switch off: Y. Then restart the game.`; host chat `<name> could not join:
-  they have gameplay add-ons (...); addons_policy=cosmetic.` (once per player and policy). The client stops its
-  auto-join on it (`chat_on_join_failed`: " add-ons"), like a version mismatch: only a restart can change add-ons.
-- **`/addons players`** (host): the summary of each accepted login, keyed by its NetConnection. B4B's PreLogin gets
-  `Connection->PlayerId` as the unique id, so the connection is the entry of `NetDriver.ClientConnections` with
-  `conn + offset(PlayerId) == uid` (all local copies share one Steam id, name and IP, so those can't tell players
-  apart). Players are found through `PlayerState.Owner` -> `PlayerController.Player` (the connection), which survives
-  seamless travel; a non-seamless map change logs in again.
-- **No protocol bump.** Old client -> new host: no summary, and older b4bcoop has no add-on loader, so none is the
-  truth (logged as `no add-on summary (older b4bcoop)`; only `match` with host gameplay add-ons refuses it). New
-  client -> old host: the option is ignored. Nothing a client must understand changed; the refusal is an ordinary
-  login error. A modified client can lie about its add-ons: the policy is for consistency among friends, not
-  anti-cheat.
-- Not done: the Steam rich presence doesn't advertise the policy (a refused Steam join finds out at login, after
-  connecting); a host's own gameplay add-ons under `cosmetic` are not flagged to joiners.
+## 7. Multiplayer (#22; private since #35)
+L4D-like: add-ons are local content, nothing is downloaded, and since #35 nothing about a player's add-ons leaves
+their PC (no ids, names or counts; Dan: "I don't want other clients to know what I have installed"). A player sees
+their own add-ons on everyone, the others see vanilla. Code: `native/src/addons_mp.c`; gate in `admin.c` PreLogin;
+join side in `cmds.c` `cmd_join`, `presence.c` `handle_connect`, `chat.c` `chat_on_join_failed`.
+- **Policy** (host): ini `addons_policy=` / chat `/addons policy <x>` (session only) / `~` Add-ons tab, default =
+  `ADDONS_POLICY_DEFAULT` in addons_mp.c: `cosmetic` = no gameplay add-ons; `none` = no add-ons; `match` = gameplay
+  add-ons exactly the host's (cosmetic free); `any`.
+- **Announce** (host): the rich presence connect string carries ` addons:<policy>`, e.g. `+b4bcoop_join steam:<id64>
+  proto:2 ver:0.7.1 addons:cosmetic`. `match` adds the host's own gameplay add-on ids (8 hex digits of the content
+  id): `addons:match:23a4441c.ab12cd34` (max 16 = `MATCH_MAX`; the value is 256 chars max). Choosing `match` is the
+  host's opt-in to show joiners those ids (the `~` tab and `/addons policy match` say so); the other policies reveal
+  nothing about the host's add-ons.
+- **Joiner checks itself** against the announced policy (`addons_join_refused`): Steam Join Game / invite / launch
+  command line (`handle_connect`: before arming the join, so no connection at all), and `steam:<id64>` joins from the
+  CLI/ini/overlay read the host's presence from Steam's friends cache (`presence_note_host_addons`). Fail -> local
+  chat only, e.g. `Could not join: This host allows only cosmetic add-ons; turn off Walker data table test (~ window,
+  tab Add-ons, or /addons off <#>) and restart the game.` / `This host allows no add-ons; turn off ...` / `This host
+  requires the same gameplay add-ons as theirs. Turn off: X. Turn on or install: Y (id; not installed here). Then
+  restart the game.`; auto-join and the session join target stop (only a restart changes add-ons). Pass -> the login
+  carries `?b4bcoopaddonsok=<policy>` ("checked against your policy": nothing the host wouldn't learn from the join).
+- **Policy unknown** (IP join, `host_ip=1` or loopback tests; a `steam:` target whose presence Steam doesn't have): no
+  option. A new host with a policy other than `any` refuses that login with `Host allows cosmetic add-ons only. Your
+  b4bcoop checks your add-ons and joins again. [addons:cosmetic]` (log `addons: login X: asked to check its add-ons
+  against addons_policy=cosmetic`); the client (`addons_on_refusal`) checks: pass -> joins again 1 s later from its
+  camp with the claim (`cmds_join_retry`, quietly), fail -> the local message, no retry. The host then only learns
+  "asked, didn't come back", like any aborted join. A note from a refusal only feeds the claim, never a local refusal
+  (the host may change its policy); presence notes are re-read at every join. Two refusals within 60 s after passing
+  -> stop ("keeps asking"). The refusal costs one round trip and shows the game's "Unable to join" popup, which the
+  successful rejoin replaces.
+- **Host keeps and shows nothing**: `/addons players` and the Add-ons tab's players table are gone (`/addons players`
+  answers that it's gone). Log: only `checked its add-ons against addons_policy=<p>` / `asked to check` / for an older
+  client `refused by addons_policy=<p> (an older b4bcoop; its add-on list isn't logged)`. `log_redact_addons` (log.c)
+  cuts any `b4bcoopaddons=` value to `-` in our lines and in captured engine lines (the dev `PreLogin options` line,
+  LogNet/LogGameMode login URLs). The engine logs the login error (`PreLogin failure: ...`), so errors to older
+  clients carry only a count, never their titles.
+- **Compatibility, no protocol bump** (both directions keep joining):
+  - older client (0.6.0-0.7.0) -> new host: still sends `?b4bcoopaddons=<C>c<G>g,g<id8>-<Title>,...`; the host judges
+    it as before (`summary_fails`: counts, `match` by ids) and refuses with `Host allows cosmetic add-ons only; you
+    have 1 gameplay add-on(s). Switch them off ...` (the old client stops on " add-ons"). Its list crosses the wire
+    because the old client sends it; updating stops that.
+  - new client -> older host (0.6.0-0.7.0): the older host's presence has no `addons:` -> the client assumes `cosmetic`
+    (every older version's default) and checks itself (`This host allows only cosmetic add-ons (an older b4bcoop: its
+    default); ...`). An older host with `any` therefore can't be joined with gameplay add-ons until it updates (safe
+    side). IP join to an older host: the client sends nothing and the older host sees "no summary" = accepted: the
+    policy is not enforced there (IP joins are the advanced opt-in; see the next line).
+  - A modified client can ignore the policy or lie; that was always true (the summary was self-reported). The policy
+    keeps friends consistent, it isn't anti-cheat.
+- Not private by design: wearing an **added outfit** or **weapon look** (`/model`) sends that row name
+  (`b4bcoop.outfit.<name>`, `b4bcoop.weapon.<name>`) through the game's replicated customization, so players with the
+  same add-on see it (models.c, weaponlooks.c; new-assets.md §8-9). That happens only when the player puts one on.
 
-### Live results (2026-09-25, Proton, local copies, `launch/multi.sh 2`, add-on folders per instance via
+### Live results #35 (2026-09-27, lane 2, Flatpak Steam, dev build, `multi.sh 2`; client add-ons via `addons_dir=`,
+test paks from `~/.local/share/b4b-coop/addons-mp/`; screenshots in `~/.local/share/b4b-coop/addonprivacy/`, not
+committed)
+- Host presence: `connect="+b4bcoop_join steam:76561198994546085 proto:2 ver:0.7.0 addons:cosmetic"`.
+- Client with `walker_dt_test` (gameplay), host default: loopback join -> host `addons: login dreamsofants: asked to
+  check its add-ons against addons_policy=cosmetic`, nothing else; client `addons: host 127.0.0.1:7887 asks us to
+  check ...`, `auto: join 127.0.0.1:7887 stopped`, game popup, after closing it chat `Could not join: This host allows
+  only cosmetic add-ons; turn off Walker data table test (~ window, tab Add-ons, or /addons off <#>) and restart the
+  game.`
+- Same client, `steamjoin "+b4bcoop_join steam:<id> proto:2 ver:0.7.1 addons:cosmetic addr:127.0.0.1:7887"`
+  (presence path): `addons: not joining steam:...: our add-ons don't pass its policy cosmetic (told only to us)` +
+  the chat line at once; the host log got no login line at all. Without `addons:` (older host): the same with
+  `(an older b4bcoop: its default)`.
+- Older client simulated (`exec open 127.0.0.1:7887?...?b4bcoopaddons=0c1g,g23a4441c-Walker_data_table_test`): host
+  `PreLogin options: ...?b4bcoopaddons=-?...`, `refused by addons_policy=cosmetic (an older b4bcoop; its add-on list
+  isn't logged)`, error `... you have 1 gameplay add-on(s) ...`; no id or title anywhere in the host log.
+- `/addons policy match` (host without add-ons) -> refusal `[addons:match]` -> client `This host requires the same
+  gameplay add-ons as theirs. Turn off: Walker data table test. Then restart the game.` `/addons policy any` -> the
+  same client `join 127.0.0.1:7887` joined (`client_conns=1`), the stale match note didn't block it, host log: only
+  `admin: login ... ok`. `/addons players` -> "gone".
+- Client with `walker_checker` (cosmetic): asked -> `auto: joining 127.0.0.1:7887 again in 1s (add-on check passed)`
+  -> login `?b4bcoopaddonsok=cosmetic`, host `checked its add-ons against addons_policy=cosmetic`, joined; the host
+  log has no `33c6d9d8` and nothing of the add-on.
+- `B4B_LANE=2 B4B_STEAM=flatpak tools/e2e.py --quick --no-lock`: 14/14 PASS (/tmp/b4b-e2e-l2-20260927-170032), incl. the new add-ons check (presence `addons:cosmetic`, loopback join asked -> `?b4bcoopaddonsok=cosmetic`, 0 leaks, `/addons players` gone).
+
+### Live results before #35 (the summary design; 2026-09-25, Proton, local copies, `launch/multi.sh 2`, add-on folders per instance via
 `addons_dir=`; test add-ons built with `addon.py pack` under `~/.local/share/b4b-coop/addons-mp/`, screenshots in
 `addons-mp/evidence/`, not committed)
 - Test content: `walker_checker.pak` = the #18 Walker Elite 00 body/arms/gear textures (checker, blue), cosmetic
@@ -187,7 +235,7 @@ the others see vanilla. Code: `native/src/addons_mp.c`, gate in `admin.c` PreLog
 - Offline harness (Proton 10 wine; addons.c + addonclass.c + addons_mp.c with stubbed engine): the four policies
   against 7 summaries (none, empty, cosmetic only, gameplay, unlisted `+n`, junk), `/addons players|policy`, a pak
   whose addoninfo claims `content=cosmetic` for a data table (logged, classified gameplay).
-- `tools/e2e.py --quick` checks the summary in the login and `/addons players` on the host.
+- `tools/e2e.py --quick` checked the summary in the login and `/addons players` on the host (replaced in #35).
 - `tools/e2e.py --quick` on this branch's dev build: 13/13 PASS (incl. the new add-ons check).
 
 ## 8. `~` window: Add-ons tab (#26)
@@ -208,7 +256,7 @@ Code: `addons_panel()` in `addons.c` (registered from `addons_init`, order 70), 
   conflicts both ways. Folder path with Copy (no "open folder": the game is full screen). "Load add-ons" = ini
   `addons` (restart).
 - Client: the policy radios are greyed out (`ov_begin_perm(CMD_HOST)`: "Host only: you are in someone else's
-  session."), players' part shows only its own summary and why.
+  session."). (Before #35 a players' section showed each login's summary; removed.)
 
 Live (2026-09-25, lane 2, dev build, `multi.sh 2`; host: game folder `b4bcoop-addons` with broken.pak (text file),
 casual_joe, holly_green, holly_magenta, walker_dt_test; client `addons_dir=` with walker_checker; screenshots in
