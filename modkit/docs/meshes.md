@@ -9,7 +9,8 @@ Commands are written as `b4bmod ...` (Windows: `b4bmod.cmd`, Linux: `./b4bmod.sh
 - [Make a survivor model](#make-a-survivor-model) · [How materials are placed](#how-materials-are-placed) ·
   [Texture sizes](#texture-sizes) · [Hair](#hair) · [Talking and blinking](#talking-and-blinking) ·
   [Swinging hair and skirts](#swinging-hair-and-skirts) ·
-  [Survivor troubleshooting](#survivor-troubleshooting) ·
+  [Survivor troubleshooting](#survivor-troubleshooting) · [Add an outfit](#add-an-outfit) ·
+  [Turn a replacement mod into an outfit](#turn-a-replacement-mod-into-an-outfit) ·
   [Make a weapon model](#make-a-weapon-model)
 - [Doing the fitting yourself](#doing-the-fitting-yourself-mesh-import) · [Lower level](#lower-level) · [Limits](#limits)
 
@@ -266,6 +267,41 @@ b4bmod survivor mymodel.fbx ^
   through without having the add-on; a host with `/models off` or `addons_policy=none` refuses it.
 - Weapons: see "Add a weapon look" below.
 - Picking it in the game's customization screen is not supported (only `/model`).
+
+## Turn a replacement mod into an outfit
+Many survivor mods you find online are *replacement* paks: they override one survivor's outfit files (for example a
+new model on Jim's default outfit, with its own materials, textures, portraits and ability card). `b4bmod convert`
+turns such a pak into an added outfit: anyone can wear it on any survivor with `/model <name>`, next to the game's
+outfits, and nobody's Jim changes.
+```
+b4bmod convert SomeonesJimMod_P.pak --as mycharacter --title "My Character"
+```
+- It reads the pak (the file is left untouched; B4B paks with the v9 or the older v8 footer), finds each survivor
+  outfit it replaces (a `3P_<Survivor>_..._SKM` mesh on the survivor skeleton, plus the `FP_` first-person arms of
+  the same outfit when the mod has them), and copies the mesh and everything of the mod it uses (material instances,
+  materials, textures) to `/Game/b4bcoop/outfits/<name>/`, references rewritten to the copies. Game files the mod
+  replaced that a copied material still needs (a re-textured game material instance) come along too.
+- **Left out on purpose**: the mod's own physics asset (the copy points at the survivor's retail one, and in game the
+  wearer keeps their own hitboxes anyway), portraits, ability cards and other UI (they only make sense as
+  replacements), and anything that isn't cosmetic (skeletons, blueprints, data tables). So the add-on is always
+  **cosmetic**: hosts with the default `addons_policy` let players with it join.
+- A mod that replaces several outfits gives one outfit each, `<name>_01`, `<name>_02` ... (outfits it replaced with
+  the same meshes count once). `--list` shows them without converting, `--only 2` (or `--only 1,3`, or part of the
+  mesh path like `--only Elite_02`) converts just those; a single pick gets the plain `<name>`.
+- Output like `survivor --as`: `<name>/` (default; `-o <moddir>` for another folder) with the files and the
+  `outfit=` line(s) in `addoninfo.txt`, packed into `<name>.pak`. `--pak`, `--zip`, `--install`, `--author`,
+  `--version`, `--description` as for `survivor`. Converting the same mod again replaces the earlier result.
+- In game: the original mod (if installed) still replaces the survivor for you; the converted add-on doesn't. You
+  can have both. Players without the converted add-on see your survivor.
+- Only survivor outfit mods convert. A mod for a weapon, a Ridden, a map or the UI is refused
+  (`no survivor outfit in this pak`); a mod that only changes a game outfit's textures becomes that game outfit
+  with the mod's textures.
+- Respect the mod author's terms: a converted add-on still contains their work. Keep it to yourself and your friends
+  unless the author allows sharing.
+
+Any survivor, any body: the game takes a third-person mesh's proportions from the mesh itself (female and male
+survivors already share the animations this way), so a female survivor's outfit worn by Walker keeps its own height
+and limb lengths, and a male outfit on Holly keeps his; first-person arms are one shared skeleton for every survivor.
 
 ## Hair
 Materials placed on the outfit's **Hair** slot (hair, alpha cards, lashes, brows, a transparent iris layer) are drawn

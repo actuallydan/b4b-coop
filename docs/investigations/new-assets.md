@@ -2,7 +2,8 @@
 
 Status 2026-09-25, build 14216215. Package side (`b4bmod rename`, §2, §5), added survivor outfits (§8:
 `b4bmod survivor --as`, addoninfo `outfit=`, `/model <outfit>`) and added weapon looks (§9: `b4bmod weapon --as`,
-addoninfo `weapon=`, `/model <look>`) work live; the customization screens are not used. Today every add-on replaces game files at their paths: a survivor model *is*
+addoninfo `weapon=`, `/model <look>`) work live, and replacement mods convert into added outfits (§10, `b4bmod
+convert`); the customization screens are not used. Today every add-on replaces game files at their paths: a survivor model *is*
 Mom's Elite 04 for whoever has the add-on. Goal: an add-on that brings an **extra** outfit (or weapon look) at its own
 paths, selectable next to the game's, with nothing of the game's replaced.
 
@@ -342,3 +343,57 @@ Live (`multi.sh 2` + a 3rd instance started mid-mission, hot-join + `takeover`; 
 - The client test window sometimes stays on the loading screen image (not repainted) although the game runs; views
   from that client were checked with `wlook dump`.
 
+
+## 10. Replacement mods -> added outfits, worn by any survivor (2026-09-27, branch `anycleaner`, lane 2 Flatpak)
+Community survivor mods are replacement paks: they override one survivor's outfit (`3P_<Hero>_Elite_NN_SKM` + `FP_`
+arms, their own MIs/textures under their own folders or the outfit's, a physics asset, portraits, ability card).
+`b4bmod convert <pak> --as <name>` (`modkit/convert.py`) makes an add-on outfit of each replaced outfit.
+
+**Reading**: `pakx list|extract --pak <file>` reads one pak with CUE4Parse's `StreamedFileProvider`. Some community
+paks carry a **v8 footer** (221 bytes: same B4B field order, no `bIndexIsFrozen`); the game mounts them, so pakx
+presents them as v9 through a stream that swaps the footer (`FooterStream`), the file untouched. Stock-magic paks
+(0x5A6F12E1) are refused.
+
+**What is copied** (`plan`): from each replaced 3P mesh (on `3P_Biped_SK`; `_LastGen` variants skipped when a normal
+one exists) and its FP arms, every package the mod has that they import, recursively; a retail MI/Material only when
+it imports something the mod replaced (re-textures). Each package is judged with addon.py's classifier: cosmetic ones
+are copied with `b4bmod rename` to `/Game/b4bcoop/outfits/<name>/<base>` (parent folder kept only on a base-name
+clash); a **PhysicsAsset** (the mod's own, or a missing one) is never copied: each mesh's import is pointed at the
+PhysicsAsset of the retail mesh it replaced (`--ref <mod PA>=<retail PA>` per mesh, e.g. the mod's own
+`3P_<Name>_PA` -> `3P_Holly_PA`, missing `FP_Mom_PA` -> `FP_Biped_PA`); anything else non-cosmetic is left out with a note. UI is never
+reached from the meshes. Outfits whose meshes are the same (same `.uexp`/`.ubulk` and imports: one look put on five
+Doc outfits) count once; several -> `<name>_01..`, `--only`, `--list`.
+
+**Community-cook quirks found and handled** (each a load error or crash on the first live run):
+- Meshes importing their MIs with class `Material` (the objects are `MaterialInstanceConstant`): the async loader logs
+  `FindExistingImport class mismatch MaterialInstanceConstant != Material` and drops the import. `rename
+  --import-class <pkg>=<Class>` (new) sets an import's class to what the target package exports; convert passes it
+  for every copied package.
+- `BulkDataStartOffset` 4 bytes low (header + uexp - 8). UAssetAPI recomputes the export's SerialSize from it, so a
+  renamed mesh came out 4 bytes short: `LogStreaming Fatal: SkeletalMesh ...: Serial size mismatch: Got 30303406,
+  Expected 30303402` (crash in FAsyncLoadingThread). `keep_layout` restores the original sizes/offsets/bulk start,
+  moved by the header's size change, whenever the `.uexp` is unchanged.
+- Textures cooked without `BULKDATA_NoOffsetFixUp`: `.ubulk` mip offsets are stored relative to
+  `BulkDataStartOffset` (negative: -6792 for the first mip). Texture.cs reads them as `stored + BulkDataStartOffset`
+  and writes them relative to the new summary value (checked: the only bytes that change are the offsets).
+- References to packages in neither the mod nor the game (a texture of another mod by the same author, missing
+  textures): kept, with a warning; the original mod has the same hole.
+
+**Agent (models.c)**: nothing was needed for body types. `3P_Biped_SK` takes spine/limb translations from each mesh's
+own reference skeleton (mesh-mods.md §13), so an outfit keeps its template's proportions on any hero (female 3P:
+pelvis 94.8 / head 154.2 cm, male 102.9 / 165.0), and `FP_Biped_SK` meshes of all survivors share one bind pose
+(checked on Walker/Hoffman/Doc/Holly/Mom/Karlee: `upperarm_r` (-3.7, 18.1, 146.5), `hand_r` (15.1, 50.6, 114.8) in
+all). Added: **hitboxes stay the wearer's**: before the first swap on a pawn, the PhysicsAsset of the game's own body
+mesh is noted and set back with `SetPhysicsAsset` (-> `PhysicsAssetOverride`, kept by later `SetSkeletalMesh`), for
+add-on outfits and NPC bodies; logged `models: hero slot N wears outfit <name> (hitboxes: 3P_<Hero>_PA)`.
+
+**Live** (`multi.sh 3`, lane 2 / Flatpak Steam, host + client 2 with the 6 converted add-ons + an earlier `--as`
+outfit made on Holly, client 3 `addons=0`; screenshots `~/.local/share/b4b-coop/anycleaner/live-*/shots/`, not
+committed): all 7 `content: cosmetic`, accepted by the host with the default `addons_policy`. Fort Hope: a male
+outfit on Karlee (3 of them), female outfits on Evangelo (4) and on Jim; each seen by the other player with its own
+proportions (female outfit on Evangelo: shorter, slimmer; male one on Karlee: taller, broad). Evansburgh: host
+Evangelo in a Holly-template outfit holding the SMG with both hands in third person, first-person arms of the outfit
+on the gun; client Holly in an Evangelo-template outfit (host view, client FP); bot Sharice in a Jim-template outfit,
+bot Heng in the Holly-template one. Hitboxes logged as the wearer's (`3P_Evangelo_PA`, `3P_Holly_PA`,
+`3P_Sharice_PA`, `3P_Karlee_PA`). Client 3 sees the survivors (Evangelo retail, Karlee's base pieces), no outfit
+logged there. No stretching seen in any view.

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using CUE4Parse.FileProvider;
+using CUE4Parse.FileProvider.Vfs;
 using CUE4Parse.UE4.Versions;
 
 // pakx: offline reader for Back 4 Blood's retail paks (no game running). CUE4Parse (NuGet, GAME_Back4Blood) plus
@@ -10,6 +11,8 @@ const string Usage = @"pakx key     --paks <Paks dir> --aes <hex>               
 pakx list    --paks <Paks dir> --aes <hex> [<regex>]             every file path (size, path), TSV with the pak name
 pakx extract --paks <Paks dir> --aes <hex> --out <dir> <regex>
                                                                  write every matching file to <dir>/Gobi/Content/...
+list/extract also take --pak <file.pak> instead of --paks: one pak on its own (e.g. a mod someone made; B4B v9 or
+v8 footer, the v8 one is read as v9 without changing the file).
 <regex> is matched (case-insensitive) against paths like Gobi/Content/Characters/Heroes/Holly/.../x_SKM.uasset.
 Oodle: CUE4Parse decompresses with its open-source managed decoder (OodleSharp, MIT); no native Oodle is used.";
 
@@ -25,15 +28,18 @@ static int Run(string[] args)
     var pos = new List<string>();
     for (int i = 1; i < args.Length; i++)
     {
-        if (args[i] is "--paks" or "--aes" or "--out")
+        if (args[i] is "--paks" or "--pak" or "--aes" or "--out")
         {
             if (i + 1 >= args.Length) throw new UsageException($"{args[i]} needs a value");
             named[args[i]] = args[++i];
         }
         else pos.Add(args[i]);
     }
-    string paks = named.GetValueOrDefault("--paks") ?? throw new UsageException("--paks <Paks dir> is required");
-    if (!Directory.Exists(paks)) throw new PakxException($"no such folder: {paks}");
+    string one = named.GetValueOrDefault("--pak");
+    string paks = named.GetValueOrDefault("--paks") ?? (one != null ? null : throw new UsageException("--paks <Paks dir> is required"));
+    if (paks != null && !Directory.Exists(paks)) throw new PakxException($"no such folder: {paks}");
+    if (one != null && !File.Exists(one)) throw new PakxException($"no such file: {one}");
+    if (one != null && cmd == "key") throw new UsageException("key checks the game's Paks folder: give --paks");
     byte[] key = ParseKey(named.GetValueOrDefault("--aes") ?? throw new UsageException("--aes <key> is required"));
 
     switch (cmd)
@@ -47,13 +53,25 @@ static int Run(string[] args)
         case "list":
         case "extract":
         {
-            CheckKey(paks, key);   // "wrong key" before CUE4Parse gets to it
+            if (paks != null) CheckKey(paks, key);   // "wrong key" before CUE4Parse gets to it
             Regex re = new(pos.Count > 0 ? pos[0] : (cmd == "list" ? "." : throw new UsageException("<regex> is required")),
                            RegexOptions.IgnoreCase);
             string outDir = cmd == "extract" ? named.GetValueOrDefault("--out") ?? throw new UsageException("--out <dir> is required") : null;
-            var pp = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(EGame.GAME_Back4Blood),
-                                             StringComparer.OrdinalIgnoreCase);
-            pp.Initialize();
+            AbstractVfsFileProvider pp;
+            if (one != null)
+            {
+                var sp = new StreamedFileProvider("pakx", true, new VersionContainer(EGame.GAME_Back4Blood));
+                sp.Initialize();
+                sp.RegisterVfs(Path.GetFileName(one), new[] { OpenPak(one) });
+                pp = sp;
+            }
+            else
+            {
+                var dp = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(EGame.GAME_Back4Blood),
+                                                 StringComparer.OrdinalIgnoreCase);
+                dp.Initialize();
+                pp = dp;
+            }
             pp.SubmitKey(new CUE4Parse.UE4.Objects.Core.Misc.FGuid(), new CUE4Parse.Encryption.Aes.FAesKey(key));
             int n = 0;
             long bytes = 0;
@@ -79,6 +97,28 @@ static int Run(string[] args)
         }
         default: throw new UsageException($"unknown command {cmd}");
     }
+}
+
+// One pak file as CUE4Parse reads it. B4B paks end in a 222-byte footer (v9); some community paks carry the v8 one
+// (221 bytes, no bIndexIsFrozen byte, same entries), which the game also mounts: shown as v9 (frozen = 0), file untouched.
+static Stream OpenPak(string path)
+{
+    var fs = File.OpenRead(path);
+    var ft = new byte[222];
+    if (fs.Length < 222) throw new PakxException($"{Path.GetFileName(path)}: too small for a pak");
+    fs.Seek(-222, SeekOrigin.End); fs.ReadExactly(ft);
+    if (BitConverter.ToUInt32(ft, 4) == 0x18772) { fs.Seek(0, SeekOrigin.Begin); return fs; }
+    if (BitConverter.ToUInt32(ft, 5) == 0x18772 && BitConverter.ToUInt32(ft, 1) == 8)
+    {
+        var v9 = new byte[222];
+        Array.Copy(ft, 1, v9, 0, 61);          // Version .. IndexOffset
+        v9[0] = 9; v9[61] = 0;                 // bIndexIsFrozen
+        Array.Copy(ft, 62, v9, 62, 160);       // CompressionMethods
+        return new FooterStream(fs, fs.Length - 221, v9);
+    }
+    if (Enumerable.Range(0, 218).Any(i => BitConverter.ToUInt32(ft, i) == 0x5A6F12E1))
+        throw new PakxException($"{Path.GetFileName(path)} is a stock Unreal pak, not a Back 4 Blood one (the game can't mount it either)");
+    throw new PakxException($"{Path.GetFileName(path)} is not a Back 4 Blood pak (footer magic)");
 }
 
 static byte[] ParseKey(string s)
@@ -119,6 +159,43 @@ static (int ok, int total) CheckKey(string paks, byte[] key)
     }
     if (seen == 0) throw new PakxException($"no .pak files in {paks} (expected <game>/Gobi/Content/Paks)");
     return (ok, seen);
+}
+
+// The first `body` bytes of `inner`, then `tail`: a read-only view of a pak with another footer.
+class FooterStream(Stream inner, long body, byte[] tail) : Stream
+{
+    long pos;
+    public override bool CanRead => true;
+    public override bool CanSeek => true;
+    public override bool CanWrite => false;
+    public override long Length => body + tail.Length;
+    public override long Position { get => pos; set => pos = value; }
+    public override void Flush() { }
+    public override long Seek(long o, SeekOrigin so) => pos = so switch { SeekOrigin.Begin => o, SeekOrigin.Current => pos + o, _ => Length + o };
+    public override void SetLength(long v) => throw new NotSupportedException();
+    public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+    public override int Read(byte[] b, int o, int c)
+    {
+        int n = 0;
+        while (c > 0 && pos < Length)
+        {
+            int k;
+            if (pos < body)
+            {
+                inner.Seek(pos, SeekOrigin.Begin);
+                k = inner.Read(b, o, (int)Math.Min(c, body - pos));
+                if (k <= 0) break;
+            }
+            else
+            {
+                k = (int)Math.Min(c, Length - pos);
+                Array.Copy(tail, pos - body, b, o, k);
+            }
+            pos += k; o += k; c -= k; n += k;
+        }
+        return n;
+    }
+    protected override void Dispose(bool d) { if (d) inner.Dispose(); base.Dispose(d); }
 }
 
 class UsageException(string m) : Exception(m);

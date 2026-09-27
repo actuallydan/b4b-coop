@@ -93,8 +93,13 @@ class Texture2DData
                 else if (m.InUbulk)
                 {
                     if (ubulk == null) throw new Exception($"mip {i} is in the .ubulk, but {ubulkPath} is missing");
-                    if ((m.Flags & BulkFlags.NoOffsetFixUp) == 0) throw new Exception($"mip {i}: .ubulk payload without NoOffsetFixUp");
-                    m.Data = ubulk.AsSpan((int)m.OffsetInFile, (int)onDisk).ToArray();
+                    // Game-cooked textures carry NoOffsetFixUp (offset = position in the .ubulk). A stock 4.25 editor
+                    // (community mods) leaves it off: the engine adds the summary's BulkDataStartOffset to the stored
+                    // offset (so it is negative: the position in the .ubulk minus BulkDataStartOffset).
+                    long pos = (m.Flags & BulkFlags.NoOffsetFixUp) != 0 ? m.OffsetInFile : m.OffsetInFile + BulkStart(a);
+                    if (pos < 0 || pos + onDisk > ubulk.Length)
+                        throw new Exception($"mip {i}: .ubulk payload out of bounds (offset {m.OffsetInFile})");
+                    m.Data = ubulk.AsSpan((int)pos, (int)onDisk).ToArray();
                 }
                 else throw new Exception($"mip {i}: payload at the end of the .uexp (flags {m.Flags}): not supported");
                 m.SizeX = r.ReadInt32(); m.SizeY = r.ReadInt32(); m.SizeZ = r.ReadInt32();
@@ -125,7 +130,12 @@ class Texture2DData
 
     // Serialize the native data for an Extras that starts at absolute offset baseOff. The .ubulk is rebuilt from
     // every mip that lives there, in order (the cooker writes them the same way: largest first, no padding).
-    public (byte[] extras, byte[] ubulk) Write(long baseOff)
+    // The package summary's BulkDataStartOffset (UAssetAPI keeps it internal; it rewrites it on WriteData).
+    public static long BulkStart(UAsset a) =>
+        Convert.ToInt64(typeof(UAsset).GetField("BulkDataStartOffset", System.Reflection.BindingFlags.NonPublic |
+                                                System.Reflection.BindingFlags.Instance)!.GetValue(a));
+
+    public (byte[] extras, byte[] ubulk) Write(long baseOff, long bulkStart = 0)
     {
         var ms = new MemoryStream(); var w = new BinaryWriter(ms);
         var ub = new MemoryStream();
@@ -152,7 +162,7 @@ class Texture2DData
                 }
                 else
                 {
-                    m.OffsetInFile = ub.Position;
+                    m.OffsetInFile = (m.Flags & BulkFlags.NoOffsetFixUp) != 0 ? ub.Position : ub.Position - bulkStart;
                     w.Write(m.OffsetInFile); ub.Write(m.Data);
                 }
                 w.Write(m.SizeX); w.Write(m.SizeY); w.Write(m.SizeZ);
