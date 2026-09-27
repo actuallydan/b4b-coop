@@ -15,9 +15,11 @@ folder (addons_dir= in the test prefix). Steps:
   5. in a mission: Add ak47: mounted at once, weapon look usable; Remove ak47: switched off, removed after restart
   6. restart: ak47 deleted and gone from addonlist.txt, holly_green and casual_joe mounted at start
   7. a newer holly_green in the list: Update -> .new staged -> restart -> the new file is in place
+--real instead: no shop_catalog=/shop_pubkey= (the build's own URL and shop key): the real shop repo's list is
+fetched from GitHub, verified and shown with as many add-ons as it has; screenshot. Adds nothing.
 Needs the build under test installed (launch/install.sh) and the lane's lock (taken here unless --no-lock).
-  B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/shop-test.py [--no-lock]"""
-import argparse, glob, hashlib, http.server, json, os, re, shutil, subprocess, sys, threading, time
+  B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/shop-test.py [--no-lock] [--real]"""
+import argparse, glob, hashlib, http.server, json, os, re, shutil, subprocess, sys, threading, time, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import e2e
 from lane import GAME, ROOT, LANE
@@ -70,7 +72,7 @@ class Shop:
         r = subprocess.run([sys.executable, os.path.join(REPO, "tools/shop-catalog.py"), "build", mp, "-o", cat], capture_output=True, text=True)
         os.remove(mp)
         open(os.path.join(OUT, "catalog-build.log"), "a").write(r.stdout + r.stderr)
-        subprocess.run([sys.executable, os.path.join(REPO, "tools/shop-catalog.py"), "sign", self.key, cat], check=True, capture_output=True)
+        subprocess.run([sys.executable, os.path.join(REPO, "tools/shop-catalog.py"), "sign", "--key", self.key, cat], check=True, capture_output=True)
         self.files = {"catalog.json": open(cat, "rb").read(), "catalog.json.sig": open(cat + ".sig", "rb").read()}
         for e in m["addons"]:
             self.files[f"{e['id']}.pak"] = os.path.join(self.src, e.get("pak", f"paks/{e['id']}.pak"))
@@ -141,6 +143,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-lock", action="store_true")
     ap.add_argument("--src", default=os.path.expanduser("~/.local/share/b4b-coop/shop-test/src"))
+    ap.add_argument("--real", action="store_true", help="the real shop repo's list with the built-in key (no override)")
     a = ap.parse_args()
     os.makedirs(OUT)
     e2e.OUT = OUT
@@ -149,7 +152,7 @@ def main():
     if not a.no_lock: subprocess.run([lock, "acquire", "shop-test"], check=True)
     S = e2e.Session("shop", 1)
     try:
-        run(a, S)
+        run_real(S) if a.real else run(a, S)
     finally:
         S.stop()
         if not a.no_lock: subprocess.run([lock, "release", "shop-test"])
@@ -158,6 +161,27 @@ def main():
     bad = sum(not ok for _, ok, _ in results)
     print(f"\n{len(results) - bad}/{len(results)} passed; artifacts in {OUT}")
     sys.exit(1 if bad else 0)
+
+
+REAL_CATALOG = "https://raw.githubusercontent.com/actuallydan/back4blood-shop/main/catalog.json"
+
+
+def run_real(S):
+    """the real shop repo, no override: its signed list verified with the built-in shop key"""
+    want = len(json.load(urllib.request.urlopen(REAL_CATALOG, timeout=30))["addons"])
+    log(f"real catalog: {want} add-on(s)")
+    if os.path.isdir(ADDONS): shutil.rmtree(ADDONS)
+    if not start(S, [f"addons_dir={winpath(ADDONS)}"]): return
+    s = status()
+    check("no override: default list, shop key", f"list={REAL_CATALOG} key=shop" in s, s.splitlines()[1] if "\n" in s else s[:120])
+    e2e.agent(1, "overlay", "open"); e2e.agent(1, "overlay", "tab", "Browse")
+    e2e.agent(1, "overlay", "press", "Get the add-on list")
+    s = wait_shop(lambda s: ("phase=ready" in s or "phase=error" in s) and "busy=0" in s, 90)
+    msg = re.search(r"msg=(.*)", s).group(1)[:140] if "msg=" in s else s[:140]
+    check(f"real list fetched and verified ({want} add-on(s))", "phase=ready" in s and f"items={want} " in s and f"{want} add-on(s) in the list" in s, msg)
+    check("netguard scope around the request", bool(S.logs[1].grep(r"netguard: updater scope closed", False)))
+    time.sleep(2)
+    shot("real-browse.png")
 
 
 def run(a, S):

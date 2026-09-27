@@ -1,7 +1,7 @@
 // shop: the `~` window's Browse tab (#36, docs/investigations/shop.md), a "Workshop" for publicly licensed add-ons
 // published in a public GitHub repo. Nothing is fetched, downloaded or changed without the player's click, and nothing
 // about what a player has leaves the machine (GitHub only sees the downloads themselves).
-//   Get the list  catalog.json + catalog.json.sig (ed25519, the b4bcoop release key; updcore.c parses and checks it),
+//   Get the list  catalog.json + catalog.json.sig (ed25519, the shop key from signkeys.h; updcore.c parses and checks it),
 //                 then the thumbnails it names (each checked against the SHA-256 in the signed list before
 //                 imgdecode.c looks at it).
 //   Add           the pak is streamed to <add-ons>\.shop\<id>.pak.part, its size and SHA-256 must equal the signed
@@ -26,19 +26,21 @@
 #include "overlay.h"
 #include "updcore.h"
 #include "imgdecode.h"
+#include "signkeys.h"
 #include "b4bcoop_version.h"
 
 // The catalog lives in the shop repo's default branch (a workflow rebuilds and signs it when an add-on release is
-// published; design in shop.md §4). raw.githubusercontent.com is inside netguard's updater scope.
+// published; shop.md §2). raw.githubusercontent.com is inside netguard's updater scope. It is verified with the shop
+// key only (signkeys.h), never the release key.
 #define DEFAULT_CATALOG "https://raw.githubusercontent.com/actuallydan/back4blood-shop/main/catalog.json"
 #define THUMB_SIDE 96        // thumbnails are scaled down to fit 96x96 (36 KB each on the GPU)
 #define MAX_THUMBS 128       // per session (ov_texture has OV_MAX_TEX)
 #define SHOP_DIR L".shop"
+static const uint8_t SHOP_PUBKEY[32] = {B4B_SHOP_PUBKEY_BYTES};
 
 int updater_http_get(const char *url, size_t max, uint8_t **out, size_t *n, char *err, size_t en);
 int updater_http_to_file(const char *url, const wchar_t *path, uint64_t max, uint8_t sha256[32], uint64_t *got,
                          volatile LONG64 *progress, char *err, size_t en);
-const uint8_t *updater_release_pubkey(void);
 
 static int enabled = 1;
 static char cat_url[400] = DEFAULT_CATALOG;
@@ -598,9 +600,9 @@ int shop_live(const char *k, const char *v) {
         EnterCriticalSection(&cs);
         if (v) ini_pair(k, v, NULL);
         else if (!strcmp(k, "shop_catalog")) snprintf(cat_url, sizeof cat_url, "%s", DEFAULT_CATALOG);
-        else { memcpy(pubkey, updater_release_pubkey(), 32); test_key = 0; }
+        else { memcpy(pubkey, SHOP_PUBKEY, 32); test_key = 0; }
         LeaveCriticalSection(&cs);
-        LOG("shop: list %s, key %s", cat_url, test_key ? "test" : "release");
+        LOG("shop: list %s, key %s", cat_url, test_key ? "test" : "shop");
         return 1;
     }
 #endif
@@ -608,7 +610,7 @@ int shop_live(const char *k, const char *v) {
 }
 void shop_init(void) {
     InitializeCriticalSection(&cs); cs_ready = 1;
-    memcpy(pubkey, updater_release_pubkey(), 32);
+    memcpy(pubkey, SHOP_PUBKEY, 32);
     cmds_ini_each(ini_pair, NULL);
     if (enabled) overlay_add_panel("Browse", 72, panel);
     LOG("shop: %s; list %s%s", enabled ? "Browse tab on" : "off (shop=0)", cat_url, test_key ? " (test key)" : "");
@@ -627,7 +629,7 @@ int shop_cmd(const char *verb, char *rest, Out *o) {
     if (e) out_printf(o, "error: %s\n", e);
     static const char *P[] = {"idle", "fetching", "ready", "error"}, *D[] = {"-", "downloading", "verified", "done", "error"};
     EnterCriticalSection(&cs);
-    out_printf(o, "shop: phase=%s busy=%d items=%d thumbs=%d msg=%s\nlist=%s key=%s\n", P[phase], busy(), cat.n, nthumbs, msg, cat_url, test_key ? "test" : "release");
+    out_printf(o, "shop: phase=%s busy=%d items=%d thumbs=%d msg=%s\nlist=%s key=%s\n", P[phase], busy(), cat.n, nthumbs, msg, cat_url, test_key ? "test" : "shop");
     for (int i = 0; i < cat.n; i++) {
         const char *why;
         int rs = row_state(i, &why);

@@ -6,7 +6,8 @@
 #   sign-release.sh verify <public key: PEM or 64 hex> <file>...   check <file>.sig for each; exit 1 on any failure
 #   sign-release.sh pubhex <PEM key, private or public>    the raw public key as 64 hex digits
 # The release key lives only in the GitHub Actions secret B4B_RELEASE_SIGNING_KEY (and Dan's offline copy); the public
-# half is committed in docs/release-signing.pub.pem and native/src/updater.c.
+# half is committed in docs/release-signing.pub.pem and native/src/signkeys.h. The add-on shop's catalog is signed with
+# the same commands but its own key (docs/shop-signing.pub.pem; tools/shop-catalog.py sign|verify).
 set -euo pipefail
 die() { echo "sign-release.sh: $*" >&2; exit 1; }
 cmd=${1:-}; shift || true

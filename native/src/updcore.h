@@ -56,7 +56,7 @@ const UpdAsset *upd_release_asset(const UpdRelease *r, const char *name);
 int upd_version_cmp(const char *a, const char *b);
 int upd_version_valid(const char *v);
 
-// ---- add-on shop catalog (#36, docs/investigations/shop.md): catalog.json + catalog.json.sig (ed25519, release key) ----
+// ---- add-on shop catalog (#36, docs/investigations/shop.md): catalog.json + catalog.json.sig (ed25519, shop key) ----
 //   {"b4bcoop-shop": 1, "updated": "2026-09-27", "addons": [{"id": "casual_joe", "name": "...", "author": "...",
 //    "license": "CC0-1.0", "license_url": "...", "version": "1.0", "class": "cosmetic", "kinds": "textures, meshes",
 //    "adds": ["outfit casual_joe"], "replaces": [], "description": "...", "size": 123, "sha256": "<64 hex>",

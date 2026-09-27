@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build and run the updater's unit tests (native/test/updcore_test.c) on Linux with the pinned zig, against fixtures
 # made here: a release-shaped zip (deflate), a stored zip, a zip with a "../" entry, an OpenSSL ed25519 key with the
-# manifest and zip signed by tools/sign-release.sh (what release.yml runs). CI runs this (ci.yml).
+# manifest and zip signed by tools/sign-release.sh (what release.yml runs), a second key for the shop catalog, and the
+# committed public keys (docs/*-signing.pub.pem) to check native/src/signkeys.h against. CI runs this (ci.yml).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)" root="$(cd "$(dirname "$0")/../.." && pwd)"
 v="$root/vendor"
@@ -33,5 +34,11 @@ openssl genpkey -algorithm ed25519 -out "$tmp/key.pem" 2>/dev/null
 "$root/tools/sign-release.sh" manifest "$tmp/release.zip" 0.6.2 2 > "$tmp/b4bcoop-update.txt"
 printf '{"b4bcoop-shop": 1, "addons": [{"id": "casual_joe", "name": "Casual Joe", "license": "CC0-1.0", "size": 5, "sha256": "%s", "url": "https://github.com/o/r/releases/download/t/casual_joe.pak"}]}\n' \
   "$(printf hello | sha256sum | cut -d' ' -f1)" > "$tmp/catalog.json"   # the add-on shop's catalog (#36)
-"$root/tools/sign-release.sh" sign "$tmp/key.pem" "$tmp/b4bcoop-update.txt" "$tmp/release.zip" "$tmp/catalog.json" >/dev/null
+"$root/tools/sign-release.sh" sign "$tmp/key.pem" "$tmp/b4bcoop-update.txt" "$tmp/release.zip" >/dev/null
+openssl genpkey -algorithm ed25519 -out "$tmp/shopkey.pem" 2>/dev/null   # the shop has its own key (signkeys.h)
+"$root/tools/sign-release.sh" pubhex "$tmp/shopkey.pem" > "$tmp/shoppub.hex"
+"$root/tools/sign-release.sh" sign "$tmp/shopkey.pem" "$tmp/catalog.json" >/dev/null
+# the keys built into the agent (native/src/signkeys.h) must be the committed public keys
+"$root/tools/sign-release.sh" pubhex "$root/docs/release-signing.pub.pem" > "$tmp/release-committed.hex"
+"$root/tools/sign-release.sh" pubhex "$root/docs/shop-signing.pub.pem" > "$tmp/shop-committed.hex"
 "$tmp/updcore_test" "$tmp"

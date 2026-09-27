@@ -525,7 +525,7 @@ int upd_catalog_parse(const char *json, size_t n, ShopCatalog *c, char *err, siz
 int upd_catalog_verify(const char *json, size_t n, const uint8_t *sig, size_t sig_len, const uint8_t pub[32],
                        ShopCatalog *c, char *err, size_t en) {
     memset(c, 0, sizeof *c);
-    if (!upd_sig_ok((const uint8_t *)json, n, sig, sig_len, pub)) ERR("the add-on list's signature is not valid (not signed with the b4bcoop release key)");
+    if (!upd_sig_ok((const uint8_t *)json, n, sig, sig_len, pub)) ERR("the add-on list's signature is not valid (not signed with the add-on shop's key)");
     return upd_catalog_parse(json, n, c, err, en);
 }
 void upd_catalog_free(ShopCatalog *c) { free(c->items); c->items = NULL; c->n = 0; }

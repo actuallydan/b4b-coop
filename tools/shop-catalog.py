@@ -2,11 +2,14 @@
 """Build and sign the add-on shop's catalog (#36, docs/investigations/shop.md §4): what the shop repo's workflow runs
 when an add-on release is published, and what tools/shop-test.py uses for its local test catalog.
 
-  shop-catalog.py build <shop.json> [-o catalog.json] [--allow-license SPDX]
-  shop-catalog.py sign <private key PEM> <catalog.json>     -> catalog.json.sig (tools/sign-release.sh, ed25519)
-  shop-catalog.py verify <public key PEM or 64 hex> <catalog.json>
+  shop-catalog.py build <entries.json> [-o catalog.json] [--allow-license SPDX]
+  shop-catalog.py sign [--key PEM] <catalog.json>        -> catalog.json.sig (tools/sign-release.sh, ed25519)
+  shop-catalog.py verify [--pub PEM|64 hex] <catalog.json>
+The shop has its own key, never the release key (native/src/signkeys.h, shop.md §2). Defaults: --key
+~/.local/share/b4b-coop/keys/shop-signing.key (Dan's copy; the shop repo's workflow passes its secret), --pub
+docs/shop-signing.pub.pem. The older form `sign <key> <catalog.json>` / `verify <pub> <catalog.json>` still works.
 
-shop.json (in the shop repo; paths relative to it):
+entries.json (the shop repo's; tools/shop-test.py calls its test copy shop.json; paths relative to it):
   {"url_template": "https://github.com/actuallydan/back4blood-shop/releases/download/{id}-v{version}/{id}.pak",
    "thumb_template": "https://raw.githubusercontent.com/actuallydan/back4blood-shop/main/thumbs/{thumb}",
    "addons": [{"id": "casual_joe", "pak": "paks/casual_joe.pak", "license": "CC0-1.0", "license_url": "https://...",
@@ -25,6 +28,8 @@ import addon  # noqa: E402  (modkit/addon.py: reads our paks, classifies them li
 # released that way). "All rights reserved", NC/ND variants and unknown strings are refused.
 LICENSES = {"CC0-1.0", "CC-BY-3.0", "CC-BY-4.0", "CC-BY-SA-3.0", "CC-BY-SA-4.0", "MIT", "Apache-2.0", "BSD-2-Clause",
             "BSD-3-Clause", "OFL-1.1", "Unlicense"}
+SHOP_KEY = os.path.expanduser("~/.local/share/b4b-coop/keys/shop-signing.key")
+SHOP_PUB = os.path.join(REPO, "docs", "shop-signing.pub.pem")
 ID_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
@@ -104,13 +109,15 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build"); b.add_argument("manifest"); b.add_argument("-o", "--out", default="catalog.json")
     b.add_argument("--allow-license", action="append")
-    s = sub.add_parser("sign"); s.add_argument("key"); s.add_argument("catalog")
-    v = sub.add_parser("verify"); v.add_argument("pub"); v.add_argument("catalog")
+    s = sub.add_parser("sign"); s.add_argument("--key", default=SHOP_KEY); s.add_argument("args", nargs="+", metavar="catalog.json")
+    v = sub.add_parser("verify"); v.add_argument("--pub", default=SHOP_PUB); v.add_argument("args", nargs="+", metavar="catalog.json")
     a = ap.parse_args()
     sr = os.path.join(REPO, "tools", "sign-release.sh")
     if a.cmd == "build": sys.exit(build(a))
-    if a.cmd == "sign": sys.exit(subprocess.run([sr, "sign", a.key, a.catalog]).returncode)
-    sys.exit(subprocess.run([sr, "verify", a.pub, a.catalog]).returncode)
+    if len(a.args) > 2: ap.error(f"{a.cmd}: one catalog (or the older form: <key> <catalog.json>)")
+    key, cat = (a.args if len(a.args) == 2 else [a.key if a.cmd == "sign" else a.pub, a.args[0]])
+    if a.cmd == "sign": sys.exit(subprocess.run([sr, "sign", key, cat]).returncode)
+    sys.exit(subprocess.run([sr, "verify", key, cat]).returncode)
 
 
 if __name__ == "__main__":
