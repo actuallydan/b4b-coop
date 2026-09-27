@@ -237,8 +237,16 @@ static void later_tick(float dt) {
 // (retrying can't help); locked / not a friend -> retry less often.
 void chat_on_join_failed(const char *error) {
     const char *e = strstr(error, "Error: '");
-    char msg[256];
+    char msg[320];
     snprintf(msg, sizeof msg, "Could not join: %.*s", e ? (int)strcspn(e + 8, "'") : 40, e ? e + 8 : "connection failed");
+    const char *hv = strstr(error, "Host runs b4bcoop ");   // admin.c's refusal: "Host runs b4bcoop X (protocol N); ..."
+    if (hv && strstr(error, "same version")) {
+        char ver[40] = "", proto[16] = "";
+        if (sscanf(hv + 18, "%39[0-9A-Za-z.-] (protocol %15[0-9]", ver, proto) >= 1) {
+            updater_note_host(ver, proto);   // the ~ window's Updates tab offers that version
+            snprintf(msg + strlen(msg), sizeof msg - strlen(msg), "%s", updater_hint());
+        }
+    }
     if (strstr(error, "same version") || strstr(error, " add-ons")) {   // another version, or add-ons (restart needed)
         cmds_auto_join_stop();
         if (cmds_session_join()[0]) cmds_set_session_join(NULL);

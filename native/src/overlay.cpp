@@ -500,6 +500,10 @@ static int n_panels;
 extern "C" void overlay_add_panel(const char *name, int order, OverlayDrawFn draw) {
     int i = 0;
     while (i < n_panels && strcmp(panels[i].name, name)) i++;
+    if (!draw) {   // remove it (e.g. updates=0 while the game runs)
+        if (i < n_panels) { memmove(&panels[i], &panels[i + 1], (n_panels - i - 1) * sizeof *panels); n_panels--; }
+        return;
+    }
     if (i == n_panels) {
         if (n_panels == 24) { LOG("overlay: too many panels, %s dropped", name); return; }
         n_panels++;

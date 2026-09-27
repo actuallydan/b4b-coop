@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Fetch build/tooling dependencies into vendor/ (not committed): zig (cross-compiler), MinHook, Dear ImGui, embeddable
-# Windows Python (runs inside the game's Proton prefix for memory tooling). Also creates the host .venv.
+# Fetch build/tooling dependencies into vendor/ (not committed): zig (cross-compiler), MinHook, Dear ImGui, Monocypher
+# and zlib's puff (the in-game updater's signature check and inflate, #34), embeddable Windows Python (runs inside the
+# game's Proton prefix for memory tooling). Also creates the host .venv.
 #   tools/fetch-deps.sh          everything (development)
-#   tools/fetch-deps.sh --build  only what native/build.sh needs: zig + MinHook + ImGui (CI)
-# zig, MinHook and ImGui are pinned (version + sha256, commit; ImGui also the sha256 of the files the build compiles)
-# so every build uses the same compiler and libraries.
+#   tools/fetch-deps.sh --build  only what native/build.sh needs: zig + MinHook + ImGui + Monocypher + puff (CI)
+# zig, MinHook, ImGui, Monocypher and zlib are pinned (version + sha256, commit; ImGui, Monocypher and puff also the
+# sha256 of the files the build compiles) so every build uses the same compiler and libraries.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 v="$root/vendor"; mkdir -p "$v"
@@ -16,6 +17,11 @@ IMGUI_SHA256=3104b07fe14084b78d567321434d7975616c82da26ecab54bb986cb826b928cf   
 IMGUI_FILES="imgui.h imgui_internal.h imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp imconfig.h imstb_rectpack.h
   imstb_textedit.h imstb_truetype.h backends/imgui_impl_dx12.h backends/imgui_impl_dx12.cpp backends/imgui_impl_win32.h
   backends/imgui_impl_win32.cpp"
+MONOCYPHER_COMMIT=0d85f98c9d9b0227e42cf795cb527dff372b40a4                       # LoupVaillant/Monocypher 4.0.2 (CC0 or BSD-2)
+MONOCYPHER_SHA256=afbfd61450ebe219cd9e01d3897f914b0c9351d0a0593bd64b3eb34b6127038a # the sources below, concatenated
+MONOCYPHER_FILES="src/monocypher.c src/monocypher.h src/optional/monocypher-ed25519.c src/optional/monocypher-ed25519.h"
+ZLIB_COMMIT=51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf                             # madler/zlib v1.3.1 (zlib licence): contrib/puff
+PUFF_SHA256=6da25c1bcc606585566da8d6af3c7209657ee4ec5c67f116e13e52197e86b1a5      # puff.c + puff.h, concatenated
 build_only=0; [[ ${1:-} == --build ]] && build_only=1
 
 if [[ ! -x "$v/zig/zig" ]]; then
@@ -41,6 +47,20 @@ if [[ ! -d "$v/imgui" ]]; then   # the `~` overlay (native/src/overlay.cpp, #26)
 fi
 [[ $(cd "$v/imgui" && cat $IMGUI_FILES | sha256sum | cut -d' ' -f1) == "$IMGUI_SHA256" ]] ||
   { echo "vendor/imgui does not match the pinned sources ($IMGUI_COMMIT)" >&2; exit 1; }
+
+pinned_git() {   # pinned_git <dir> <url> <commit>
+  if [[ ! -d "$v/$1" ]]; then
+    git init -q "$v/$1"
+    git -C "$v/$1" fetch -q --depth 1 "$2" "$3"
+    git -C "$v/$1" checkout -q FETCH_HEAD
+  fi
+}
+pinned_git monocypher https://github.com/LoupVaillant/Monocypher.git "$MONOCYPHER_COMMIT"   # updater: ed25519 check
+[[ $(cd "$v/monocypher" && cat $MONOCYPHER_FILES | sha256sum | cut -d' ' -f1) == "$MONOCYPHER_SHA256" ]] ||
+  { echo "vendor/monocypher does not match the pinned sources ($MONOCYPHER_COMMIT)" >&2; exit 1; }
+pinned_git zlib https://github.com/madler/zlib.git "$ZLIB_COMMIT"                            # updater: inflate (puff)
+[[ $(cd "$v/zlib/contrib/puff" && cat puff.c puff.h | sha256sum | cut -d' ' -f1) == "$PUFF_SHA256" ]] ||
+  { echo "vendor/zlib does not match the pinned sources ($ZLIB_COMMIT)" >&2; exit 1; }
 
 if [[ $build_only == 0 ]]; then
   if [[ ! -x "$v/winpy/python.exe" ]]; then

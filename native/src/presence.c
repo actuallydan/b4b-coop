@@ -399,10 +399,11 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
     char want[8];
     snprintf(want, sizeof want, "%d", coop_protocol());
     if (strcmp(proto, want)) {   // another b4bcoop protocol (or an older b4bcoop without one): the host would refuse us
-        char msg[200], line[220];
+        char msg[200], line[300];
         coop_version_mismatch(msg, sizeof msg, ver, proto);
         LOG("presence: not joining: %s", msg);
-        snprintf(line, sizeof line, "Could not join: %s", msg);
+        updater_note_host(ver, proto);   // the ~ window's Updates tab offers that version
+        snprintf(line, sizeof line, "Could not join: %s%s", msg, ver[0] ? updater_hint() : "");
         if (ue_local_pc() && !signin_on_title()) chat_local("%s", line);
         else chat_local_later(line);   // shown once the player is in Fort Hope
         return;

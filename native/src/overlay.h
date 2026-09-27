@@ -19,7 +19,8 @@ extern "C" {
 
 typedef void (*OverlayDrawFn)(void);
 // order: tab position (lower first). Built-in: Session 10, Players 20, Camera 30, Flashlight 40, Cheats 50,
-// Add-ons 70 (addons.c), Settings 90, Help 100. Up to 24 panels; a second call with the same name replaces the draw function.
+// Add-ons 70 (addons.c), Settings 90, Updates 95 (updater.c), Help 100. Up to 24 panels; a second call with the same
+// name replaces the draw function, draw NULL removes the tab.
 void overlay_add_panel(const char *name, int order, OverlayDrawFn draw);
 int overlay_is_open(void);
 void overlay_note(const char *text);   // a line in the window's log (any thread)

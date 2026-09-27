@@ -133,6 +133,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     joinpolicy_init();
     models_init();
     addons_init();
+    updater_init();
 #ifndef B4B_RELEASE
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
 #endif
@@ -175,6 +176,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
         LOG("b4bcoop loaded (dev build: command server, test commands) as %ls", b4b_proxy_name);
 #endif
         LOG("b4bcoop %s (protocol %d)", B4B_VERSION, B4B_PROTOCOL);
+        if (updater_early(inst)) return TRUE;   // a fresh in-game update that crashed twice: put back, run nothing now
         netguard_init();   // before any game code runs: hooks name resolution / TCP connect / EOS (netguard.c)
         paks_early_init(); // before the engine creates FPakPlatformFile (paks.c/addons.c: add-ons; dev: extraction)
         CreateThread(NULL, 0, init_thread, NULL, 0, NULL);

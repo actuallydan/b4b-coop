@@ -21,6 +21,7 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
+#include "updcore.h"
 #include "overlay.h"
 
 #define ADDR_PRELOGIN  VA(0x1419FE9C0ull)  // void AGobiGameMode::PreLogin(this, const <parsed options>& Options (TArray,
@@ -307,8 +308,10 @@ static int version_refused(const TArray *opts, const void *uid, FString *err) {
     if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
     for (int i = 0; i < n_told; i++) if (!strcmp(told[i], key)) return 1;
     if (n_told < 16) snprintf(told[n_told++], sizeof told[0], "%s", key);
-    chat_local("%s could not join: they have %s%s; you have b4bcoop %s (protocol %d). Everyone needs the same version.",
-               name[0] ? name : "A player", proto[0] ? "b4bcoop " : "", theirs, coop_version(), coop_protocol());
+    int newer = ver[0] && upd_version_cmp(ver, coop_version()) > 0 && updater_hint()[0];   // they have a newer b4bcoop
+    chat_local("%s could not join: they have %s%s; you have b4bcoop %s (protocol %d). Everyone needs the same version.%s",
+               name[0] ? name : "A player", proto[0] ? "b4bcoop " : "", theirs, coop_version(), coop_protocol(),
+               newer ? " Press ~, tab Updates, to check for a newer version." : "");
     return 1;
 }
 
