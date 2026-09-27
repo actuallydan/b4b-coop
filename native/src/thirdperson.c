@@ -60,6 +60,13 @@ static float tp_arm_orig[4] = {-1}, tp_fov_orig = -1;               // length, s
 #define ARM_SOCKET(a) ((float *)((char *)(a) + 0x234))
 #define CAM_FOV(c)    ((float *)((char *)(c) + 0x230))
 
+// Free look (#31, section "Free look" below): the camera's offset from the control rotation while it orbits the hero
+static int fl_state;               // 0 off, 1 orbiting (look input turns only the camera), 2 swinging back
+static float fl_off[2];            // camera = control rotation + (pitch, yaw) degrees
+static UObject *tp_use;            // the hero's HeroUseComponent
+static int32_t tp_usei = -1;
+static void fl_reset(void);
+
 typedef struct { UObject *obj; UFunction *fn; uint8_t p[1024]; } TpCall;
 static void *tc_prep(TpCall *c, UObject *obj, const char *fname) {
     c->obj = obj;
@@ -130,11 +137,15 @@ static UObject *view_comp(UObject *pawn) {
     UClass *sa = ue_find_class("SpringArmComponent"), *cc = ue_find_class("CameraComponent");
     tp_pawn = pawn; tp_pawni = U_INDEX(pawn); tp_pvc = NULL; tp_pvci = -1; tp_ads_age = 99.f; tp_written = 0; n_tp_ads = 0;
     tp_arm = tp_cam = NULL; tp_armi = tp_cami = -1; tp_arm_orig[0] = -1; tp_fov_orig = -1;
+    tp_use = NULL; tp_usei = -1;
+    fl_reset();   // the old hero's spring arm is gone with it
+    UClass *uc = ue_find_class("HeroUseComponent");
     char nm[64];
     for (int32_t i = 0, n = ue_num_objects(); c && i < n; i++) {
         UObject *x = ue_object_at(i);
         if (!x || (U_FLAGS(x) & LIVE_FLAGS)) continue;   // class first: +0xD8 is only the owner on components
         if (!tp_pvc && ue_is_a(x, c)) { if (COMP_OWNER(x) == pawn) { tp_pvc = x; tp_pvci = i; } }
+        else if (!tp_use && uc && ue_is_a(x, uc)) { if (COMP_OWNER(x) == pawn) { tp_use = x; tp_usei = i; } }
         else if (!tp_arm && sa && ue_is_a(x, sa)) {
             if (COMP_OWNER(x) == pawn && !strcmp(ue_obj_name(x, nm, sizeof nm), "ThirdPersonSpringArm")) { tp_arm = x; tp_armi = i; }
         } else if (!tp_cam && cc && ue_is_a(x, cc)) {
@@ -211,7 +222,7 @@ static int aim_chan;            // trace channel for the crosshair point (ETrace
 static int aim_ok;              // this frame: third person with an offset camera, aim_local valid
 static float aim_local[3];      // camera relative to the eyes in the view frame (forward, right, up), last frame
 static unsigned aim_frame, aim_cache_frame;
-static float aim_cache_key[6], aim_cache_rot[3];
+static float aim_cache_key[8], aim_cache_rot[3];
 static int aim_n;               // corrections applied (dev status)
 static float aim_last_p[3], aim_last_deg;   // last crosshair point and correction angle (dev status)
 #ifndef B4B_RELEASE
@@ -238,22 +249,27 @@ static float dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1
 // eye rotation `rot` at eye location `loc` -> towards the point under the crosshair (in place)
 static void aim_correct(const float loc[3], float rot[3]) {
     if (!aim_ok) return;
-    if (aim_cache_frame == aim_frame && !memcmp(aim_cache_key, loc, 12) && !memcmp(aim_cache_key + 3, rot, 12)) {
+    if (aim_cache_frame == aim_frame && !memcmp(aim_cache_key, loc, 12) && !memcmp(aim_cache_key + 3, rot, 12) &&
+        !memcmp(aim_cache_key + 6, fl_off, 8)) {
         memcpy(rot, aim_cache_rot, 12);
         return;
     }
+    // the camera looks along the eye rotation, plus the free-look offset while it orbits or swings back (#31)
+    float cr[3] = {rot[0] + fl_off[0], rot[1] + fl_off[1], 0}, fe[3];
     float f[3], rt[3], up[3], s[3], hit[3], d[3];
-    basis(rot, f, rt, up);
+    basis(cr, f, rt, up);
+    rot_dir(rot, fe);
     for (int i = 0; i < 3; i++) s[i] = loc[i] + rt[i] * aim_local[1] + up[i] * aim_local[2];   // camera ray, beside the eyes
-    memcpy(aim_cache_key, loc, 12); memcpy(aim_cache_key + 3, rot, 12);
+    memcpy(aim_cache_key, loc, 12); memcpy(aim_cache_key + 3, rot, 12); memcpy(aim_cache_key + 6, fl_off, 8);
     aim_cache_frame = aim_frame;
     if (!trace_ch(aim_pawn, s, f, 50000.f, aim_chan, hit)) for (int i = 0; i < 3; i++) hit[i] = s[i] + f[i] * 50000.f;
     for (int i = 0; i < 3; i++) d[i] = hit[i] - loc[i];
     float n = sqrtf(dot3(d, d));
-    if (n < 1.f || dot3(d, f) < 0.5f * n) { memcpy(aim_cache_rot, rot, 12); return; }   // behind / sideways: leave it
+    // behind / sideways of where the hero looks (e.g. the camera still swinging back from its front): leave it
+    if (n < 1.f || dot3(d, fe) < 0.5f * n) { memcpy(aim_cache_rot, rot, 12); return; }
     for (int i = 0; i < 3; i++) d[i] /= n;
     float np = asinf(d[2] > 1 ? 1 : d[2] < -1 ? -1 : d[2]) * 180.f / 3.14159265f, ny = atan2f(d[1], d[0]) * 180.f / 3.14159265f;
-    float c = dot3(d, f);
+    float c = dot3(d, fe);
     aim_last_deg = acosf(c > 1 ? 1 : c) * 180.f / 3.14159265f;
     memcpy(aim_last_p, hit, 12);
     rot[0] = np; rot[1] = ny;
@@ -329,6 +345,226 @@ static void aim_update(UObject *pawn, UObject *pvc) {
     aim_local[0] = dot3(d, f); aim_local[1] = dot3(d, rt); aim_local[2] = dot3(d, up);
     float lat = sqrtf(aim_local[1] * aim_local[1] + aim_local[2] * aim_local[2]);
     aim_ok = lat > 0.5f && lat < 400.f && aim_local[0] < 0;   // offset camera behind the eyes (not centred, not 1P)
+}
+
+// ---- Free look (#31) ----
+// While the hero stands still in our third person, the mouse orbits the camera around it (all the way round, to see
+// its front) instead of turning it; moving, firing, aiming, using, reloading, meleeing etc. swing the camera back
+// behind the hero (thirdperson_freelook_return seconds) and the mouse turns the hero again.
+// - The look input never reaches the control rotation: GobiPlayerController::UpdateRotation (0x141B9B8B0, a thunk that
+//   copies RotationInput (+0x4A0 pitch/yaw/roll, filled by AddYaw/PitchInput 0x143F68250/0x143F681E0 from mouse and
+//   gamepad) to +0x7C8 and jumps to APlayerController::UpdateRotation 0x143F5ADC0) is hooked; while orbiting,
+//   RotationInput goes into our camera offset and is zeroed first. So the control rotation, the hero's facing, its
+//   aim offset and everything the server gets stay as they were: nothing to see for other players, no protocol change.
+//   (The game's own orbit view, view byte 3, turns off bUseControllerRotationYaw locally and lets the control rotation
+//   move: on a client the server's copy of the hero would still face it and spin for everyone. Not used.)
+// - The camera: the hero's ThirdPersonSpringArm follows the pawn's control rotation (bUsePawnControlRotation, bit 1 of
+//   the bitfield +0x254, bInheritPitch/Yaw/Roll bits 2-4). While we own it those bits are cleared and RelativeRotation
+//   is written as the camera's world rotation (USpringArmComponent::GetTargetRotation takes the relative rotation for
+//   every component it doesn't inherit; the game's own orbit view does the same, UpdateView 0x141C27590); the bits and
+//   the rotation are put back when the offset is 0 again. The aim correction builds its crosshair ray with the offset.
+#define ADDR_UPDROT VA(0x141B9B8B0ull)
+static const uint8_t SIG_UPDROT[] = {0xf2,0x0f,0x10,0x81,0xa0,0x04,0x00,0x00,0x8b,0x81,0xa8,0x04,0x00,0x00,0xf2,0x0f,
+                                     0x11,0x81,0xc8,0x07,0x00,0x00};
+#define PC_ROTINPUT(pc) ((float *)((char *)(pc) + 0x4A0))   // APlayerController::RotationInput (unreflected)
+#define ARM_BITS(a)     ((uint8_t *)(a) + 0x254)
+#define ARM_FOLLOW      0x1E                                // bUsePawnControlRotation | bInheritPitch/Yaw/Roll
+#define FL_PITCH 70.f        // camera pitch limit while orbiting
+#define FL_IDLE_DELAY 0.25f  // standing still this long before the mouse orbits
+#define FL_RETURN_DEF 0.25f
+typedef void (*UpdRotFn)(UObject *pc, float dt);
+static UpdRotFn orig_updrot;
+static int updrot_hooked;          // 1 hooked, -1 failed
+static int fl_on = 1;              // ini thirdperson_freelook
+static float fl_return = FL_RETURN_DEF;   // ini thirdperson_freelook_return: seconds to swing back (0 = at once)
+static int fl_idle;                // this frame: standing still in our third person (the detour may orbit)
+static float fl_idle_t, fl_t, fl_from[2];
+static unsigned fl_busy;           // what kept the hero busy this frame (bits, dev status)
+static UObject *fl_pc;             // the local player controller this frame
+static uint8_t fl_bits = 0xff;     // the arm's follow bits before we took it (0xff = we don't own the arm)
+static float fl_rel[3];            // ... and its RelativeRotation
+static unsigned fl_n;              // orbits started (dev status)
+#ifndef B4B_RELEASE
+static float fl_dev_look[2], fl_dev_left;   // dev `thirdperson look`: look input (deg/s pitch, yaw) for fl_dev_left s
+#endif
+
+static float norm180(float a) { a = fmodf(a, 360.f); return a > 180.f ? a - 360.f : a < -180.f ? a + 360.f : a; }
+static float *ctrl_rot(UObject *pc) { return (float *)((char *)pc + 0x2F8); }   // AController::ControlRotation
+static int32_t rel_rot_off(UObject *arm) { static int32_t o = -2; if (o == -2) o = ue_prop_offset(arm, "RelativeRotation"); return o; }
+
+// the camera: control rotation + offset on the spring arm (fl_state != 0), or the arm back to following the pawn
+static void fl_apply(void) {
+    if (!tp_arm || !alive(tp_arm, tp_armi) || !fl_pc || rel_rot_off(tp_arm) < 0) return;
+    float *rel = (float *)((char *)tp_arm + rel_rot_off(tp_arm)), *cr = ctrl_rot(fl_pc);
+    if (fl_bits == 0xff) { fl_bits = *ARM_BITS(tp_arm) & ARM_FOLLOW; memcpy(fl_rel, rel, 12); }
+    *ARM_BITS(tp_arm) &= (uint8_t)~ARM_FOLLOW;
+    rel[0] = norm180(cr[0]) + fl_off[0]; rel[1] = norm180(cr[1] + fl_off[1]); rel[2] = 0;
+}
+static void fl_release(void) {
+    if (fl_bits != 0xff && tp_arm && alive(tp_arm, tp_armi) && rel_rot_off(tp_arm) >= 0 &&
+        !(tp_pvc && alive(tp_pvc, tp_pvci) && PVC_WANT(tp_pvc) == 3)) {   // the game's orbit view owns the bits then
+        *ARM_BITS(tp_arm) = (uint8_t)((*ARM_BITS(tp_arm) & ~ARM_FOLLOW) | fl_bits);
+        memcpy((char *)tp_arm + rel_rot_off(tp_arm), fl_rel, 12);
+    }
+    fl_bits = 0xff;
+}
+static void fl_end(void) { fl_release(); fl_state = 0; fl_off[0] = fl_off[1] = 0; }
+static void fl_reset(void) { fl_state = 0; fl_off[0] = fl_off[1] = 0; fl_bits = 0xff; fl_idle = 0; fl_idle_t = 0; }
+
+static void updrot_detour(UObject *pc, float dt) {
+    if (pc && pc == fl_pc && GetCurrentThreadId() == tp_tid) {
+        float *ri = PC_ROTINPUT(pc);
+#ifndef B4B_RELEASE
+        if (fl_dev_left > 0) { ri[0] += fl_dev_look[0] * dt; ri[1] += fl_dev_look[1] * dt; fl_dev_left -= dt; }
+#endif
+        if (fl_idle && (ri[0] != 0 || ri[1] != 0)) {
+            if (fl_state != 1) { fl_state = 1; fl_n++; }
+            float p0 = norm180(ctrl_rot(pc)[0]), cam = p0 + fl_off[0] + ri[0];
+            if (cam > FL_PITCH && ri[0] > 0) fl_off[0] = fmaxf(fl_off[0], FL_PITCH - p0);        // no further up
+            else if (cam < -FL_PITCH && ri[0] < 0) fl_off[0] = fminf(fl_off[0], -FL_PITCH - p0); // ... or down
+            else fl_off[0] += ri[0];
+            fl_off[1] = norm180(fl_off[1] + ri[1]);
+            ri[0] = ri[1] = 0;
+            fl_apply();   // this frame: the spring arm ticks after the controller
+        }
+    }
+    orig_updrot(pc, dt);
+}
+static void updrot_hook(void) {
+    if (updrot_hooked) return;
+    int ok = !memcmp((void *)ADDR_UPDROT, SIG_UPDROT, sizeof SIG_UPDROT) &&
+             MH_CreateHook((void *)ADDR_UPDROT, (void *)updrot_detour, (void **)&orig_updrot) == MH_OK &&
+             MH_EnableHook((void *)ADDR_UPDROT) == MH_OK;
+    updrot_hooked = ok ? 1 : -1;
+    LOG("thirdperson: free look hook %s", ok ? "installed" : "FAILED (signature mismatch?)");
+}
+
+// cached reflected calls on the hero (bool / vector results)
+typedef struct { const char *name; UFunction *fn; int32_t ret, psize; } HeroFn;
+static uint8_t *hero_call(UObject *o, HeroFn *h, uint8_t arg0, uint8_t *p) {
+    if (!o || h->ret == -2) return NULL;
+    if (!h->fn) {
+        FField *r;
+        h->fn = ue_find_function(U_CLASS(o), h->name);
+        if (!h->fn || !(r = ue_find_prop((UStruct *)h->fn, "ReturnValue")) || UFN_PARMSSIZE(h->fn) > 64) {
+            h->ret = -2; h->fn = NULL;
+            LOG("thirdperson: free look: no %s", h->name);
+            return NULL;
+        }
+        h->ret = FP_OFFSET(r); h->psize = UFN_PARMSSIZE(h->fn);
+    }
+    memset(p, 0, 64);
+    p[0] = arg0;
+    ue_process_event(o, h->fn, p);
+    return p + h->ret;
+}
+static int hero_bool(UObject *o, HeroFn *h, uint8_t arg0) { uint8_t p[64], *r = hero_call(o, h, arg0, p); return r && *r; }
+
+// Keys of the hero's own actions that end free look, from the InputSettings mappings (the game's rebinds included):
+// actions Hero* (ADS, bash, crouch, sprint, use, quick turn; not HeroSuicide), Ability* (reload), Item* (alt use),
+// PlayerJump, Select* (weapon / consumable slots), Weapon* (quick swap); axes of those that aren't looking or moving,
+// and PrimaryAbility (fire: left mouse, right trigger). Checked with PlayerController.IsInputKeyDown (the game's input state: mouse buttons, gamepad).
+static int fl_key_wanted(const char *nm, int axis) {
+    static const char *const P[] = {"Hero", "Ability", "Item", "PlayerJump", "Select", "Weapon", "Primary", NULL};
+    int hit = 0;
+    for (int j = 0; P[j] && !hit; j++) hit = !strncmp(nm, P[j], strlen(P[j]));
+    if (!hit || strstr(nm, "Suicide")) return 0;
+    if (axis) {   // looking / moving / zooming axes never count
+        static const char *const X[] = {"Move", "Look", "Turn", "Strafe", "Forward", "Right", "Yaw", "Pitch", "Zoom", NULL};
+        for (int j = 0; X[j]; j++) if (strstr(nm, X[j])) return 0;
+    }
+    return 1;
+}
+static FName fl_keys[48];
+static int n_fl_keys = -1;         // -1 = not read yet
+static void fl_keys_load(void) {
+    UClass *k = ue_find_class("InputSettings");
+    UObject *is = k ? UC_CDO(k) : NULL;
+    n_fl_keys = 0;
+    if (!is) return;
+    int total = 0;
+    for (int axis = 0; axis < 2; axis++) {
+        int32_t off = ue_prop_offset(is, axis ? "AxisMappings" : "ActionMappings");
+        if (off < 0) continue;
+        TArray *m = (TArray *)((char *)is + off);
+        char nm[64];
+        total += m->num;
+        for (int i = 0; i < m->num && n_fl_keys < 48; i++) {
+            uint8_t *e = (uint8_t *)m->data + (size_t)i * 0x28;   // {FName name, flags / float scale, FKey (+0x10)}
+            if (!fl_key_wanted(ue_name(*(FName *)e, nm, sizeof nm), axis)) continue;
+            FName key = *(FName *)(e + 0x10);
+            int dup = 0;
+            for (int j = 0; j < n_fl_keys && !dup; j++) dup = fl_keys[j].idx == key.idx && fl_keys[j].num == key.num;
+            if (!dup) fl_keys[n_fl_keys++] = key;
+        }
+    }
+    LOG("thirdperson: free look: %d action keys (of %d mappings)", n_fl_keys, total);
+}
+static int fl_key_down(UObject *pc) {
+    static UFunction *fn; static int32_t o_key = -1, o_ret = -1, psize;
+    if (n_fl_keys < 0) fl_keys_load();
+    if (!fn) {
+        UClass *c = ue_find_class("PlayerController");
+        FField *k, *r;
+        fn = c ? ue_find_function(c, "IsInputKeyDown") : NULL;
+        if (!fn || !(k = ue_find_prop((UStruct *)fn, "Key")) || !(r = ue_find_prop((UStruct *)fn, "ReturnValue")) ||
+            UFN_PARMSSIZE(fn) > 64) { n_fl_keys = 0; return 0; }
+        o_key = FP_OFFSET(k); o_ret = FP_OFFSET(r); psize = UFN_PARMSSIZE(fn);
+    }
+    for (int i = 0; i < n_fl_keys; i++) {
+        uint8_t p[64];
+        memset(p, 0, psize);
+        *(FName *)(p + o_key) = fl_keys[i];
+        ue_process_event(pc, fn, p);
+        if (p[o_ret]) return 1;
+    }
+    return 0;
+}
+
+// what keeps the hero busy (no free look; swing the camera back): bits for the dev status
+enum { FL_MOVE = 1, FL_FIRE = 2, FL_ADS = 4, FL_USE = 8, FL_KEY = 16, FL_INCAP = 32, FL_AIR = 64, FL_VIEW = 128 };
+static unsigned fl_busy_now(UObject *pawn, UObject *pvc, UObject *pc) {
+    static HeroFn f_move = {"GetLastMovementInputVector"}, f_fire = {"IsFiring"}, f_cap = {"IsCapablePlayer"},
+                  f_ladder = {"IsLadderClimbing"}, f_ledge = {"IsHangingFromLedge"}, f_mantle = {"IsMantling"};
+    unsigned b = 0;
+    uint8_t p[64], *v;
+    if (PVC_WANT(pvc) != 2 || tp_written != 2 || !*((uint8_t *)pvc + 0x215)) b |= FL_VIEW;   // not our 3P right now
+    if ((v = hero_call(pawn, &f_move, 0, p))) { float *m = (float *)v; if (m[0] * m[0] + m[1] * m[1] + m[2] * m[2] > 0.01f) b |= FL_MOVE; }
+    if (hero_bool(pawn, &f_fire, 0)) b |= FL_FIRE;
+    if (hero_ads()) b |= FL_ADS;
+    if (tp_use && alive(tp_use, tp_usei)) {
+        static int32_t o_act = -2;
+        if (o_act == -2) o_act = ue_prop_offset(tp_use, "ActiveUsableComponent");
+        if (o_act >= 0 && *(UObject **)((char *)tp_use + o_act)) b |= FL_USE;
+    }
+    if (f_cap.ret != -2 && !hero_bool(pawn, &f_cap, 1)) b |= FL_INCAP;   // downed, grabbed, pounced, ...
+    if (hero_bool(pawn, &f_ladder, 0) || hero_bool(pawn, &f_ledge, 0) || hero_bool(pawn, &f_mantle, 0)) b |= FL_AIR;
+    if (pc && fl_key_down(pc)) b |= FL_KEY;
+    return b;
+}
+
+// every tick while /thirdperson is on (after the camera tuning, before the view switch)
+static void fl_tick(UObject *pawn, UObject *pvc, float dt) {
+    UObject *pc = ue_local_pc();
+    fl_pc = pc;
+    if (!fl_on || !pc || !tp_arm || !alive(tp_arm, tp_armi)) { fl_idle = 0; if (fl_state) fl_end(); return; }
+    updrot_hook();
+    unsigned b = fl_busy_now(pawn, pvc, pc);
+    fl_busy = b;
+    fl_idle_t = b ? 0 : fl_idle_t + dt;
+    fl_idle = updrot_hooked == 1 && fl_idle_t >= FL_IDLE_DELAY;
+    if (b & (FL_VIEW | FL_ADS | FL_INCAP)) { if (fl_state) fl_end(); return; }   // another camera now: no swing
+    if (fl_state == 1 && b) {
+        if (fl_return <= 0.001f) { fl_end(); return; }
+        fl_state = 2; fl_t = 0; fl_from[0] = fl_off[0]; fl_from[1] = fl_off[1];
+    }
+    if (fl_state == 2) {
+        float a = (fl_t += dt) / fl_return;
+        if (a >= 1.f) { fl_end(); return; }
+        float s = 1.f - a * a * (3.f - 2.f * a);   // smoothstep back to 0
+        fl_off[0] = fl_from[0] * s; fl_off[1] = fl_from[1] * s;
+    }
+    if (fl_state) fl_apply();
 }
 
 // ---- Item pickups in third person (#27) ----
@@ -439,9 +675,10 @@ static void tp_sync(float dt) {
     tp_tid = GetCurrentThreadId();
     obs_hook();   // before our first view switch, so its OnViewChanged refresh already sees it
     aim_update(pvc ? pawn : NULL, pvc);
-    if (!pvc) return;
+    if (!pvc) { fl_idle = 0; return; }
     if ((tp_ads_age += dt) > 1.f) { tp_ads_age = 0; ads_refresh(pawn); }
     tune(1);
+    fl_tick(pawn, pvc, dt);
     uint8_t cur = PVC_WANT(pvc), want = hero_ads() ? 1 : 2;
     if (cur == want || cur == 3 || (cur == 2 && tp_written != 2)) return;
     if (view_set(pvc, want)) tp_written = want;
@@ -449,10 +686,17 @@ static void tp_sync(float dt) {
 
 #ifndef B4B_RELEASE
 static void watch_tick(float dt);
+static int mouse_steps, mouse_dx, mouse_dy;   // dev `thirdperson mouse`: relative mouse moves left to send
 #endif
 void thirdperson_tick(float dt) {
 #ifndef B4B_RELEASE
     watch_tick(dt);
+    if (mouse_steps > 0) {   // one relative move per frame through SendInput (the prefix's own input queue)
+        INPUT in = {0};
+        in.type = INPUT_MOUSE; in.mi.dx = mouse_dx; in.mi.dy = mouse_dy; in.mi.dwFlags = MOUSEEVENTF_MOVE;
+        SendInput(1, &in, sizeof in);
+        mouse_steps--;
+    }
 #endif
     static int was_down;
     if (tp_key) {
@@ -469,6 +713,7 @@ void thirdperson_tick(float dt) {
     obs_view_sync();
     if (!tp_on) {
         aim_ok = 0;
+        fl_idle = 0;
 #ifndef B4B_RELEASE
         if (probe_left > 0 || aim_test[0] || aim_test[1]) { aim_update(local_hero(), NULL); }
         if (probe_left > 0 && (probe_left -= dt) <= 0) LOG("thirdperson: callers: recording done (%d)", n_probe_ra);
@@ -498,6 +743,8 @@ int thirdperson_live(const char *key, const char *v) {
     else if (!strcmp(key, "thirdperson_height")) tp_height = v ? clampf((float)atof(v), -100, 150) : 0;
     else if (!strcmp(key, "thirdperson_fov")) tp_fov = v && atof(v) > 0 ? clampf((float)atof(v), 60, 130) : 0;
     else if (!strcmp(key, "thirdperson_aimfix")) { aim_fix = v ? atoi(v) != 0 : 1; return 1; }
+    else if (!strcmp(key, "thirdperson_freelook")) { fl_on = v ? atoi(v) != 0 : 1; return 1; }   // tick ends it
+    else if (!strcmp(key, "thirdperson_freelook_return")) { fl_return = v ? clampf((float)atof(v), 0, 2) : FL_RETURN_DEF; return 1; }
     else return 0;
     if (tp_started) {   // camera settings: at once, like the chat command
         if (tp_fov <= 0) tune(0);
@@ -542,6 +789,15 @@ static void tp_panel(void) {
     int fix = aim_fix;
     if (ov_checkbox("Aim correction##aimfix", &fix)) ov_setting("thirdperson_aimfix", fix ? "1" : "0", 1);
     ov_tooltip("Turns your hero's aim onto the crosshair point, so shots land under it with a side/height offset.");
+    ov_heading("Free look");
+    int fl = fl_on;
+    if (ov_checkbox("Look around your hero while standing still##freelook", &fl)) ov_setting("thirdperson_freelook", fl ? "1" : "0", 1);
+    ov_tooltip("Standing still, the mouse swings the camera around your hero (see its front) without turning it. Moving, "
+               "shooting, aiming, reloading, melee or using something swings the camera back behind it.");
+    float r = fl_return;
+    ov_width(14);
+    if (ov_slider("Swing back (seconds)##freelook_return", &r, 0, 1, "%.2f")) ov_setting_f("thirdperson_freelook_return", r, 0);
+    if (ov_edit_done()) ov_setting_f("thirdperson_freelook_return", r, 1);
     ov_text_dim("Ctrl+click a slider to type a value. Camera changes apply at once and are saved to b4bcoop.ini.");
 }
 
@@ -549,8 +805,8 @@ int thirdperson_init(void) {
     cmds_ini_each(ini_pair, NULL);
     tp_started = 1;
     overlay_add_panel("Camera", 30, tp_panel);
-    LOG("thirdperson: start %s, key=0x%02x, distance %.0f side %.0f height %.0f fov %.0f aimfix %d", tp_on ? "on" : "off",
-        tp_key, tp_dist, tp_side, tp_height, tp_fov, aim_fix);
+    LOG("thirdperson: start %s, key=0x%02x, distance %.0f side %.0f height %.0f fov %.0f aimfix %d freelook %d return %.2f",
+        tp_on ? "on" : "off", tp_key, tp_dist, tp_side, tp_height, tp_fov, aim_fix, fl_on, fl_return);
     return 0;
 }
 
@@ -597,6 +853,7 @@ void cmd_thirdperson(const char *arg_in, Out *o) {
     if (en == 2) { tune_status(o); return; }
     UObject *pvc = view_comp(local_hero());
     if (!en) {
+        fl_end();
         tune(0);
         if (pvc && tp_written == 2 && PVC_WANT(pvc) == 2) view_set(pvc, 1);
         tp_on = 0;
@@ -919,6 +1176,54 @@ static void usables_lookat(char *a1, Out *o) {
     out_printf(o, "facing [%d] at %.0f (pitch %.1f yaw %.1f) from (%.0f %.0f %.0f)\n", k, n, r[0], r[1], me[0], me[1], me[2]);
 }
 
+// `thirdperson freelook`: free-look state (#31)
+static void fl_status(Out *o) {
+    UObject *pc = ue_local_pc(), *pawn = local_hero(), *pcm = pc ? ue_get_ptr(pc, "PlayerCameraManager") : NULL;
+    float cr[3] = {0}, ar[3] = {0};
+    TpCall c;
+    if (pcm && tc_prep(&c, pcm, "GetCameraRotation")) { ue_process_event(c.obj, c.fn, c.p); memcpy(cr, tc_arg(&c, "ReturnValue"), 12); }
+    if (pawn && tc_prep(&c, pawn, "K2_GetActorRotation")) { ue_process_event(c.obj, c.fn, c.p); memcpy(ar, tc_arg(&c, "ReturnValue"), 12); }
+    float *ctl = pc ? ctrl_rot(pc) : cr;
+    out_printf(o, "freelook %d state %d offset (%.1f %.1f) idle %d %.2f s busy 0x%02x (1 move 2 fire 4 ads 8 use 16 key 32 incap "
+                  "64 ladder/ledge 128 view) return %.2f s hook %d orbits %u arm bits %s%02x\n",
+               fl_on, fl_state, fl_off[0], fl_off[1], fl_idle, fl_idle_t, fl_busy, fl_return, updrot_hooked, fl_n,
+               fl_bits == 0xff ? "follow " : "saved ", tp_arm && alive(tp_arm, tp_armi) ? *ARM_BITS(tp_arm) : 0);
+    out_printf(o, "control (%.1f %.1f) hero yaw %.1f camera (%.1f %.1f)\n", ctl[0], ctl[1], ar[1], cr[0], cr[1]);
+}
+// `thirdperson heroes`: every hero's yaw (does anyone see a hero turn?)
+static void tp_heroes(Out *o) {
+    UClass *hc = cls("HeroCharacter");
+    UObject *me = local_hero();
+    char nm[128];
+    for (int32_t i = 0, n = ue_num_objects(); hc && i < n; i++) {
+        UObject *x = ue_object_at(i);
+        TpCall c;
+        if (!x || (U_FLAGS(x) & LIVE_FLAGS) || !ue_is_a(x, hc) || !tc_prep(&c, x, "K2_GetActorRotation")) continue;
+        ue_process_event(c.obj, c.fn, c.p);
+        float *r = tc_arg(&c, "ReturnValue");
+        out_printf(o, "%s yaw %.1f pitch %.1f%s\n", ue_obj_name(x, nm, sizeof nm), r[1], r[0], x == me ? " (you)" : "");
+    }
+}
+static void fl_keys_dump(Out *o) {
+    UClass *k = ue_find_class("InputSettings");
+    UObject *is = k ? UC_CDO(k) : NULL;
+    char a[64], b[64];
+    for (int axis = 0; is && axis < 2; axis++) {   // the hero's own mappings (UI*, Zombie*, Demo* left out)
+        int32_t off = ue_prop_offset(is, axis ? "AxisMappings" : "ActionMappings");
+        TArray *m = off >= 0 ? (TArray *)((char *)is + off) : NULL;
+        out_printf(o, "%s:", axis ? "\naxes" : "actions");
+        for (int i = 0; m && i < m->num; i++) {
+            uint8_t *e = (uint8_t *)m->data + (size_t)i * 0x28;
+            ue_name(*(FName *)e, a, sizeof a);
+            if (!strncmp(a, "UI", 2) || !strncmp(a, "Zombie", 6) || !strncmp(a, "Demo", 4)) continue;
+            out_printf(o, " %s%s=%s", fl_key_wanted(a, axis) ? "*" : "", a, ue_name(*(FName *)(e + 0x10), b, sizeof b));
+        }
+    }
+    out_printf(o, "\n%d free-look keys:", n_fl_keys);
+    for (int i = 0; i < n_fl_keys; i++) out_printf(o, " %s", ue_name(fl_keys[i], a, sizeof a));
+    out_printf(o, "\n");
+}
+
 // Dev CLI: `thirdperson [on|off|status]` = the chat command; `thirdperson view [1|2|3]` dumps the local hero's
 // PlayerViewComponent (view bytes, tag lists, owner tags, ADS), a digit sets the view once; `thirdperson aim|arm|decals`.
 int thirdperson_cmd(const char *verb, char *rest, Out *o) {
@@ -975,6 +1280,23 @@ int thirdperson_cmd(const char *verb, char *rest, Out *o) {
                    aim_local[2], aim_n, aim_last_p[0], aim_last_p[1], aim_last_p[2], aim_last_deg);
         return 1;
     }
+    if (what && !strcmp(what, "freelook")) { fl_status(o); return 1; }
+    if (what && !strcmp(what, "look")) {   // look <pitch deg/s> <yaw deg/s> [s]: look input in UpdateRotation
+        char *y = strtok(NULL, " "), *t = y ? strtok(NULL, " ") : NULL;
+        if (!arg || !y) { out_printf(o, "usage: thirdperson look <pitch/s> <yaw/s> [seconds]\n"); return 1; }
+        fl_dev_look[0] = (float)atof(arg); fl_dev_look[1] = (float)atof(y); fl_dev_left = t ? (float)atof(t) : 1.f;
+        out_printf(o, "look input %.0f/%.0f deg/s for %.1f s (hook %d)\n", fl_dev_look[0], fl_dev_look[1], fl_dev_left, updrot_hooked);
+        return 1;
+    }
+    if (what && !strcmp(what, "mouse")) {   // mouse <dx> <dy> [frames]: relative mouse moves, one per frame
+        char *y = strtok(NULL, " "), *t = y ? strtok(NULL, " ") : NULL;
+        if (!arg || !y) { out_printf(o, "usage: thirdperson mouse <dx> <dy> [frames]\n"); return 1; }
+        mouse_dx = atoi(arg); mouse_dy = atoi(y); mouse_steps = t ? atoi(t) : 30;
+        out_printf(o, "mouse %d,%d x%d\n", mouse_dx, mouse_dy, mouse_steps);
+        return 1;
+    }
+    if (what && !strcmp(what, "heroes")) { tp_heroes(o); return 1; }
+    if (what && !strcmp(what, "keys")) { n_fl_keys = -1; fl_keys_load(); fl_keys_dump(o); return 1; }
     if (what && !strcmp(what, "watch")) { watch_left = arg ? (float)atof(arg) : 3.f; watch_t = 0; out_printf(o, "watching\n"); return 1; }
     if (!what || strcmp(what, "view")) {   // the chat command: pass the words through
         char line[64];

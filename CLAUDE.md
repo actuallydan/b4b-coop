@@ -121,8 +121,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     `thirdperson_distance|side|height|fov` (default distance 180, right shoulder side 40: shots come from the eyes,
     so side/height offsets move hits off the crosshair by that much). Item pickups (weapons, ammo, card shrines) in 3P:
     the hero's ItemObserverComponent turns itself off in third person and looks from the FP camera; hooks on its
-    refresh and on the observation view gather fix both in our 3P (#27). Dev `thirdperson view|aim|arm|decals|watch|
-    use|usables|lookat|itemfix`, `fnprobe`. docs/investigations/third-person.md.
+    refresh and on the observation view gather fix both in our 3P (#27). Free look (#31, ini `thirdperson_freelook`,
+    `thirdperson_freelook_return`): standing still the mouse orbits the camera (UpdateRotation hook eats RotationInput,
+    spring arm stops following), busy → swings back. Dev `thirdperson view|aim|arm|decals|watch|use|usables|lookat|
+    itemfix|freelook|look|mouse|heroes|keys`, `fnprobe`. docs/investigations/third-person.md.
   - `joinpolicy.c` host: who may join. Default only the host's Steam friends (`ISteamFriends::HasFriend`) and its own
     SteamID; ini `allow_joins=friends|anyone`, `allow_steamids=<id64>,...`; dev `allow_self=0`, `joinpolicy [check
     <id64>]`. Checked at the Steam P2P session request (steamnet.c, authenticated id) and in PreLogin (admin.c; IP
