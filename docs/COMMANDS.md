@@ -406,8 +406,8 @@ The **Browse** tab of the `~` window lists free add-ons from the b4bcoop add-on 
 public license (CC0, CC-BY, MIT, ...). Nothing is downloaded until you click, and nobody else learns which add-ons
 you have.
 
-1. **Get the add-on list** downloads the list (and the pictures). It carries the b4bcoop release signature: a list
-   that isn't signed is not shown. **Refresh the list** gets it again. Search box and filter: all, new looks,
+1. **Get the add-on list** downloads the list (and the pictures). It carries the add-on shop's signature: a list
+   that isn't signed with it is not shown. **Refresh the list** gets it again. Search box and filter: all, new looks,
    replacements, the ones in your add-ons folder.
 2. **Add** downloads the add-on, checks its size and SHA-256 against the signed list (a damaged or changed file is
    deleted: "Nothing was changed"), and puts it into your add-ons folder as `<name>.pak`, switched on, last in the

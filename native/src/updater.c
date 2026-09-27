@@ -2,7 +2,7 @@
 // fetched or changed without the player's click, and nothing is hot-reloaded:
 //   Check     GET <api>/repos/<repo>/releases/latest (or /releases/tags/v<ver>: the version of a host that refused
 //             us), then that release's b4bcoop-update.txt + .sig: the manifest (version, protocol, zip name, size,
-//             SHA-256) signed with the b4bcoop release key (ed25519, public key below, updcore.c checks it).
+//             SHA-256) signed with the b4bcoop release key (ed25519, public key in signkeys.h, updcore.c checks it).
 //   Download  "Download and install on next start": the zip + its .sig into memory; size, SHA-256 and signature are
 //             checked before anything is written. Its files (upd_install_path: the two DLLs and b4bcoop-*.txt; never
 //             b4bcoop.ini, bans, add-ons or logs) are staged in <game>\b4bcoop-update\staged\<ver>\ and swapped in
@@ -28,13 +28,11 @@
 #include "netguard.h"
 #include "overlay.h"
 #include "updcore.h"
+#include "signkeys.h"
 #include "b4bcoop_version.h"
 
-// The b4bcoop release key (docs/release-signing.pub.pem; private half only in the release workflow's secret
-// B4B_RELEASE_SIGNING_KEY). Rotating it: docs/investigations/updater.md "Key rotation".
-static const uint8_t RELEASE_PUBKEY[32] = {
-    0x3f, 0xac, 0xa0, 0x59, 0x9d, 0xda, 0xb6, 0x79, 0xf6, 0x01, 0xa5, 0x5b, 0xdd, 0xc9, 0xc4, 0x35,
-    0x5a, 0xc6, 0x89, 0xd7, 0x56, 0x5b, 0x85, 0x1d, 0x73, 0x13, 0xa8, 0xe7, 0xaa, 0x78, 0x9a, 0x31};
+// The b4bcoop release key (signkeys.h; verifies releases only, the shop has its own key).
+static const uint8_t RELEASE_PUBKEY[32] = {B4B_RELEASE_PUBKEY_BYTES};
 #define DEFAULT_API "https://api.github.com"
 #define DEFAULT_REPO "actuallydan/b4b-coop"
 #define MANIFEST_NAME "b4bcoop-update.txt"
@@ -366,7 +364,6 @@ int updater_http_to_file(const char *url, const wchar_t *path, uint64_t max, uin
     *got = f.sha.n;
     return ok;
 }
-const uint8_t *updater_release_pubkey(void) { return RELEASE_PUBKEY; }
 
 // ---- the update state machine (worker thread + game-thread UI) ----
 enum { P_IDLE, P_CHECKING, P_CHECKED, P_DOWNLOADING, P_INSTALLED, P_ERROR };

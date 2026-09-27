@@ -1,0 +1,15 @@
+// Public ed25519 keys built into the agent. Each one verifies exactly one thing:
+//   RELEASE: b4bcoop releases (updater.c; docs/release-signing.pub.pem, private half only in the b4b-coop release
+//            workflow's secret B4B_RELEASE_SIGNING_KEY). Rotation/loss: docs/investigations/updater.md §3.
+//   SHOP:    the add-on shop's catalog.json (shop.c; docs/shop-signing.pub.pem, private half only in the
+//            back4blood-shop repo's secret SHOP_SIGNING_KEY). Rotation/loss: docs/investigations/shop.md §2.
+// A catalog signed with the release key is refused by the Browse tab and vice versa, so whoever can change the shop
+// repo's workflows can't sign b4bcoop releases. native/test/run.sh checks both against the committed PEMs.
+#pragma once
+#include <stdint.h>
+#define B4B_RELEASE_PUBKEY_BYTES \
+    0x3f, 0xac, 0xa0, 0x59, 0x9d, 0xda, 0xb6, 0x79, 0xf6, 0x01, 0xa5, 0x5b, 0xdd, 0xc9, 0xc4, 0x35, \
+    0x5a, 0xc6, 0x89, 0xd7, 0x56, 0x5b, 0x85, 0x1d, 0x73, 0x13, 0xa8, 0xe7, 0xaa, 0x78, 0x9a, 0x31
+#define B4B_SHOP_PUBKEY_BYTES \
+    0x42, 0x19, 0x58, 0x47, 0xde, 0xc2, 0x9d, 0x53, 0x4c, 0x49, 0xa6, 0x26, 0x62, 0xe5, 0x67, 0x3d, \
+    0x99, 0x03, 0x19, 0xf3, 0x2d, 0x2e, 0xdd, 0x44, 0x4a, 0xc3, 0xd0, 0xbf, 0xa0, 0x19, 0x8f, 0x74

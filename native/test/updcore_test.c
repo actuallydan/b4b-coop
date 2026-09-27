@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "updcore.h"
+#include "signkeys.h"
 #include "monocypher-ed25519.h"
 
 static int fails, checks;
@@ -199,6 +200,15 @@ static void test_sha_stream(void) {
     free(a);
 }
 
+static int read_key(const char *dir, const char *name, uint8_t k[32]) {   // a `sign-release.sh pubhex` file
+    size_t n; uint8_t *h = slurp(dir, name, &n);
+    if (!h) return 0;
+    while (n && (h[n - 1] == '\n' || h[n - 1] == '\r')) h[--n] = 0;
+    int ok = upd_hex_decode((char *)h, k, 32);
+    free(h);
+    return ok;
+}
+
 #define H64 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 static void test_catalog(const char *dir) {
     const char *j =
@@ -242,15 +252,26 @@ static void test_catalog(const char *dir) {
     CHECK(!upd_catalog_verify(e, strlen(e), sig, 64, pk, &c, err, sizeof err) && strstr(err, "signature"));
     free(e);
     if (!dir) return;
-    size_t pn, cn, sn;   // OpenSSL-signed (tools/sign-release.sh sign, what the shop repo's workflow runs)
-    uint8_t *pubhex = slurp(dir, "pub.hex", &pn), *cat = slurp(dir, "catalog.json", &cn), *csig = slurp(dir, "catalog.json.sig", &sn);
-    if (pubhex && cat && csig) {
-        while (pn && (pubhex[pn - 1] == '\n' || pubhex[pn - 1] == '\r')) pubhex[--pn] = 0;
-        CHECK(upd_hex_decode((char *)pubhex, pk, 32));
-        CHECK(upd_catalog_verify((char *)cat, cn, csig, sn, pk, &c, err, sizeof err) && c.n == 1 && !strcmp(c.items[0].id, "casual_joe"));
+    size_t cn, sn;   // OpenSSL-signed with the shop key (tools/sign-release.sh sign, what the shop repo's workflow runs)
+    uint8_t shop_pk[32], rel_pk[32], *cat = slurp(dir, "catalog.json", &cn), *csig = slurp(dir, "catalog.json.sig", &sn);
+    int keys = read_key(dir, "shoppub.hex", shop_pk) && read_key(dir, "pub.hex", rel_pk);
+    CHECK(keys);
+    if (keys && cat && csig) {
+        CHECK(upd_catalog_verify((char *)cat, cn, csig, sn, shop_pk, &c, err, sizeof err) && c.n == 1 && !strcmp(c.items[0].id, "casual_joe"));
         upd_catalog_free(&c);
+        // the release key never passes a catalog (whoever holds the shop key can't sign releases, and vice versa)
+        CHECK(!upd_catalog_verify((char *)cat, cn, csig, sn, rel_pk, &c, err, sizeof err) && strstr(err, "signature"));
     }
-    free(pubhex); free(cat); free(csig);
+    free(cat); free(csig);
+}
+
+// the public keys built into the agent are the committed PEMs, and they are two different keys
+static void test_builtin_keys(const char *dir) {
+    static const uint8_t rel[32] = {B4B_RELEASE_PUBKEY_BYTES}, shop[32] = {B4B_SHOP_PUBKEY_BYTES};
+    uint8_t k[32];
+    CHECK(read_key(dir, "release-committed.hex", k) && !memcmp(k, rel, 32));
+    CHECK(read_key(dir, "shop-committed.hex", k) && !memcmp(k, shop, 32));
+    CHECK(memcmp(rel, shop, 32) != 0);
 }
 
 static void test_json(const char *dir) {
@@ -288,7 +309,7 @@ int main(int argc, char **argv) {
     test_json(dir ? dir : ".");
     test_sha_stream();
     test_catalog(dir);
-    if (dir) { test_zip(dir); test_openssl_signatures(dir); }
+    if (dir) { test_zip(dir); test_openssl_signatures(dir); test_builtin_keys(dir); }
     printf("%s: %d checks, %d failed\n", fails ? "FAIL" : "ok", checks, fails);
     return fails != 0;
 }

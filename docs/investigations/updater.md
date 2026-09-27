@@ -65,12 +65,13 @@ release page.
 - Key: generated 2026-09-27 with `openssl genpkey -algorithm ed25519`.
   - Private: `~/.local/share/b4b-coop/keys/release-signing.key` on Dan's machine (chmod 600, dir 700, never committed)
     and the GitHub Actions secret `B4B_RELEASE_SIGNING_KEY` (the PEM). Keep one more offline copy (password manager).
-  - Public: `docs/release-signing.pub.pem`, raw `3faca059...789a31` in `native/src/updater.c` (`RELEASE_PUBKEY`).
+  - Public: `docs/release-signing.pub.pem`, raw `3faca059...789a31` in `native/src/signkeys.h` (`B4B_RELEASE_PUBKEY_BYTES`,
+    `RELEASE_PUBKEY` in updater.c). It verifies releases only: the add-on shop has its own key (shop.md §2).
     `ci.yml` checks the player DLL carries the committed key; `release.yml` fails without the secret and verifies its
     own signatures against the committed key (a wrong secret can't publish).
 - Humans: `tools/sign-release.sh verify docs/release-signing.pub.pem b4bcoop-<v>.zip` (next to its `.sig`).
 - **Key rotation** (planned, key still safe): generate a new key; release N+1 is still signed with the old key but its
-  agent contains the new public key (then `RELEASE_PUBKEY` becomes the new one, `docs/release-signing.pub.pem` too);
+  agent contains the new public key (then `B4B_RELEASE_PUBKEY_BYTES` becomes the new one, `docs/release-signing.pub.pem` too);
   update the secret before tagging N+2. Players on N update to N+1 with the old key and from then on accept the new
   key. (Accepting two keys at once is a small change in `upd_sig_ok` callers if ever needed.)
 - **Key lost or leaked**: generate a new key, put its public half into the agent, update the secret, release. Players

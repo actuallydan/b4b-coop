@@ -70,7 +70,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     appended to addonlist.txt, mounted at once only if cosmetic and every file path is new to the pak layer (added
     outfits/weapon looks; `models_outfits_refresh`/`wlooks_refresh`), else next start; never as a client.
   - `shop.c` the `~` **Browse** tab (#36, add-on shop; ini `shop=0` hides it): on click `catalog.json` + `.sig`
-    (ed25519, release key; `upd_catalog_*` in updcore.c) from the public shop repo (raw.githubusercontent.com, inside
+    (ed25519, its own shop key, never the release key: `signkeys.h`; `upd_catalog_*` in updcore.c) from the public
+    shop repo `actuallydan/back4blood-shop` (its workflow builds + signs the list; raw.githubusercontent.com, inside
     netguard's updater scope), thumbnails (SHA-256 from the signed list, then stb_image in `imgdecode.c`, `ov_texture`),
     Add = pak streamed to `b4bcoop-addons\.shop\<id>.pak.part`, size + SHA-256 checked, renamed to `<id>.pak`,
     `addons_add_runtime`; Remove/Update via `.shop\pending.txt`, applied by `shop_early` (DllMain, from addons_scan).
@@ -201,8 +202,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 tests) on every push/PR; `release.yml` builds the zip on a `v<version>` tag (must match `VERSION`) and publishes it
 with `SHA256SUMS`, a build provenance attestation and the in-game updater's files: `b4bcoop-update.txt` (manifest)
 and ed25519 `.sig`s of it, the zip and SHA256SUMS (`tools/sign-release.sh`, secret `B4B_RELEASE_SIGNING_KEY`, public
-key `docs/release-signing.pub.pem` = `RELEASE_PUBKEY` in updater.c; private copy
-`~/.local/share/b4b-coop/keys/release-signing.key`, never commit; rotation/loss: updater.md §3). No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the dev-only legacy
+key `docs/release-signing.pub.pem` = `B4B_RELEASE_PUBKEY_BYTES` in `native/src/signkeys.h`; private copy
+`~/.local/share/b4b-coop/keys/release-signing.key`, never commit; rotation/loss: updater.md §3). The add-on shop's catalog
+has its own key: `docs/shop-signing.pub.pem` = `B4B_SHOP_PUBKEY_BYTES`, private `~/.local/share/b4b-coop/keys/shop-signing.key`
++ secret `SHOP_SIGNING_KEY` in actuallydan/back4blood-shop, never commit; rotation/loss: shop.md §2. No Steam launch options needed (the agent is `X3DAudio1_7.dll`; the dev-only legacy
 `dwmapi.dll` needs `WINEDLLOVERRIDES="dwmapi=n,b" %command%`). Steam's only public launch entry runs the root `Back4Blood.exe` stub →
 `start_protected_game.exe` (EAC) → `Gobi/Binaries/Win64/Back4Blood.exe Gobi -SaveToUserDir`. Game build pinned: Steam buildid 14216215;
 the agent verifies byte signatures and refuses to hook on mismatch.
