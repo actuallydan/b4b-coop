@@ -216,16 +216,19 @@ command (type it in the game's chat box; a message starting with `/` is never se
 
 **The rules:**
 - **Off until the host turns them on** with `/cheats on`. `/cheats off` turns them off again, and they switch off by
-  themselves when a mission starts from Fort Hope (camp), and when the game goes back to Fort Hope or the menus: cheats
-  used in camp never carry into the mission. Moving on to the next chapter keeps them on (the chat says so again).
+  themselves when the game goes back to Fort Hope or the menus.
+- **Every map change clears the sandbox.** Cheats turned on in Fort Hope (camp) stay on into the mission, and on into
+  the next chapter, but everything they were doing stops at the map change: god mode, fly, noclip, infinite ammo, game
+  speed, freeze, size and the free camera (spawned ridden and director changes go with the old map). Everyone sees
+  `[b4bcoop] cheats still on; effects reset`. Copper and cards already given stay, like any copper or card.
 - **Host only.** Every cheat command works only on the host (the player whose game the others joined, or your own
   offline game). Typed by someone who joined, it only replies `host only` and does nothing.
 - **Everyone is told.** Turning cheats on or off, and every cheat that affects another player or the whole game, shows
   a `[b4bcoop] host ...` line in everyone's chat (for example `[b4bcoop] host gave god mode to Mellon`).
-- **Nobody else's save is touched.** Cheats change the running game, or the host's own save (`/supply`, `/unlockall`).
-  From the moment cheats are turned on, the rest of that map gives the other players **no supply points, skull
-  totem points, unlocks, stats or achievements** (the host keeps its own), so their post-round summary shows 0 kills
-  and stats for that map. Their own burn cards are still charged as usual. The chat says so when cheats are turned on.
+- **Rewards and stats are never withheld.** Cheats change the running game, or the host's own save (`/supply`,
+  `/unlockall`), never another player's save directly. A map played with cheats still gives every player their
+  supply points, skull totem points, unlocks, stats and achievements as usual, so one stray cheat can't cost anyone
+  their run's rewards.
 - Cheats that change a hero (god, fly, infinite ammo, speed, freeze) last until the map changes; `/cheats off` undoes
   them.
 
@@ -237,7 +240,7 @@ number then.
 
 | Command | What it does | Example |
 |---|---|---|
-| `/cheats on` | Turns cheats on for this game. Everyone sees `host enabled cheats`. | `/cheats on` |
+| `/cheats on` | Turns cheats on for this game (they stay on into the mission and the next chapter; each map change resets their effects). Everyone sees `host enabled cheats`. | `/cheats on` |
 | `/cheats off` | Turns them off and undoes god mode, infinite ammo, game speed, freeze, size and the free camera. | `/cheats off` |
 | `/cheats` or `/cheats help` | Lists the cheat commands and what is on right now. | `/cheats` |
 

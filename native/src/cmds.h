@@ -228,7 +228,6 @@ int cheats_enabled(void);                               // /cheats on
 void cheats_slash(const char *verb, char *rest, Out *o); // run a cheats.c verb (permission already checked)
 void cheats_tick(float dt);
 int rewards_execute_local(UObject *ppc, void *cmd);     // rewards.c: a profile command on the host's own profile
-int cheats_tainted(void);                               // cheats were on during this map: rewards.c forwards nothing
 int cheats_cmd(const char *verb, char *rest, Out *o);   // dev builds: `cheat <cmd> ...`, `cheatprobe ...`
 
 // poststats.c: remote players' post-round stats (docs/investigations/post-round-stats.md)

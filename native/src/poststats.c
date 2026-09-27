@@ -1,8 +1,8 @@
 // Post-round stats diagnostics (#30, docs/investigations/post-round-stats.md). Every build logs each player's
 // post-round values once per post-round screen ("poststats: ..." lines), so a session's logs (host and clients) show
 // what each machine had. Dev builds: `poststats` (same dump, any time) and UI probes for unattended tests
-// (`uitext`, `uihide`, `callw`, `funcs`, `objat`). The #30 fix itself is in cheats.c (cheats no longer carry from
-// camp into a mission).
+// (`uitext`, `uihide`, `callw`, `funcs`, `objat`). #30 itself was cheats.c withholding stats from a map with cheats
+// on; cheats no longer withhold anything.
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

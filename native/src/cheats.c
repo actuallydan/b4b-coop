@@ -2,17 +2,17 @@
 //
 // Rules:
 //  - Every cheat is a chat command run by admin.c's dispatcher (`/god`, `/fly`, ...). Nothing works until the host types
-//    `/cheats on`; `/cheats off`, leaving Fort Hope (camp) for a mission, or the next map change that lands in Fort Hope
-//    or the menus turns them off. The next chapter of a mission keeps them on.
+//    `/cheats on`; `/cheats off`, or the next map change that lands in Fort Hope or the menus turns them off. Leaving
+//    Fort Hope for a mission and the next chapter keep them on, but every map change resets their effects (god, fly,
+//    noclip, ammo, speed, freeze, size, free camera; the map's own spawns and director changes go with it).
 //  - Host only: the machine must be the server (listen host or standalone). A client's `/cheat ...` never leaves its
 //    machine (chat.c) and gets "host only". admin.c enforces it from VERBS' permissions (CMD_HOST / CMD_CHEAT).
 //  - Transparent: enabling/disabling, and every cheat that touches another player or the whole session, is announced to
 //    every player with admin.c's host notice (ClientTeamMessage, our own type; the same path as /say).
-//  - No client save is ever written: cheats act on the live session, or on the HOST's own offline profile (`/supply`,
-//    `/unlockall`: ExecuteCommand on the host's local profile component only, never forwarded). While cheats are on,
-//    and for the rest of any map they were on during (cheats_tainted), rewards.c forwards no reward to remote players
-//    and the host doesn't send them stat deltas or achievements (hook_client_progress), so a `/win` or a god-mode run
-//    can't feed their saves. Their own burn-card charges (-1) still reach them.
+//  - No cheat writes a client's save directly: cheats act on the live session, or on the HOST's own offline profile
+//    (`/supply`, `/unlockall`: ExecuteCommand on the host's local profile component only, never forwarded). Rewards,
+//    stats and achievements of a map flow to everyone as usual, cheats or not (Dan's call: simpler, and a stray cheat
+//    can't ruin someone's run; through v0.6.0 a map with cheats on sent the other players none, #30).
 //  - Host-side only: clients need no matching code (notices use admin.c's existing notice type), so no protocol bump.
 //
 // How (the shipping build compiled out Gobi's own cheat execs: GobiPlayerController.God/Heal/GiveUnlock/... are empty,
@@ -37,7 +37,6 @@
 #include "ue.h"
 #include "log.h"
 #include "cmds.h"
-#include "MinHook.h"
 #include "overlay.h"
 
 typedef FName *(*FNameCtorFn)(FName *self, const wchar_t *name, int find_type);
@@ -232,7 +231,7 @@ static int targets(const char *spec, Targets *t, Out *o) {
 
 // ---- state ----
 static int on;
-static UObject *cur_world, *taint_world;
+static UObject *cur_world;
 static char pending_notice[200];
 static float pending_in;
 static int clients_seen;   // remote players in the last mission: the camp notice waits for them to be back
@@ -244,8 +243,6 @@ static int n_gods;
 typedef struct { UObject *c; int32_t i; } Ref;
 static Ref ammo_set[256];   // weapons we made infinite (restored by /ammo off, /cheats off)
 static int n_ammo;
-
-int cheats_tainted(void) { return taint_world && taint_world == ue_world(); }
 
 static void notice(const char *fmt, ...) {
     char msg[240];
@@ -877,8 +874,7 @@ static void cmd_endmission(int ok, Out *o) {
     SET(&c, "bSuccess", uint8_t, (uint8_t)ok);
     void *cx = carg(&c, "Context");
     if (cx) fstring_set(cx, "b4bcoop cheat", ctx, 32);
-    notice(ok ? "host ended the mission: success (no rewards are sent to other players' saves)"
-              : "host ended the mission: failure");
+    notice(ok ? "host ended the mission: success" : "host ended the mission: failure");
     call_go(&c);
     out_printf(o, "mission ended (%s)\n", ok ? "success" : "failure");
 }
@@ -1042,6 +1038,11 @@ static void cmd_unlockall(char *rest, Out *o) {
 }
 
 // ---- on/off ----
+static int effects_active(void) {
+    return n_gods || ammo_inf || frozen || freecam || slomo != 1.f || size_now != 1.f;
+}
+// world_alive = 0: a map change. What lived in the old world (its heroes, weapons, world settings, the host's old
+// controller) goes away with it; only our bookkeeping is reset.
 static void all_effects_off(int world_alive) {
     if (world_alive) {
         god_all_off();
@@ -1056,53 +1057,15 @@ static void all_effects_off(int world_alive) {
     slomo = size_now = 1.f;
 }
 
-// Besides rewards.c's forwarded rewards, the host's game itself sends each remote player a few things that end up in
-// their save or account: stat deltas (PlayerStatsComponent.ClientApplyStatDeltas: missions completed, kills, ...) and
-// manual achievements. While cheats_tainted() those RPCs are not sent. They are component RPCs, so they all leave
-// through UActorComponent::CallRemoteFunction, hooked the first time cheats are turned on (never, if nobody cheats).
-#define ADDR_COMP_CRF VA(0x143B2C830ull)   // bool UActorComponent::CallRemoteFunction(this, UFunction*, void* Parms,
-                                            //   FOutParmRec*, FFrame*): the component's net driver sends it
-static const uint8_t SIG_COMP_CRF[] = {0x4c,0x89,0x44,0x24,0x18,0x53,0x55,0x57,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x83,
-                                       0xec,0x48,0x4c,0x8b,0xb1,0xd8,0x00,0x00,0x00};
-typedef uint8_t (*CompCrfFn)(UObject *self, UFunction *fn, void *parms, void *out, void *stack);
-static CompCrfFn orig_comp_crf;
-static UFunction *blocked_fn[4];
-static int n_blocked_sent;
-static uint8_t comp_crf_detour(UObject *self, UFunction *fn, void *parms, void *out, void *stack) {
-    if (fn && cheats_tainted())
-        for (int i = 0; i < 4; i++) {
-            if (!blocked_fn[i] || blocked_fn[i] != fn) continue;
-            char nm[96];
-            if (n_blocked_sent++ < 20) LOG("cheats: not sending %s to a remote player (cheats were on this map)", ue_obj_name(fn, nm, sizeof nm));
-            return 1;   // "sent"
-        }
-    return orig_comp_crf(self, fn, parms, out, stack);
-}
-static void hook_client_progress(void) {
-    static int tried;
-    if (tried) return;
-    tried = 1;
-    UClass *st = cls("PlayerStatsComponent"), *ac = cls("AchievementTrackerComponent");
-    blocked_fn[0] = st ? ue_find_function(st, "ClientApplyStatDeltas") : NULL;
-    blocked_fn[1] = st ? ue_find_function(st, "ClientForceReconcileLegendaryMapStatsWithProfile") : NULL;
-    blocked_fn[2] = ac ? ue_find_function(ac, "ClientUnlockManualAchievement") : NULL;
-    if (memcmp((void *)ADDR_COMP_CRF, SIG_COMP_CRF, sizeof SIG_COMP_CRF)) { LOG("cheats: component RPC signature mismatch"); return; }
-    if (MH_CreateHook((void *)ADDR_COMP_CRF, (void *)comp_crf_detour, (void **)&orig_comp_crf) != MH_OK ||
-        MH_EnableHook((void *)ADDR_COMP_CRF) != MH_OK) { LOG("cheats: component RPC hook failed"); orig_comp_crf = NULL; return; }
-    LOG("cheats: holding back stats/achievements for remote players while cheats taint the map (%p %p %p)",
-        (void *)blocked_fn[0], (void *)blocked_fn[1], (void *)blocked_fn[2]);
-}
-
 static void set_on(int en, Out *o) {
     if (en == on) { out_printf(o, "cheats are already %s\n", on ? "on" : "off"); return; }
     if (!en) all_effects_off(1);
-    if (en) hook_client_progress();
     on = en;
-    if (en) taint_world = ue_world();
     LOG("cheats: %s by the host", en ? "ENABLED" : "disabled");
-    out_printf(o, en ? "cheats on. /cheats help lists them. Rewards for this map won't be sent to the other players' saves.\n"
+    out_printf(o, en ? "cheats on. /cheats help lists them. They stay on into the mission; every map change resets "
+                       "their effects.\n"
                      : "cheats off\n");
-    notice(en ? "host enabled cheats (this map's rewards aren't sent to other players' saves)" : "host disabled cheats");
+    notice(en ? "host enabled cheats" : "host disabled cheats");
 }
 
 // Chat verbs and who may run them (admin.c checks the permission before cheats_slash runs): /cheats is the host's,
@@ -1166,26 +1129,15 @@ void cheats_slash(const char *verb, char *rest, Out *o) {
     else if (!strcmp(verb, "unlockall")) cmd_unlockall(rest, o);
 }
 
-// Map change: per-map effects end with the map (their actors are gone). Leaving Fort Hope (camp) turns cheats off:
-// cheats turned on in camp don't carry into the mission started from there (#30: they used to, and the whole mission
-// then sent the other players no rewards or stats, so their post-round summary showed nothing). Otherwise decided
-// once the new map has its game mode (a map change passes through worlds without one): a mission (the next chapter,
-// a restart) keeps cheats on; Fort Hope, the menus, anything else turns them off.
-static int world_check;
-static int cur_is_camp, world_kind_known;   // the current world is Fort Hope; decided once it has a game mode
-static void on_world_change(int from_camp) {
+// Map change: every effect ends with the map (their actors are gone; a good way to clear the sandbox), the toggle stays.
+// Whether cheats stay on is decided once the new map has its game mode (a map change passes through worlds without
+// one): a mission (from Fort Hope, the next chapter, a restart) keeps them on, with a notice that the effects were
+// reset; Fort Hope, the menus, anything else turns them off.
+static int world_check, world_had_effects;
+static void on_world_change(void) {
+    world_had_effects = effects_active();
     all_effects_off(0);
-    if (!on) return;
-    if (from_camp) {
-        on = 0;
-        taint_world = NULL;
-        LOG("cheats: off (left Fort Hope)");
-        snprintf(pending_notice, sizeof pending_notice, "cheats turned off (they don't carry over from Fort Hope)");
-        pending_in = 60.f;
-        return;
-    }
-    taint_world = ue_world();   // still on: this map's rewards stay with the host
-    world_check = 1;
+    if (on) world_check = 1;
 }
 
 #ifndef B4B_RELEASE
@@ -1237,16 +1189,8 @@ static int own_window_focused(void) {
 void cheats_tick(float dt) {
     UObject *w = ue_world();
     if (w != cur_world) {
-        int from_camp = cur_is_camp;
         cur_world = w;
-        cur_is_camp = world_kind_known = 0;
-        on_world_change(from_camp);
-    }
-    if (!world_kind_known && w && game_mode()) {
-        char pkg[256] = "";
-        ue_world_package(w, pkg, sizeof pkg);
-        cur_is_camp = strstr(pkg, "FortHope") != NULL;
-        world_kind_known = 1;
+        on_world_change();
     }
     if (on && !world_check && w) { int n = ue_num_clients(w); if (n > clients_seen) clients_seen = n; }
     if (world_check && on && w && game_mode()) {
@@ -1255,14 +1199,12 @@ void cheats_tick(float dt) {
         ue_world_package(w, pkg, sizeof pkg);
         if (!in_mission() || strstr(pkg, "FortHope")) {
             on = 0;
-            taint_world = NULL;
             LOG("cheats: off (map change out of the mission)");
             snprintf(pending_notice, sizeof pending_notice, "cheats turned off (back in camp)");
             pending_in = 60.f;
-        } else {   // next chapter / restart: say it again, the other players' post-round will show no stats
-            LOG("cheats: still on in the next map");
-            snprintf(pending_notice, sizeof pending_notice,
-                     "cheats are still on (this map's rewards and stats aren't sent to other players' saves)");
+        } else {   // mission from Fort Hope, next chapter, restart
+            LOG("cheats: still on in the new map; effects reset%s", world_had_effects ? " (some were active)" : "");
+            snprintf(pending_notice, sizeof pending_notice, "cheats still on; effects reset");
             pending_in = 60.f;
         }
     }
@@ -1338,8 +1280,8 @@ static void cheats_panel(void) {
     ov_begin_perm(CMD_HOST);
     int en = on;
     if (ov_checkbox("Cheats on##cheats", &en)) ov_run(en ? "cheats on" : "cheats off");
-    ov_tooltip("Host only. Everyone is told. Rewards of a map with cheats on are not sent to the other players' saves. "
-               "Off again back in Fort Hope.");
+    ov_tooltip("Host only. Everyone is told. Stays on into the mission and the next chapter, but every map change "
+               "resets the effects (god, fly, ammo, speed, ...). Off again back in Fort Hope.");
     ov_end_perm();
     if (on) ov_text_dim("god on %d hero(es), ammo %s, speed %.2fx%s%s", n_gods, ammo_inf ? "infinite" : "normal", slomo,
                         frozen ? ", AI frozen" : "", freecam ? ", free camera" : "");
@@ -1610,7 +1552,7 @@ int cheats_cmd(const char *verb, char *rest, Out *o) {
         out_printf(o, "pc %p cheatmanager %p class %p\n", (void *)pc, (void *)(pc ? ue_get_ptr(pc, "CheatManager") : NULL),
                    (void *)(pc ? ue_get_ptr(pc, "CheatClass") : NULL));
     } else if (what && !strcmp(what, "state")) {
-        out_printf(o, "on=%d tainted=%d gods=%d ammo=%d(%d) frozen=%d slomo=%.2f freecam=%d\n", on, cheats_tainted(), n_gods,
+        out_printf(o, "on=%d gods=%d ammo=%d(%d) frozen=%d slomo=%.2f freecam=%d\n", on, n_gods,
                    ammo_inf, n_ammo, frozen, slomo, freecam);
         for (int i = 0; i < n_gods; i++) {
             char nm[64]; who_name(gods[i].ps, nm, sizeof nm);

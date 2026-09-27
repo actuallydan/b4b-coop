@@ -88,13 +88,6 @@ static void execute_detour(UObject *ppc, void *cmd, uint8_t persist) {
     for (int i = 0; i < (int)NFWD; i++) {
         if (FORWARD[i].type != type) continue;
         int delta = (type == 5 || type == 20) ? *(int32_t *)((char *)cmd + 8) : (type == 19 ? *(int32_t *)((char *)cmd + 0x28) : 0);
-        // The host had cheats on during this map (cheats.c): no reward reaches another player's save. Only their own
-        // burn-card charge (consumable -1, a card they played) still goes through.
-        if (cheats_tainted() && !(type == 19 && delta < 0)) {
-            LOG("rewards: NOT forwarding %s (%d) to remote player %s: cheats were on this map", FORWARD[i].name, delta,
-                hydra_id(ppc, id, sizeof id));
-            return;
-        }
         LOG("rewards: forwarding %s (%d) to remote player %s", FORWARD[i].name, delta, hydra_id(ppc, id, sizeof id));
         forward(ppc, cmd, i);
         return;
