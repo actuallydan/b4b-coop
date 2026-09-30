@@ -22,11 +22,12 @@ DEBUG = bool(os.environ.get("B4B_FACE_DEBUG"))
 
 # model materials: which ones may take face weights
 HAIR_RX = re.compile(r"hair|fur\b|ponytail|afro|bangs?\b|fringe|braid|\bbun\b|mane|wig|sideburn|beard|mustache|"
-                     r"moustache", re.I)
+                     r"moustache|lekku|montral|head_?tails?", re.I)
 OVERLAY_RX = re.compile(r"lash|brow(?!n)|eyeline|eye_?liner", re.I)
 GEAR_RX = re.compile(r"hat\b|cap\b|helmet|glass|goggle|mask|hood|visor|headphone|earring|jewel|crown|horn", re.I)
 EYE_RX = re.compile(r"eye(?!_?(line|lash|brow|shadow|liner|extra|highlight))|iris|cornea|pupil|sclera", re.I)
 MOUTH_RX = re.compile(r"teeth|tooth|tongue|gum|mouth(?!.*skin)", re.I)
+HAIR_SLOT_MATS = set()      # materials placed on the outfit's hair slot (b4bfit --slot): hair whatever their names say
 HIGHLIGHT_RX = re.compile(r"highlight|extra|spec", re.I)
 CLOTH_RX = re.compile(r"jacket|coat|collar|shirt|tops?\b|outfit|cloth|scarf|vest\b|hoodie|sweater|dress|robe|cape|"
                       r"cloak|armou?r|uniform", re.I)
@@ -392,11 +393,14 @@ def model_head(meshes, face, F, tl, no_cloth=True):
     for m in meshes:
         W = weights_of(m)
         mats = vertex_materials(m, labels=True)
+        plain = vertex_materials(m)
         for i, (v, w, mt) in enumerate(zip(m.data.vertices, W, mats)):
             hw = sum(x for b, x in w.items() if b == "head" or b in face)
             if hw < 0.05: continue
             if (HAIR_RX.search(mt) and not OVERLAY_RX.search(mt)) or GEAR_RX.search(mt) or HIGHLIGHT_RX.search(mt):
                 continue
+            if plain[i] in HAIR_SLOT_MATS and not (OVERLAY_RX.search(mt) or EYE_RX.search(mt) or MOUTH_RX.search(mt)):
+                continue                        # e.g. head-tails put on the hair slot: not face skin
             if no_cloth and CLOTH_RX.search(mt) and not EYE_RX.search(mt) and not MOUTH_RX.search(mt):
                 continue
             p = F.loc(m.matrix_world @ v.co)
@@ -608,6 +612,23 @@ def surface_near(pts_kd, pts, y, z, x_hint, r):
     return best
 
 
+def mirror_pair(cands, seed, tl, scale, ok):
+    """The best left/right pair among cands {side: [(how, point)]} (face frame) that mirror each other about the face's
+    middle, are as far apart as eyes (0.6-1.6x the template's, scaled) and lie within 10 cm (scaled) of the guessed
+    eyes; ok(point) must hold for both. Pairs whose points ok() confirms win, then the nearest. {side: (how, point)}."""
+    ew = (tl["eye_l"] - tl["eye_r"]).length * scale
+    mid = (seed["eye_l"] + seed["eye_r"]) / 2
+    tol = 0.005 * scale
+    best = None
+    for hl, pl in cands["l"]:
+        for hr, pr in cands["r"]:
+            if abs(pl.y + pr.y) > tol or abs(pl.x - pr.x) > tol or abs(pl.z - pr.z) > tol: continue
+            if not 0.6 * ew < pl.y - pr.y < 1.6 * ew or not (ok(pl) and ok(pr)): continue
+            d = ((pl + pr) / 2 - mid).length
+            if d < 0.10 * scale and (best is None or d < best[0]): best = (d, {"l": (hl, pl), "r": (hr, pr)})
+    return best[1] if best else None
+
+
 def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F, notes):
     """Landmarks on the model (face frame) for every template landmark; notes gets where each came from."""
     seed_f, s = seed_warp(tl, tverts, head)
@@ -622,6 +643,17 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
     # 1. eyes: source eye bones, else eyeball-like islands (eye materials first)
     eyes = {}
     if DEBUG: print(f"b4bface: seed scale {s}, seed eye_l {fmt(seed['eye_l'])} chin {fmt(seed['chin'])}")
+    t_r = (tl["eye_out_l"] - tl["eye_in_l"]).length / 2
+    # eyeball-like islands (eye material, or ball-shaped and eye-sized): confirm eye bones, or give the eyes as a pair
+    balls = []
+    for (m, comp, ps, kind) in head_islands:
+        if len(ps) < 6 or kind == "mouth": continue
+        lo, hi = bbox(ps); c = (lo + hi) / 2; ext = hi - lo
+        ball = ext.x >= 0.6 * max(ext.y, ext.z) and min(ext) > 0.4 * max(ext)
+        if kind == "eye" and max(ext) < 6.0 * t_r * scale or ball and 0.8 * t_r * scale < max(ext) < 5.0 * t_r * scale:
+            balls.append((c, max(ext.y, ext.z) / 2))
+    near_ball = lambda p: any((p - c).length < max(1.5 * t_r * scale, r) for c, r in balls)
+    cands = {"l": [], "r": []}
     if src_bones:
         for n, (h, t) in src_bones.items():
             if SRC_BONE_RULES[0][1].search(n) and not re.search(r"lid|lash|brow|target|socket|set$|master|handle", n, re.I):
@@ -629,8 +661,8 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
                 if sd:
                     p = F.loc(h)
                     if DEBUG: print(f"b4bface: eye bone {n} at {fmt(p)}")
+                    cands[sd].append((f"bone {n}", p))
                     if (p - seed[f"eye_{sd}"]).length < 0.05 * scale and sd not in eyes: eyes[sd] = (p, None, f"bone {n}")
-    t_r = (tl["eye_out_l"] - tl["eye_in_l"]).length / 2
     for sd, q in given_eyes({m for (m, i, p, mt, c) in head}, F).items():
         # a point on the eye's surface: the eye turns about a centre behind it (the template's depth, scaled)
         eyes[sd] = (q - Vector((1.1 * t_r * scale, 0.0, 0.0)), t_r * scale, "--face-eyes")
@@ -650,20 +682,31 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
             if eyemat and max(ext) < 6.0 * t_r * scale and (c - centre).length < 2 * reach: mats.append((m, comp, ps))
             elif ball and sized and (c - centre).length < reach: out.append((m, comp, ps))
         return mats or out                           # eye materials (iris, eye white ...) win over ball shapes
-    for sd in ("l", "r"):
+    def eye_parts(sd):
         near = eye_groups(sd, eyes[sd][0] if sd in eyes else seed[f"eye_{sd}"],
                           (1.5 if sd in eyes and eyes[sd][2] == "--face-eyes" else 0.5) * t_r * scale if sd in eyes
                           else 0.045 * scale)
-        if not near: continue
+        if not near: return
         ps = [p for g in near for p in g[2]]
         lo, hi = bbox(ps); c = (lo + hi) / 2; ext = hi - lo
         eyeball_verts.update((m, i) for m, comp, _ in near for i in comp)
         if sd in eyes:
             ctr = c if eyes[sd][2] == "--face-eyes" and ext.x >= 0.5 * max(ext.y, ext.z) else eyes[sd][0]
-            eyes[sd] = (ctr, max(ext.y, ext.z) / 2, eyes[sd][2]); continue     # a given point: an eyeball's centre wins
+            eyes[sd] = (ctr, max(ext.y, ext.z) / 2, eyes[sd][2]); return       # a given point: an eyeball's centre wins
         if ext.x < 0.5 * max(ext.y, ext.z):          # a patch (painted/anime eye), not a ball: centre behind it
             c = c - Vector((0.45 * max(ext.y, ext.z), 0, 0))
         eyes[sd] = (c, max(ext.y, ext.z) / 2, f"eye mesh ({len(ps)} vertices)")
+    for sd in ("l", "r"): eye_parts(sd)
+    if not eyes:
+        # the first guess sits far off when the head's bounds take in a long neck or hair: a mirrored pair of eye bones
+        # on eyeball-like parts (else of eyeball-like parts) near it, as far apart as eyes, is the eyes
+        pair = mirror_pair(cands, seed, tl, scale, near_ball) or \
+            mirror_pair({sd: [("eye mesh (a mirrored pair)", c) for c, r in balls if (c.y > 0) == (sd == "l")]
+                         for sd in "lr"}, seed, tl, scale, lambda p: True)
+        if pair:
+            for sd, (how, p) in pair.items():
+                eyes[sd] = (p, None, how)
+                eye_parts(sd)
     for sd, (p, rad, how) in eyes.items():
         d = p - seed[f"eye_{sd}"]
         lm[f"eye_{sd}"] = p
@@ -879,6 +922,13 @@ def rig_face(tpl, meshes, src_bones=None, log=print):
                                  "mouth" if "mouth" in cl else "other"))
     eyeball_verts = set()
     ml, scale, found = model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F, notes)
+    if not ({"eye_l", "eye_r"} & found) and ml["lip_up"].x < 0.3 * tl["lip_up"].x * scale:
+        # what the profile took for lips lies at the back of the head (a helmet or mask is left out as gear: only the
+        # neck under it is skin); rigging it moved the back of the neck when talking and hid a mouth cavity there
+        log(f"face: no face at the front of the head (the 'lips' found sit {ml['lip_up'].x * 100:.1f} cm from the head "
+            f"joint, the survivor's {tl['lip_up'].x * 100:.1f} cm in front: a helmet or mask covers it?): face not "
+            f"rigged, the head moves as one piece (as with --face off)")
+        return {}
     # the warp: landmarks found on the model (guesses scaled from the template would only bend it)
     keys = [k for k in tl if k in ml and k in found] or [k for k in tl if k in ml]
     ew = (tl["eye_l"] - tl["eye_r"]).length

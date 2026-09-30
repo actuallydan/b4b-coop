@@ -50,7 +50,8 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
 ## Make a survivor model
 1. **Your model**: one file of a humanoid, as you downloaded it: FBX, glTF/glb, **VRM** (VRoid and other avatar
    files), OBJ, DAE or .blend, with its textures next to it (or embedded in the file). Tested kinds of rigs:
-   Mixamo, UE4 mannequin names, 3ds Max Biped, VRoid/VRM (`J_Bip_...`), Blender **Rigify** (the `DEF-` bones; the
+   Mixamo, UE4 mannequin names, 3ds Max Biped (also Source engine `ValveBiped.Bip01_...`, fingers included), VRoid/VRM
+   (`J_Bip_...`), Blender **Rigify** (the `DEF-` bones; the
    full rig works too), and rigs with other names that say what each bone is (`upper_arm.L`, `Arm_R`,
    `leg_joint_L_2` ...). Unrigged works too, in an A-pose, T-pose or with the arms hanging down (the weights come
    from the game's mesh; a model built from named parts like `head`, `torso`, `arm-left` keeps each part on its
@@ -93,7 +94,9 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
      texture is wired (a mask map plugged into base colour is used as a mask map). Understood: base colour,
      normal, roughness, gloss/smoothness, metallic, AO, ORM, Unity mask maps (R metallic, G AO, A smoothness),
      alpha/opacity. Maps named after a colour image are taken with it (`head.png` -> `head_n.dds`, `head_ao.dds`,
-     `head_rough.png`), also when the material links only the colour. PNG, JPEG, TGA, BMP, WebP and **DDS**
+     `head_rough.png`), also when the material links only the colour; a material that links only its normal map (FBX
+     exported from Blender: a colour wired through a Mix node is dropped) takes the colour of that set next to it
+     (`X_Normal_OpenGL.png` -> `X_BaseColor.png`). PNG, JPEG, TGA, BMP, WebP and **DDS**
      (BC1-BC7, as game files use) are read. Normal maps are taken as OpenGL/glTF style; `--normal-dx` if yours are
      DirectX style (two-channel BC5 and DXT5nm normal maps are understood).
    - More options: `--lods 1,0.5,0.3,0.15,0.06` (LOD ratios; models under ~1500 triangles keep every LOD whole; the
@@ -129,6 +132,8 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
 Without `--slot`, every material is placed from what the model says about it, most telling first:
 1. **Names**: the material's name and its images' file names (`hair`, `lash`, `eye`, `skin`/`face`/`body`, `pants`,
    `shoes`, `gear`/`hat` ...), and the name of an object that has only that material (`TheHat`, `Backpack` -> gear).
+   `Skin` with a number (`top_Skin1`, `Bottom_Skin2`) names a colour variant of the model, not skin: those go by
+   their other name parts and their texels.
 2. **What its texels look like**, on the parts of the images its faces actually use (not the whole image): partly
    see-through -> hair cards; mostly skin colours -> skin. An image wired to the colour input that is really a normal
    map (blue ~1) is used as the normal map.
@@ -179,6 +184,11 @@ can't find is guessed from the survivor's face scaled to yours (`scaled from the
   `--mouth on` adds it anyway).
 - With a blink shape key (VRoid and most avatars) the eyes close like the key closes them, big anime eyes included; lashes
   and eyeliner that the key moves follow the lids. Without one, the lids take the survivor's lid weights.
+- Eyes are also found far from where the survivor's face puts them (a long neck, a big head of hair): a left/right
+  pair of eye bones on eyeball-shaped parts (Fortnite rips: `L_eye`/`R_eye`), else a mirrored pair of eyeballs. Eyes
+  and teeth parented to a bone instead of skinned (Rigify and Maya rigs) are kept on that bone.
+- A helmet or mask over the whole head: the face isn't rigged (`face: no face at the front of the head`), the head
+  moves as one piece.
 - `face: WARNING: no eyes found`: the face won't blink. Give the eyes' positions: open the model in Blender, snap the 3D
   cursor onto each pupil (Shift+right-click), read its location (N panel, View tab) and add
   `--face-eyes 0.032,-0.105,1.62;-0.032,-0.105,1.62` (both eyes, metres, as the file imports into Blender).
@@ -195,13 +205,18 @@ b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel 
 ```
 - `--hair-physics auto`: the hair behind and below the head goes on the survivor's ponytail bones, which the game
   swings with physics. Only survivors that have them: **Holly** (e.g. Elite 00; hair_00..02), Holly Elite 06,
-  Walker Elite 03, Doc Elite 03, **Mom** (two pigtails; also Mom Elite 07). On others the log says so and the hair stays
-  on the head. `--hair-swing 0.5` swings it half as much (hair that clips into the back).
+  Walker Elite 03, Doc Elite 03, **Mom** (two pigtails; also Mom Elite 04 and 07). Mom's pigtails hang in front of her
+  shoulders: hair hanging along them there (braids, twin tails, head-tails) swings too, and hair down the middle of
+  the back takes both pigtails. Head-tails (lekku, montrals) count as hair. On others the log says so and the hair
+  stays on the head. `--hair-swing 0.5` swings it half as much (hair that clips into the back). Clothes on the hair
+  slot (a lace dress with alpha) never swing as hair, and only hair that hangs from the head swings: stockings, bows or
+  trims that share the hair's material (anime rips) stay where they are.
 - `--cloth auto`: garments that hang become cloth, which the game simulates: they sway when walking, trail and flare
   when running or turning, and settle when standing. Found by the material's name **or its colour image's name**
   (game rips name materials `Material #35` but the image `jacket.png`):
-  - skirts and dresses (skirt, dress, kilt, gown; "bottoms" that cover the gap between the legs; trousers are left
-    alone) and **long coats** (coat, jacket, trench, duster, robe, poncho, ...): everything below the waist swings.
+  - skirts and dresses (skirt, dress, kilt, gown; "bottoms" that cover the gap between the legs from the crotch down
+    to their hem; trousers are left alone, also on thick or close legs and with a codpiece) and **long coats** (coat,
+    jacket, trench, duster, robe, poncho, ...): everything below the waist swings.
     A coat that is open at the front gets an open cloth panel round the back, so its front halves swing apart
     instead of being closed into a tube; the sleeves stay on the arms.
   - **capes** (cape, cloak, mantle): hang from the shoulder blades behind the body.
@@ -337,6 +352,8 @@ What the survivor pipeline prints, and what to do about it.
 | Materials named `Material #25`, `Material #26` ... (a model from a game rip with generic material names) | placed by what they look like and where they sit ([How materials are placed](#how-materials-are-placed)); the table says why (`skin colours`, `clothes on the hands ...`, `object TheHat named like gear`) |
 | `none (objects without a material ...): their UVs land on all_color.png where no material draws` | objects without a material (often teeth, tongue, the inside of the mouth) take the image their UVs fit: painted texels no other material uses. `none -> dropped`: no image fits; keep them with `--slot none=<slot> --tex none=<image>` |
 | `draws the same image as Material #30` | a material placed by its look goes where the other materials with the same image went (one place in the texture instead of two) |
+| `material x: no colour image linked, only X_Normal_OpenGL.png (normal); the colour of its set next to it: X_BaseColor.png` | the file links only the normal map (Blender's FBX export keeps only images wired straight into the shader): the colour with the same name in the same folder is used, and its roughness/metallic/AO with it |
+| `material x: WARNING: no colour image found and its colour is a flat grey` | the file carries no colour for that material (no image, no texture next to the model, the exporter's default grey): it will look plain white/grey. If the download has the textures (another format's folder, a textures zip), put them next to the model or `--tex x=<file prefix or folder>` |
 | `material x: maps named after head.png: head_n.dds (normal), head_ao.dds (ao)` | maps next to the colour image with its name and a suffix (`_n`, `_normal`, `_ao`, `_rough`, `_orm`, `_mask`, `_alpha` ...) are used with it |
 | `... shares Material #30's tile (same textures)` | several materials draw the same image: they get one place in the texture, not one each |
 | `hair.png has no cut-out alpha; the strands' mask is the alpha of hair_n.dds` | some games keep the hair's opacity in the normal map's alpha: it is used as the hair mask. A hat that uses the hair image too goes on Gear when its object is named like one (`TheHat`); else `--slot <its material>=Gear` |
@@ -366,6 +383,10 @@ What the survivor pipeline prints, and what to do about it.
 | A dress renders dark grey, the game log says `missing bUsedWithClothing ... Default Material` | fixed: garments go to a clothing slot, and cloth only on slots whose material supports it. With `--slot dress=Arm` (a skin slot) the dress stays skinned |
 | The add-on is big | textures are as big as your images (at most the survivor's own texture sizes); `--max-texture 2048` or `1024` for a smaller add-on, smaller images in your model do the same |
 | The first-person arms are the old ones | the outfit has no `FP_..._SKM` in its folder (the log warns), or `--fp none` was given: give `--fp <FP arms SKM>` (the arms are cut from your own model: faces skinned to the arms) |
+| `unrigged: arms made one piece, apart from the clothes they hang against` / `... faces stretched between the body and an arm ... removed` | an unrigged model with its arms hanging down against its clothes (scans, generated models: arm and jacket are often one surface): each arm (as thick as the model's arm) is cut from what it touches before it is raised into the survivor's pose, so the jacket's sides and hem don't stretch out with it in streaks. Where arm and clothes were one surface, the jacket's side stays open (small holes; the sleeve's open inner side gets a reversed copy of its faces so it doesn't look hollow), and something held in the hand is split between hand and body. For a clean result rig the model (Mixamo auto-rigger, Rigify) or export it in an A-pose |
+| `unrigged: left arm fitted onto the model's: ... (upperarm 2.3, lowerarm 1.8 cm)` | how far the fitted survivor arm lies from your model's arm surface; above ~3.5 cm the arm isn't cut from the clothes (the fit is too loose to tell arm from jacket) |
+| `fp: left out N faces hanging off the arms` | first person: wide sleeves (kimono), ribbons, ornaments and props held in the hand that lie far from the arm bones are left out of the first-person arms: stiff on the forearm, they stood up over the gun as planks and spikes. Third person keeps them |
+| `hair: ... N left as they are: not hanging from the head` | parts of the hair material that aren't hair on the head (stockings, bows, lace or trims on the same texture sheet) don't swing with the ponytail |
 | No hands in first person, only the gun, or sleeves stretched past the gun (unrigged model) | fixed: an unrigged model's first-person arms come from its third-person fit (`rigged model for the first-person arms`), fitted onto the FP skeleton like a rigged model's; check them with `preview.py --fp hold` |
 | A dress in the wrong colour / with another material's pattern (FBX exports) | fixed: a colour image linked only as the opacity (FBX exporters leave the colour socket empty) is used as the colour (`linked only as the opacity; its name says base colour`), and images named exactly after a material win over another material's set (`<mat>_BaseColor` before `<mat>Inner_BaseColor`) |
 | A crown, circlet or bracelets look like skin (pale, no metal) | fixed: jewellery (circlet, crown, tiara, bangle, armband, pendant ...) goes to the gear slot |
@@ -374,6 +395,10 @@ What the survivor pipeline prints, and what to do about it.
 | Mouth wide open, tongue out, face looking up (rigs with chin/lip/tongue bones under the jaw, e.g. Auto-Rig Pro) | fixed: bones under the jaw move with it and the head keeps the model's own orientation |
 | White eyes (a clear cornea shell over the eyeball) | fixed: a clear eye cover (material named cornea, tearline, ... or see-through without an image) is left out (`clear cover over the eye (cornea)`) |
 | The chin tears off the face when talking | fixed: hard edges in the jaw's weights (chin, jaw line) are blended over 1.5 cm (`face: jaw: ... blended`) |
+| No eyes or teeth, the face doesn't blink (rigs with eyeballs and teeth parented to a bone, e.g. Rigify, Maya) | fixed: such pieces are skinned to their bone (`meshes parented to a bone, skinned to it: ...`) |
+| Hair, head-tails or eyes stay with the chest when the head turns (Rigify rigs with extra bones under the `head` control) | fixed: bones under a control named like a body part (`head`, `neck`, `hips`) move with that part |
+| First-person hands stretched into blades, fingers bending in the palm (rigs with an extra bone per finger on the hand, e.g. `Indexfar_l` next to `IndexFinger1_L`) | fixed: each finger takes its own chain of three bones (`proportions ... hands` near x1, not x0.3) |
+| `face: no face at the front of the head (... a helmet or mask covers it?)` | the head is covered by gear (a helmet): no talking or blinking, the head moves as one piece. A face under a visor that should talk: `--face-eyes` |
 
 ## Make a weapon model
 1. **Your model**: an FBX with **separate objects per moving part**, named like `Magazine`, `Bolt`, `Trigger` (others

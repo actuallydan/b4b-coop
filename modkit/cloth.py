@@ -227,14 +227,14 @@ NV_DEFAULTS = {"stiffness": 1.0, "stiffness_mult": 1.0, "stretch": 1.0, "compres
 # acceleration it feels (NvCloth local-space simulation): a heavy coat follows the body more and flings out less;
 # a cape feels all of it and is barely carried, so it lifts off the back and trails when running.
 GARMENTS = {
-    "skirt":        dict(maxd=0.45, maxd_exp=1.0, hem_mass=1.0, damping=0.4, linear_drag=0.2, angular_drag=0.2),
-    "long skirt":   dict(maxd=0.55, maxd_exp=1.1, hem_mass=1.5, damping=0.45, gravity=1.2, linear_drag=0.25,
+    "skirt":        dict(maxd=0.45, maxd_exp=1.5, hem_mass=1.0, damping=0.4, linear_drag=0.2, angular_drag=0.2),
+    "long skirt":   dict(maxd=0.55, maxd_exp=1.5, hem_mass=1.5, damping=0.45, gravity=1.2, linear_drag=0.25,
                          angular_drag=0.25, linear_inertia=0.9, angular_inertia=0.9),
     "jacket tails": dict(maxd=0.35, maxd_exp=1.2, maxd_cap=8.0, hem_mass=1.5, damping=0.7, gravity=1.2,
                          linear_drag=0.5, angular_drag=0.5, linear_inertia=0.5, angular_inertia=0.5, centrifugal=0.5),
     "long coat":    dict(maxd=1.0, maxd_exp=1.6, hem_mass=2.5, damping=0.6, gravity=1.5, linear_drag=0.35,
                          angular_drag=0.35, linear_inertia=0.7, angular_inertia=0.6, centrifugal=0.6, self=True),
-    "cape":         dict(maxd=1.0, maxd_exp=1.0, hem_mass=2.0, damping=0.25, friction=0.0, bend=0.6,
+    "cape":         dict(maxd=1.0, maxd_exp=2.0, hem_mass=2.0, damping=0.25, friction=0.0, bend=0.6,
                          linear_drag=0.05, angular_drag=0.1, linear_inertia=1.0, angular_inertia=0.8, self=True),
 }
 NUMERIC = [k for k in NV_DEFAULTS] + ["maxd", "maxd_exp", "maxd_cap", "hem_mass"]
@@ -549,7 +549,7 @@ def write_asset(s, k, sd, ai, ae, bone_names, G, mode, src, log, cloth_lods):
     L = sd["length_m"] * 100.0
     garment, tune = garment_profile(sd)
     share, ex, capd = tune["maxd"], tune.get("maxd_exp", 1.0), tune.get("maxd_cap", 1e9)
-    maxd = [0.0 if d <= 1e-6 else max(2.0, min(capd, d ** ex * L * share)) for d in sd["depth"]]
+    maxd = [0.0 if d <= 1e-6 else max(0.5, min(capd, d ** ex * L * share)) for d in sd["depth"]]
     fixed = [x == 0.0 for x in maxd]
     if tune.get("self"):
         # self-collision: spheres a little under half the closest free spacing, so neighbours never fight at rest
