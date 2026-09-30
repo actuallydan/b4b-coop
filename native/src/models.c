@@ -309,7 +309,7 @@ typedef struct {
     char name[33], hero[24], title[64], addon[96], p3[200], pf[200];
     UObject *m3, *mf; int32_t i3, i_f; int bad, fpbad;
 } Outf;
-#define MAX_OUTFS 64
+#define MAX_OUTFS 512
 static Outf outfs[MAX_OUTFS];
 static int n_outfs = -1;
 static void build_outfits(void) {
