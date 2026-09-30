@@ -3,6 +3,24 @@
 Goal: while Dan plays on his native Steam account (Hergmgurk, 76561198063588550), test instances talk only to the
 Flatpak Steam client (account dreamsofants, 76561198994546085, `~/.var/app/com.valvesoftware.Steam`, lane 2's game).
 
+## Steam3Master port (2026-09-29): games died ~6 s after start
+Symptom (from 2026-09-28): every lane-2 instance died in `RequestEncryptedAppTicket` with `src/common/pipes.cpp (900) :
+fatal stalled cross-thread pipe (pipe is disconnected)`; nothing in the Flatpak client's gameprocess_log, but the
+NATIVE client's gameprocess_log had `AppID 924970 adding PID <sandbox pid>` for each attempt (cross-talk again).
+Cause: besides SysV IPC/shm, a game's steamclient.so connects over loopback TCP to its client at `$Steam3Master`,
+default `127.0.0.1:57343` (steamclient.so: env name → default `127.0.0.1:57343`, `SteamClientService` →
+`127.0.0.1:57344`, a non-empty env value wins). Both clients share the host's network namespace, so the client started
+first owns 57343; the other listens on a random loopback port and passes it (Steam3Master) only to games it launches.
+On 2026-09-26 18:04 the Flatpak Steam started before the native one (no "Couldn't bind to broadcast port 27036" in its
+log) and owned 57343; every later start came after the native Steam (that line present), so run.sh's games reached the
+native client, which dropped them. `ss -tnp`: the game's socket `127.0.0.1:<eph> → 127.0.0.1:57343` (native steam),
+ESTAB then CLOSE-WAIT.
+Fix: `flatpak-steam.sh status` reports the Flatpak Steam's port (`service 127.0.0.1:N`: 57343 if it holds it, else its
+first loopback TCP listener by fd; the other two are HTTP servers) and run.sh gives the game `Steam3Master=<that>`.
+Result: game socket → the Flatpak Steam's port, `Obtained Steam encrypted app ticket`, `presence: steam bound, user
+76561198994546085`, Flatpak gameprocess_log `adding PID`, no new line in the native one. Lane 1 has the mirror case: a
+native test game would reach the Flatpak client if that one had started first (not handled).
+
 ## Fix (2026-09-26 evening): working
 `launch/flatpak-steam.sh start` + `B4B_STEAM=flatpak` (run.sh/instance.sh):
 - Steam's sandbox gets its own SysV IPC namespace: the user override `shared=!ipc` is set only while `flatpak run`
