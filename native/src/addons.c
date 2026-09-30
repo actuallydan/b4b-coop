@@ -84,7 +84,7 @@ static int read_at(HANDLE h, uint64_t off, void *buf, DWORD n) {
 
 // ---- added outfits: addoninfo `outfit=<name>|<survivor>|<3P mesh>|<FP mesh>|<title>` (modkit: b4bmod survivor --as;
 // docs/investigations/new-assets.md). models.c wears them (/model <name>). ----
-#define MAX_OUTFITS 64
+#define MAX_OUTFITS 512
 typedef struct { Addon *addon; char name[33], hero[24], mesh3p[200], meshfp[200], title[64]; } Outfit;
 static Outfit OF[MAX_OUTFITS];
 static int nOF;

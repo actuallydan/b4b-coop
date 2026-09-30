@@ -166,7 +166,7 @@ int paks_runtime_ready(void);                              // the pak layer is k
 int paks_file_exists(const char *key);                     // "gobi/content/..." exists in the engine's file system
 int paks_mount_runtime(const wchar_t *path, uint32_t order, char *err, size_t en);  // game thread: mount now
 // addons.c: L4D-style add-ons, <game>\b4bcoop-addons\*.pak + addonlist.txt (docs/investigations/addons.md)
-#define MAX_ADDONS 128
+#define MAX_ADDONS 512
 int addons_scan(void);                        // DllMain: config, folder, load order, conflicts; number to mount
 void addons_unavailable(const char *why);     // paks.c: hooks unavailable, nothing gets mounted
 void addons_mount(void);                      // FPakPlatformFile::Initialize hook, right after the retail paks

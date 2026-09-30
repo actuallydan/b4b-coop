@@ -8,7 +8,7 @@ The game gives heroes two kinds of it, and a custom mesh can use both without ne
   2. Cloth. Skirts, dresses, coat tails and capes become cloth sections: `cloth_regions` separates their faces into
      objects the importer turns into their own sections, and builds a low-poly simulation mesh for each garment: a
      closed tube for skirts and closed coats, an open panel (around the back, the front left open) for open-front
-     coats and capes; its top row is fixed (the waist, or the shoulder blades for a cape). modkit/cloth.py writes it
+     coats and capes; its top row is fixed (the waist, or the hips for a cape). modkit/cloth.py writes it
      into a clothing asset of the outfit (adding one if the outfit has none) and maps the render vertices onto it.
 How it works: docs/investigations/mesh-mods.md §14 (b4b-coop repository).
 """
@@ -16,8 +16,12 @@ import bmesh, math, re
 from mathutils import Vector
 from mathutils.kdtree import KDTree
 
-HAIR_RX = re.compile(r"hair|fur\b|ponytail|pony_?tail|afro|bangs?\b|fringe|braid|\bbun\b|mane|wig", re.I)
+HAIR_RX = re.compile(r"hair|fur\b|ponytail|pony_?tail|afro|bangs?\b|fringe|braid|\bbun\b|mane|wig|lekku|montral|"
+                     r"head_?tails?", re.I)
 NOT_HAIR_RX = re.compile(r"lash|brow(?!n)|eyeline|eye_?liner|iris|eye|beard|mustache|moustache|stubble", re.I)
+# clothes that went to the hair slot for their alpha (VRoid's lace dress F00_002_01_Onepice_01_CLOTH): not hair
+CLOTHES_RX = re.compile(r"cloth|dress|onepi|skirt|shirt|blouse|jacket|coat|pants|trouser|shoe|boot|sock|glove|sleeve",
+                        re.I)
 SKIRT_RX = re.compile(r"skirt|dress|kilt|gown|tutu", re.I)
 BOTTOMS_RX = re.compile(r"bottom|lower|pants|trouser|shorts?\b|jean", re.I)
 CLOTH_PREFIX = "B4BCLOTH_"
@@ -73,61 +77,194 @@ def chain_param(z, zs):
     return len(zs) - 1 + (zs[-1] - z) / last
 
 
-def rig_hair(tpl, meshes, chains, is_hair_mat, log=print, swing=1.0):
+def chain_at(C, z):
+    """Horizontal (x, y) of a hanging chain (joint positions, root first) at height z: between its joints by height,
+    above the root the root's, below the last joint the last joint's (the hair hangs on straight down)."""
+    s = chain_param(z, [c.z for c in C])
+    i = int(min(len(C) - 1, max(0.0, s)))
+    if i >= len(C) - 1: return C[-1].x, C[-1].y
+    f = s - i
+    return C[i].x + (C[i + 1].x - C[i].x) * f, C[i].y + (C[i + 1].y - C[i].y) * f
+
+
+def smoothed(m, idx, val, iters=12):
+    """val {vertex: 0..1} averaged over the mesh's edges among idx (vertices at the same place joined: UV seams split
+    them), iters rounds: a share that changes across a hair card spreads along the card instead of stretching it."""
+    nb = {i: set() for i in idx}
+    for e in m.data.edges:
+        a, b = e.vertices
+        if a in nb and b in nb: nb[a].add(b); nb[b].add(a)
+    at = {}
+    for i in idx:
+        at.setdefault(tuple(round(c, 5) for c in m.data.vertices[i].co), []).append(i)
+    for same in at.values():
+        for i in same: nb[i].update(j for j in same if j != i)
+    v = dict(val)
+    for _ in range(iters):
+        v = {i: 0.5 * v[i] + 0.5 * sum(v[j] for j in nb[i]) / len(nb[i]) if nb[i] else v[i] for i in idx}
+    return v
+
+
+HAIR_REACH = 0.35      # m: an unrigged model's hair vertex further than this from the survivor's hair chain isn't hair
+
+
+def head_bones(tpl):
+    """The head and every bone below it (face bones), plus the neck."""
+    kids = {}
+    for b in tpl.arm.data.bones:
+        if b.parent: kids.setdefault(b.parent.name, []).append(b.name)
+    out, todo = {"neck_01", "neck_02"}, ["head"]
+    while todo:
+        n = todo.pop()
+        if n in out: continue
+        out.add(n); todo += kids.get(n, [])
+    return out
+
+
+def rig_hair(tpl, meshes, chains, is_hair_mat, log=print, swing=1.0, rigged=True):
     """Skin the back hair of `meshes` (template bind pose, Blender metres, heroes face +X) to the survivor's simulated
     hair chains (lists of bone names, root first). A vertex takes the chain in proportion to how far below the chain's
-    root it hangs (full 7 cm below) and how far behind the head centre it is (none 3 cm in front); along the chain by
-    height. swing scales that share (0..1). Returns the number of vertices moved onto the chains."""
+    root it hangs (full 7 cm below) and how far behind the head centre it is (none 3 cm in front), or how near it hangs
+    to the chain (Mom's pigtail chains hang in front of the shoulders: a braid or lekku along them swings too, locks
+    framing the face don't; smoothed over the mesh, so a card is not stretched between its near and far edge). Along
+    the chain by height. Between two chains (hair down the middle of the back on Mom's pair) it takes both, blended by
+    distance, so the two sides don't tear apart. swing scales that share (0..1). Only hair that hangs from the head: a
+    material placed on the hair slot often carries more (anime rips put the stockings, bows and trims on the hair
+    texture sheet), and the back of the legs or a bow on the back then swung with the ponytail. Rigged models:
+    vertices mostly on the head (and neck); unrigged ones: within HAIR_REACH of the chain and not on a limb. Returns
+    the number of vertices moved onto the chains."""
     chains = [[b for b in c if b in tpl.pos] for c in chains]
     chains = [c for c in chains if c]
     if not chains or "head" not in tpl.pos: return 0
     H = tpl.pos["head"]
-    moved, total = 0, 0
+    heads = head_bones(tpl)
+    moved, total, skipped = 0, 0, 0
     for m in meshes:
         mats = vertex_materials(m)
         W = weights_of(m)
-        changed = False
+        idx = []
         for v, mat in zip(m.data.vertices, mats):
             if not is_hair_mat(mat): continue
             total += 1
-            p = m.matrix_world @ v.co
-            best = min(chains, key=lambda c: min((p - tpl.pos[b]).length for b in c))
-            C = [tpl.pos[b] for b in best]
-            a_back = smooth(0.03, -0.03, p.x - H.x)
-            a_low = smooth(C[0].z, C[0].z - 0.07, p.z)
-            d = max(0.0, min(1.0, swing)) * a_back * a_low
-            if d <= 1e-3: continue
-            cw = chain_weights(chain_param(p.z, [c.z for c in C]), len(best))
-            w = {k: x * (1 - d) for k, x in W[v.index].items()}
-            for b, x in zip(best, cw):
-                if x > 0: w[b] = w.get(b, 0.0) + d * x
-            W[v.index] = w
+            w0 = W[v.index]
+            t0 = sum(w0.values()) or 1.0
+            if rigged:
+                if sum(x for n, x in w0.items() if n in heads) < 0.5 * t0:
+                    skipped += 1; continue
+            else:
+                p = m.matrix_world @ v.co
+                if min((p - tpl.pos[b]).length for c in chains for b in c) > HAIR_REACH or \
+                        (w0 and LIMB_RX.match(max(w0, key=w0.get))):
+                    skipped += 1; continue
+            idx.append(v.index)
+        if not idx: continue
+        near, along = {}, {}
+        for i in idx:
+            p = m.matrix_world @ m.data.vertices[i].co
+            nc = []
+            for c in chains:
+                C = [tpl.pos[b] for b in c]
+                cx, cy = chain_at(C, p.z)
+                nc.append((math.hypot(p.x - cx, p.y - cy), c, C))
+            nc.sort(key=lambda t: t[0])
+            near[i] = (p, nc)
+            # hanging below the chain's root near the chain (within 5 cm, none from 8 cm), smoothed over the mesh
+            along[i] = smooth(0.08, 0.05, nc[0][0]) if p.z < nc[0][2][0].z else 0.0
+        along = smoothed(m, set(idx), along)
+        changed = False
+        for i in idx:
+            p, nc = near[i]
+            share = [(1.0, nc[0])]
+            if len(nc) > 1:                         # blend the two nearest chains over 4 cm of distance difference
+                t = smooth(-0.04, 0.04, nc[1][0] - nc[0][0])
+                share = [(0.5 + 0.5 * t, nc[0]), (0.5 - 0.5 * t, nc[1])]
+            a_back = max(smooth(0.03, -0.03, p.x - H.x), along[i])
+            add = []
+            for k, (dd, best, C) in share:
+                a_low = smooth(C[0].z, C[0].z - 0.07, p.z)
+                d = max(0.0, min(1.0, swing)) * a_back * a_low * k
+                if d > 1e-3: add.append((d, best, chain_weights(chain_param(p.z, [c.z for c in C]), len(best))))
+            dt = sum(d for d, _, _ in add)
+            if dt <= 1e-3: continue
+            w = {b: x * (1 - dt) for b, x in W[i].items()}
+            for d, best, cw in add:
+                for b, x in zip(best, cw):
+                    if x > 0: w[b] = w.get(b, 0.0) + d * x
+            W[i] = w
             moved += 1
             changed = True
         if changed: set_weights(m, W)
     log(f"hair: {moved} of {total} hair vertices on the survivor's physics hair bones "
-        f"({'; '.join(','.join(c) for c in chains)})")
+        f"({'; '.join(','.join(c) for c in chains)})" + (f"; {skipped} left as they are: not hanging from the head "
+                                                         f"(legs, bows or trims on the hair material)" if skipped else ""))
     return moved
 
 
 # ---- 2. skirts, coats and capes as cloth ---------------------------------------------------------------------------
 
+LIMB_RX = re.compile(r"^(upperarm|lowerarm|hand|thumb|index|middle|ring|pinky|thigh|calf|foot|ball)_", re.I)
 ARM_RX = re.compile(r"^(upperarm|lowerarm|hand|wrist|elbow|shoulder|clavicle|thumb|index|middle|ring|pinky)_", re.I)
 COAT_RX = re.compile(r"coat|jacket|trench|duster|robe|parka|frock|poncho|tunic|apron", re.I)
 CAPE_RX = re.compile(r"cape|cloak|mantle|shawl", re.I)
 
 
-def is_skirt_shaped(pts, tpl):
-    """A skirt covers the gap between the legs below the crotch; trousers/shorts leave it open."""
-    if not pts or "thigh_l" not in tpl.pos: return False
+SKIRT_SLICE = 0.02      # m: the garment is cut by horizontal planes this far apart below the crotch
+SKIRT_CLOSED = 0.6      # share of those cuts a skirt closes at its front and back edges (trousers: next to none)
+
+
+def material_tris(meshes, name):
+    """World-space triangles of material `name`'s faces (n-gons fanned)."""
+    out = []
+    for m in meshes:
+        mats = [re.sub(r"\.\d{3}$", "", x.name) if x else "" for x in m.data.materials]
+        mw, vs = m.matrix_world, m.data.vertices
+        for p in m.data.polygons:
+            if p.material_index >= len(mats) or mats[p.material_index] != name or not face_ok(m, name, p): continue
+            c = [mw @ vs[v].co for v in p.vertices]
+            out += [(c[0], c[k], c[k + 1]) for k in range(1, len(c) - 1)]
+    return out
+
+
+def plane_cut(tris, h):
+    """The segments where the plane z = h cuts the triangles, as [((x, y), (x, y))]."""
+    segs = []
+    for t in tris:
+        pts = []
+        for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            if (a.z - h) * (b.z - h) < 0:
+                f = (h - a.z) / (b.z - a.z)
+                pts.append((a.x + f * (b.x - a.x), a.y + f * (b.y - a.y)))
+        if len(pts) == 2: segs.append(pts)
+    return segs
+
+
+def is_skirt_shaped(tris, tpl, why=None):
+    """A skirt covers the gap between the legs below the crotch; trousers/shorts leave it open. Cut by horizontal
+    planes below the crotch, a skirt crosses the middle line between the legs at the cut's front and back edges (its
+    front and back panels) all the way down to its hem; trousers touch it at most with the inner thighs, in the middle
+    of the cut (thick or close legs), and armour plates or a codpiece cover it for a few cuts at most. Planes cut the
+    faces, not just the vertices: a low-poly skirt has no vertex on the middle line. why: a list that gets the numbers
+    for the log."""
+    if not tris or "thigh_l" not in tpl.pos: return False
     crotch = (tpl.pos["thigh_l"].z + tpl.pos["thigh_r"].z) / 2
     cy = (tpl.pos["thigh_l"].y + tpl.pos["thigh_r"].y) / 2
-    below = [p for p in pts if p.z < crotch - 0.03]
-    if len(below) < 20: return False
-    mid = [p for p in below if abs(p.y - cy) < 0.03]
-    # trousers put next to nothing on the middle line below the crotch; a skirt has its front and back panels there
-    return len(mid) / len(below) > 0.04 and any(p.x > tpl.pos["pelvis"].x for p in mid) \
-        and any(p.x < tpl.pos["pelvis"].x for p in mid)
+    low = min(min(v.z for v in t) for t in tris)
+    tris = [t for t in tris if min(v.z for v in t) < crotch - 0.03]
+    counted = closed = 0
+    h = crotch - 0.03
+    while h > low:
+        segs = plane_cut(tris, h)
+        h -= SKIRT_SLICE
+        if not segs: continue
+        counted += 1
+        xs = [q[0] for s in segs for q in s]
+        x0, x1 = min(xs), max(xs)
+        edge = 0.25 * (x1 - x0)
+        cross = [a[0] + (cy - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) for a, b in segs
+                 if (a[1] - cy) * (b[1] - cy) <= 0 and a[1] != b[1]]
+        closed += any(x >= x1 - edge for x in cross) and any(x <= x0 + edge for x in cross)
+    if why is not None: why.append(f"closed between the legs at {closed} of {counted} heights below the crotch")
+    return counted > 0 and closed / counted >= SKIRT_CLOSED
 
 
 def material_labels(meshes):
@@ -150,8 +287,39 @@ def material_labels(meshes):
     return out
 
 
-def material_points(meshes, name):
-    return [m.matrix_world @ v.co for m in meshes for v, mat in zip(m.data.vertices, vertex_materials(m)) if mat == name]
+# --cloth MAT@BONES: only the faces of MAT that hang on source bones matching BONES (game rips mark their dangly parts
+# with their own physics bones: Fortnite dyn_skirt_*, dyn_belt_*): {material: vertex attribute}. b4bfit writes the
+# attribute (bone_attr) at import, before the source bones are renamed to the survivor's
+BONE_FILTER = {}
+
+
+def bone_attr(rx):
+    """The vertex attribute holding each vertex's weight share on source bones matching rx."""
+    import hashlib
+    return "b4bcb_" + hashlib.md5(rx.encode()).hexdigest()[:8]
+
+
+def parse_cloth_spec(spec):
+    """'MAT[@BONES][:cape|:lower],...' -> [(material lower-case, bones regex or None, kind or None)]."""
+    out = []
+    for x in (spec or "").split(","):
+        x = x.strip()
+        if not x or x in ("auto", "on", "off"): continue
+        k = None
+        if re.search(r":(cape|lower)$", x, re.I): x, k = x.rsplit(":", 1)
+        rx = None
+        if "@" in x: x, rx = x.split("@", 1)
+        out.append((x.lower(), rx or None, k.lower() if k else None))
+    return out
+
+
+def face_ok(m, name, poly):
+    """A face of material `name` counts for it (BONE_FILTER: most of its vertices on the listed bones)."""
+    attr = BONE_FILTER.get(name)
+    if not attr: return True
+    a = m.data.attributes.get(attr)
+    if a is None: return False
+    return sum(a.data[v].value for v in poly.vertices) / len(poly.vertices) >= 0.5
 
 
 def garment_kind(pts, tpl):
@@ -187,7 +355,8 @@ def garment_groups(meshes, name):
         mw = m.matrix_world
         pts = []
         for p in m.data.polygons:
-            if p.material_index in mi and sum(arm[v] for v in p.vertices) / len(p.vertices) < 0.5:
+            if p.material_index in mi and sum(arm[v] for v in p.vertices) / len(p.vertices) < 0.5 and \
+                    face_ok(m, name, p):
                 pts += [mw @ m.data.vertices[v].co for v in p.vertices]
         if pts: out[m.name] = pts
     return out
@@ -218,7 +387,7 @@ def cloth_materials(meshes, tpl, spec, log=print, cloth_ok=None):
     """({material: kind}, {material: object names}) to simulate. spec 'auto': named (material or colour image) like a
     skirt/dress/coat/cape, or like bottoms and skirt-shaped; else a comma list of material names, each optionally
     ':cape' / ':lower' to force how it hangs. kind 'lower' = simulated below the waist (skirts, dresses, coat tails),
-    'cape' = below the shoulder blades, hanging behind.
+    'cape' = below the hips, hanging behind.
     Names alone aren't trusted: each object's part of a garment material must hang like one (from above the crotch to
     well below it, wide enough; hang_check), and accessories are left out by name (necklace, belt, strap, boots ...;
     ACCESSORY_RX), so a necklace or a thigh strap cut from the dress's texture sheet stays skinned. In auto mode a
@@ -230,17 +399,22 @@ def cloth_materials(meshes, tpl, spec, log=print, cloth_ok=None):
         names.update(x for x in vertex_materials(m) if x)
     out = {}
     forced = {}
+    BONE_FILTER.clear()
     if spec and spec not in ("auto", "on"):
-        want = {}
-        for x in spec.split(","):
-            x = x.strip()
-            if not x: continue
-            k = None
-            if re.search(r":(cape|lower)$", x, re.I): x, k = x.rsplit(":", 1)
-            want[x.lower()] = k.lower() if k else None
+        want, bones = {}, {}
+        for x, rx, k in parse_cloth_spec(spec):
+            want[x] = k
+            if rx: bones[x] = rx
         for n in names:
             if n.lower() in want:
                 out[n] = want[n.lower()]; forced[n] = True
+                if n.lower() in bones:
+                    BONE_FILTER[n] = bone_attr(bones[n.lower()])
+                    got = sum(1 for m in meshes for p in m.data.polygons
+                              if p.material_index < len(m.data.materials) and m.data.materials[p.material_index]
+                              and re.sub(r"\.\d{3}$", "", m.data.materials[p.material_index].name) == n
+                              and face_ok(m, n, p))
+                    log(f"cloth: {n!r}: only its faces on the source bones /{bones[n.lower()]}/ ({got} faces)")
         missing = set(want) - {n.lower() for n in out}
         if missing: log(f"cloth: no material {sorted(missing)} (materials: {sorted(names)})")
     else:
@@ -254,9 +428,12 @@ def cloth_materials(meshes, tpl, spec, log=print, cloth_ok=None):
                     continue
                 out[n] = None; continue
             if BOTTOMS_RX.search(lab):
-                pts = material_points(meshes, n)
-                if is_skirt_shaped(pts, tpl): out[n] = "lower"
-                else: log(f"cloth: {n!r} looks like trousers/shorts (open between the legs): not simulated")
+                why = []
+                if is_skirt_shaped(material_tris(meshes, n), tpl, why):
+                    out[n] = "lower"
+                    log(f"cloth: {n!r} named like bottoms and shaped like a skirt ({why[0]})")
+                else: log(f"cloth: {n!r} looks like trousers/shorts (open between the legs{': ' + why[0] if why else ''}): "
+                          f"not simulated (if it is a skirt: --cloth {n})")
     objs = {}
     for n in list(out):
         if cloth_ok is not None and not cloth_ok(n):
@@ -307,8 +484,11 @@ def cut_region(tpl, meshes, mats, cap, tag, log=print, dry=False, keep=None, obj
         # a coat's sleeves hang below the waist too: faces skinned to the arms stay skinned
         W = weights_of(m)
         arm = [sum(x for b, x in w.items() if ARM_RX.match(b)) / (sum(w.values()) or 1.0) for w in W]
+        names = [re.sub(r"\.\d{3}$", "", x.name) if x else "" for x in m.data.materials]
+        polys = m.data.polygons
         sel = [f for f in bm.faces if f.material_index in mi and (mw @ f.calc_center_median()).z < cap
                and sum(arm[v.index] for v in f.verts) / len(f.verts) < 0.5
+               and face_ok(m, names[f.material_index], polys[f.index])
                and (keep is None or keep(mw @ f.calc_center_median()))]
         if not sel: bm.free(); continue
         for f in sel:
@@ -471,10 +651,31 @@ SIM_BONES = {"lower": ({"pelvis", "spine_01", "spine_02", "thigh_l", "thigh_r"},
                       ("spine_03", "clavicle_l", "clavicle_r", "neck_01"))}
 
 
-def sim_weights(tpl, verts, kind, cols):
+SEAM_BONE_RX = re.compile(r"^(pelvis|spine_\d+|clavicle_[lr]|neck_\d+|thigh_[lr]|thigh_twist_\d+_[lr])$")
+
+
+def sim_weights(tpl, verts, kind, cols, meshes=None):
     """Skinning of the simulation vertices: the template body's weights near each (hips/legs for skirts and coats,
-    the upper back for capes); the fixed top row only on the waist / shoulder-blade bones."""
+    the upper back for capes); the fixed top row only on the waist / shoulder-blade bones, or, where the garment was
+    cut out of a surface that goes on above it (a dress's skirt under its bodice), the weights of the model's own
+    skinned vertices at the seam: the cloth's edge then moves exactly like the skinned edge it meets (else they
+    drift apart and the seam tears open)."""
     allowed, top_bones = SIM_BONES[kind]
+    seam = None
+    if meshes:
+        spts, sw = [], []
+        for m in meshes:
+            if m.name.startswith(CLOTH_PREFIX): continue
+            mw = m.matrix_world
+            for v, w in zip(m.data.vertices, weights_of(m)):
+                # only body at the seam: a braid or a hand hanging by the waist must not drive the cloth's edge
+                b = {n: x for n, x in w.items() if SEAM_BONE_RX.match(n)}
+                t, tb = sum(w.values()), sum(b.values())
+                if t and tb >= 0.8 * t: spts.append(mw @ v.co); sw.append(b)
+        if spts:
+            seam = KDTree(len(spts))
+            for i, p in enumerate(spts): seam.insert(p, i)
+            seam.balance()
     kd_pts, kd_w = [], []
     for tm in tpl.meshes:
         for v, w in zip(tm.data.vertices, weights_of(tm)):
@@ -491,7 +692,15 @@ def sim_weights(tpl, verts, kind, cols):
             f = 1.0 / max(dist, 1e-3)
             for n, x in kd_w[i].items(): acc[n] = acc.get(n, 0.0) + x * f
         if k < cols:
-            acc = {n: x for n, x in acc.items() if n in top_bones} or {top_bones[0]: 1.0}
+            near = [(i, d) for _, i, d in seam.find_n(Vector(v), 8)] if seam else []
+            near = [(i, d) for i, d in near if d < 0.04]
+            if near:
+                acc = {}
+                for i, d in near:
+                    f = 1.0 / max(d, 1e-3)
+                    for n, x in sw[i].items(): acc[n] = acc.get(n, 0.0) + x * f
+            else:
+                acc = {n: x for n, x in acc.items() if n in top_bones} or {top_bones[0]: 1.0}
         top4 = sorted(acc.items(), key=lambda x: -x[1])[:4]
         t4 = sum(x for _, x in top4) or 1.0
         out.append({n: x / t4 for n, x in top4})
@@ -535,8 +744,46 @@ def body_capsules(tpl, meshes, log=print, skip_mats=()):
         r = d[len(d) // 2] * 0.95                       # the skin's median distance, a little inside
         a, c = segs[b]
         caps.append({"bone": b, "a": list(tpl.pos[a]), "b": list(tpl.pos[c]), "r": r})
+    caps += hair_capsules(tpl, meshes)
     if caps:
         log("cloth: collision capsules " + ", ".join(f"{c['bone']} r{c['r'] * 100:.0f}" for c in caps) + " cm")
+    return caps
+
+
+def hair_capsules(tpl, meshes):
+    """Capsules along the survivor's physics hair chain (hair_00..02, hair_00_l ...) where the model's hair hangs on it
+    (rig_hair): the cloth then collides with a long braid or ponytail that swings on those bones, and a robe or cape
+    is pushed aside instead of the hair passing through it. Last bone: to the far end of the hair it carries."""
+    chains = {}
+    for b in tpl.pos:
+        m = re.match(r"^hair_(\d+)(_[lr])?$", b)
+        if m: chains.setdefault(m.group(2) or "", []).append((int(m.group(1)), b))
+    if not chains: return []
+    pts = {}
+    for m in meshes:
+        if m.name.startswith(CLOTH_PREFIX): continue
+        mw = m.matrix_world
+        for v, w in zip(m.data.vertices, weights_of(m)):
+            if not w: continue
+            b, x = max(w.items(), key=lambda kv: kv[1])
+            if b.startswith("hair_") and x >= 0.5: pts.setdefault(b, []).append(mw @ v.co)
+    caps = []
+    for side, bones in chains.items():
+        bones = [b for _, b in sorted(bones)]
+        for i, b in enumerate(bones):
+            P = pts.get(b, [])
+            if len(P) < 30: continue
+            A = tpl.pos[b]
+            if i + 1 < len(bones): C = tpl.pos[bones[i + 1]]
+            else:                                          # the tip: the hair's far end along the chain
+                d = (A - tpl.pos[bones[i - 1]]).normalized() if i else Vector((0, 0, -1))
+                C = A + d * max(0.02, max((p - A).dot(d) for p in P))
+            e = C - A
+            dd = sorted((p - (A + e * max(0.0, min(1.0, (p - A).dot(e) / max(e.length_squared, 1e-9))))).length
+                        for p in P)
+            # inside the hair (lower quartile of its distance to the bone line, at most 6 cm): a braid's strands fan out
+            # and loose locks ride on the same bone; a fat capsule would hold the cloth off the back
+            caps.append({"bone": b, "a": list(A), "b": list(C), "r": min(0.06, max(0.01, dd[len(dd) // 4] * 0.9))})
     return caps
 
 
@@ -566,14 +813,17 @@ def cloth_regions(tpl, meshes, mats, log=print, objs=None):
         if kind == "lower":
             cap = tpl.pos["spine_01"].z + 0.02 if "spine_01" in tpl.pos else 1e9
         else:
-            cap = tpl.pos["spine_03"].z if "spine_03" in tpl.pos else 1e9
+            # from the hips: the upper cape stays skinned over the back (a cloth panel there can't follow a backpack,
+            # belt pouches or the shoulders and they poke through); below, the cape's max distance grows with depth
+            # squared (cloth.py), so it starts still at the cut and swings more toward the hem
+            cap = tpl.pos["pelvis"].z if "pelvis" in tpl.pos else tpl.pos["spine_03"].z if "spine_03" in tpl.pos else 1e9
         tag = f"{CLOTH_PREFIX}R{len(sims)}_" if sims else CLOTH_PREFIX
         _, pts, _ = cut_region(tpl, meshes, ms, cap, tag, log, dry=True, objs=objs)
         if not pts: continue
         top = max(p.z for p in pts)
         if top - min(p.z for p in pts) < 0.12:
             log(f"cloth: {sorted(ms)} hangs only {100 * (top - min(p.z for p in pts)):.0f} cm below the "
-                f"{'waist' if kind == 'lower' else 'shoulder blades'}: skinned, not simulated")
+                f"{'waist' if kind == 'lower' else 'hips'}: skinned, not simulated")
             continue
         sim = build_sim(tpl, pts, kind, top, log)
         keep = None
@@ -585,7 +835,7 @@ def cloth_regions(tpl, meshes, mats, log=print, objs=None):
         pieces, _, inward = cut_region(tpl, meshes, ms, cap, tag, log, keep=keep, objs=objs)
         if not sim["closed"] and inward < 0.2:
             add_back_faces(pieces, log)
-        sim["weights"] = sim_weights(tpl, sim["verts"], kind, sim["segments"])
+        sim["weights"] = sim_weights(tpl, sim["verts"], kind, sim["segments"], meshes)
         sim["kind"] = kind
         sim["hem_leg"] = hem_on_leg(tpl, top - sim["length_m"])
         if caps is None: caps = body_capsules(tpl, meshes, log, set(mats))

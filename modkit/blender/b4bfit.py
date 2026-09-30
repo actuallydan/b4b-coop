@@ -79,9 +79,38 @@ def import_any(path):
                 cycles_props.CyclesLightSettings.cast_shadow = bpy.props.BoolProperty()
         except Exception:
             pass
-        bpy.ops.import_scene.fbx(filepath=path, use_anim=False, ignore_leaf_bones=False, automatic_bone_orientation=False)
+        fbx_bind_matrix_fallback()
+        with open(path, "rb") as f:
+            ascii_fbx = not f.read(20).startswith(b"Kaydara FBX Binary")
+        if ascii_fbx:                              # Blender reads only binary FBX: convert (blender/fbxascii.py)
+            import tempfile
+            d = os.path.dirname(os.path.abspath(__file__))
+            if d not in sys.path: sys.path.insert(0, d)
+            import fbxascii
+            tmp = tempfile.mkdtemp(prefix="b4bfbx")
+            binary = os.path.join(tmp, os.path.basename(path))
+            v = fbxascii.to_binary(path, binary)
+            log(f"FBX: {os.path.basename(path)} is ASCII FBX {v}: converted to binary for Blender's importer")
+            try:
+                bpy.ops.import_scene.fbx(filepath=binary, use_anim=False, ignore_leaf_bones=False,
+                                         automatic_bone_orientation=False)
+            finally:
+                import shutil
+                shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            bpy.ops.import_scene.fbx(filepath=path, use_anim=False, ignore_leaf_bones=False,
+                                     automatic_bone_orientation=False)
     elif ext in (".glb", ".gltf", ".vrm"):                # VRM 0.x/1.0 = glTF 2.0 with extensions (ignored)
         bpy.ops.import_scene.gltf(filepath=path)
+        if gltf_bind_pose_broken([o for o in bpy.data.objects if o not in before]):
+            # the rest pose Blender guesses from the inverse bind matrices is off by orders of magnitude (Sketchfab's
+            # conversions of UE rips: centimetre bind matrices under a metre skeleton; pelvis at 93 m): the glTF's own
+            # node pose is the model as it looks, and the mesh is bound to it
+            log("glTF: the bind pose the file implies is broken (skeleton far larger than the model): using the "
+                "file's node pose as the rest pose")
+            for o in [o for o in bpy.data.objects if o not in before]:
+                bpy.data.objects.remove(o)
+            bpy.ops.import_scene.gltf(filepath=path, guess_original_bind_pose=False)
         vrm0_colors(path)
     elif ext == ".obj":
         bpy.ops.wm.obj_import(filepath=path)
@@ -104,7 +133,115 @@ def import_any(path):
     # drop animation data: we fit the rest pose
     for o in new:
         if o.animation_data: o.animation_data_clear()
+    for o in stray_attachments(new):
+        log(f"dropping {o.name}: a separate piece on {', '.join(g.name for g in o.vertex_groups[:3]) or 'no bone'}: a "
+            f"weapon, or a prop below the body's feet whose socket the export lost (game rips)")
+        new.remove(o); bpy.data.objects.remove(o)
+    for o in scene_props(new):
+        log(f"dropping {o.name}: not skinned and too big for / away from the body (a backdrop, floor or pedestal of the "
+            f"scene the model was shown in)")
+        new.remove(o); bpy.data.objects.remove(o)
     return new
+
+
+def scene_props(objs):
+    """Unskinned meshes of a skinned model that can't be something it wears: larger than half its height, or centred
+    outside its bounding box (Sketchfab scenes: backdrop planes, a pedestal). Small ones near the body (glasses, a
+    badge) stay: they are attached rigidly later."""
+    skinned = [o for o in objs if o.type == "MESH" and any(m.type == "ARMATURE" and m.object for m in o.modifiers)]
+    if not skinned: return []
+    def box(o):
+        pts = [o.matrix_world @ Vector(c) for c in o.bound_box]
+        return [min(p[i] for p in pts) for i in range(3)], [max(p[i] for p in pts) for i in range(3)]
+    boxes = [box(o) for o in skinned]
+    lo = [min(b[0][i] for b in boxes) for i in range(3)]; hi = [max(b[1][i] for b in boxes) for i in range(3)]
+    h = max(hi[i] - lo[i] for i in range(3))
+    out = []
+    for o in objs:
+        if o.type != "MESH" or o in skinned or (o.parent and o.parent.type == "ARMATURE" and o.parent_type == "BONE"):
+            continue
+        a, b = box(o)
+        c = [(a[i] + b[i]) / 2 for i in range(3)]
+        if max(b[i] - a[i] for i in range(3)) > 0.5 * h or any(c[i] < lo[i] or c[i] > hi[i] for i in range(3)):
+            out.append(o)
+    return out
+
+
+WEAPON_BONE_RX = re.compile(r"melee|weapon|pickaxe|handle|blaster|pistol|rifle|^ik_hand_gun", re.I)
+
+
+def stray_attachments(objs):
+    """Rigid props (all weights on one bone) of a skinned model that hang mostly below its feet, or that hang on a weapon
+    bone: Fortnite rips carry the pickaxe (bone Melee_TwoHanded_Handle) / back bling under the root when the socket's
+    transform is lost."""
+    skinned = [o for o in objs if o.type == "MESH" and len(o.data.vertices) and
+               any(m.type == "ARMATURE" and m.object for m in o.modifiers)]
+    if len(skinned) < 2: return []
+    dg = bpy.context.evaluated_depsgraph_get()
+    zs = {}
+    for o in skinned:
+        ev = o.evaluated_get(dg)
+        me = ev.to_mesh()
+        zs[o] = sorted((o.matrix_world @ v.co).z for v in me.vertices)
+        ev.to_mesh_clear()
+    main = max(skinned, key=lambda o: len(zs[o]))
+    floor, top = zs[main][0], zs[main][-1]
+    h = top - floor
+    out = []
+    for o in skinned:
+        if o is main or len(zs[o]) >= len(zs[main]): continue
+        # the pickaxe's own handle bone, a holstered blaster (Fortnite dyn_blaster): most vertices on a weapon bone
+        names = {g.index: g.name for g in o.vertex_groups}
+        on = sum(1 for v in o.data.vertices if v.groups and
+                 WEAPON_BONE_RX.search(names[max(v.groups, key=lambda g: g.weight).group]))
+        weapon = on >= 0.9 * len(o.data.vertices)
+        if len(o.vertex_groups) > 1 and not weapon: continue
+        below = sum(1 for z in zs[o] if z < floor - 0.05 * h)
+        deep = zs[o][0] < floor - 0.15 * h                                   # nothing worn reaches that far below the soles
+        if (h > 0 and (below > 0.3 * len(zs[o]) or deep)) or weapon: out.append(o)
+    return out
+
+
+def fbx_bind_matrix_fallback():
+    """Blender's FBX importer keys a mesh's bind matrices by the armature its bones ended up in; game rips with several
+    skeletons in one file (Fortnite: body + pickaxe, meshes named *.ao) bind a mesh under one armature and link it
+    under another, and the import dies with a KeyError. The importer assumes one bind matrix per mesh anyway: patch its
+    helper nodes so that lookup returns the mesh's own (or none: the armature's bind matrix is then used). Changes
+    nothing for files that import as they are."""
+    from io_scene_fbx import import_fbx
+    from mathutils import Matrix
+
+    class AnySetup(dict):
+        def __missing__(self, key):
+            if not getattr(AnySetup, "said", False):
+                AnySetup.said = True
+                log("FBX: a mesh is bound under another skeleton than the one it is linked to (several skeletons in "
+                    "one file): its own bind matrix is used")
+            return next(iter(self.values()), (Matrix(), None))
+
+    cls = import_fbx.FbxImportHelperNode
+    if getattr(cls, "_b4b_any_setup", False): return
+    init = cls.__init__
+
+    def patched(self, *a, **kw):
+        init(self, *a, **kw)
+        self.armature_setup = AnySetup(self.armature_setup)
+    cls.__init__ = patched
+    cls._b4b_any_setup = True
+
+
+def gltf_bind_pose_broken(objs):
+    """A skeleton whose rest (guessed bind pose) spans over 5x the space its posed bones do."""
+    def span(pts):
+        if len(pts) < 2: return 0.0
+        return max((max(p[i] for p in pts) - min(p[i] for p in pts)) for i in range(3))
+    for a in objs:
+        if a.type != "ARMATURE" or len(a.data.bones) < 3: continue
+        rest = [a.matrix_world @ b.head_local for b in a.data.bones]
+        pose = [a.matrix_world @ pb.head for pb in a.pose.bones]
+        r, q = span(rest), span(pose)
+        if q > 1e-6 and r > 5 * q: return True
+    return False
 
 
 def vrm0_colors(path):
@@ -162,6 +299,32 @@ def bone_world(arm, name, tail=False):
 def mesh_children(arm, objs):
     return [o for o in objs if o.type == "MESH" and (o.parent == arm or any(m.type == "ARMATURE" and m.object == arm
                                                                                 for m in o.modifiers))]
+
+
+def bone_parented_as_skinned(arm, objs):
+    """Meshes parented to one bone of the rig without weights (Rigify/Maya rigs: eyeballs on their eye bones, teeth on
+    the jaw) -> skinned to that bone with weight 1, where the rest pose puts them: the fit then moves them with the
+    bone's mapped owner (they used to lose their place and all weights with the rig, and vanished: no eyes to blink)."""
+    out = []
+    todo = [o for o in objs if o.type == "MESH" and o.parent == arm and o.parent_type == "BONE" and
+            o.parent_bone in arm.data.bones and not any(m.type == "ARMATURE" for m in o.modifiers)]
+    if not todo: return out
+    pp = arm.data.pose_position
+    arm.data.pose_position = "REST"
+    bpy.context.view_layer.update()
+    mw = {o: o.matrix_world.copy() for o in todo}
+    arm.data.pose_position = pp
+    for o in todo:
+        bone = o.parent_bone
+        o.parent = None; o.parent_type = "OBJECT"; o.parent_bone = ""
+        o.matrix_world = mw[o]
+        o.vertex_groups.clear()
+        o.vertex_groups.new(name=bone).add(range(len(o.data.vertices)), 1.0, "REPLACE")
+        arm.data.bones[bone].use_deform = True     # a control bone (.blend rigs) would leave them behind in the fit
+        md = o.modifiers.new("Armature", "ARMATURE"); md.object = arm
+        out.append((o.name, bone))
+    bpy.context.view_layer.update()
+    return out
 
 
 # ---- bone maps ------------------------------------------------------------------------------------------------------
@@ -273,6 +436,11 @@ def parse_bone(raw):
             if part in ("pelvis", "neck", "head", "spine", "jaw"):
                 return (part, None, int(num.group(1)) if num else 0) if sd is None else None
             return (part, sd, None) if sd else None
+    # 3ds Max Biped numbering under another prefix (Source engine ValveBiped.Bip01_L_Finger12): FingerN is finger N
+    # from the thumb (0), a second digit the joint along it
+    m = re.search(r"finger_?(\d)(\d)?$", rest)
+    if m and sd and int(m.group(1)) < len(FINGERS):
+        return (FINGERS[int(m.group(1))], sd, int(m.group(2) or 0) + 1)
     return None
 
 
@@ -306,9 +474,18 @@ def generic_map(arm, cands):
             if key not in out or depth_bone(arm.data.bones[n]) < depth_bone(arm.data.bones[out[key]]):
                 out[key] = n            # the segment nearest the root (Rigify: upper_arm.L, not upper_arm.L.001)
     # finger chains: the three bones nearest the hand, by depth (1-based numbering or not)
+    # when the finger's bones hold a parent -> child chain of three, that chain: a separate bone of the same finger next
+    # to it on the hand (a metacarpal like Indexfar_l beside IndexFinger1_L) shifted every finger joint by one
+    def run(n, names):
+        kids = sorted(c.name for c in arm.data.bones[n].children if c.name in names)
+        return [n] + max((run(c, names) for c in kids), key=len, default=[])
     for (part, sd), lst in fingers.items():
         lst.sort(key=lambda kn: depth_bone(arm.data.bones[kn[1]]))
-        for i, (k, n) in enumerate(lst[:3]):
+        names = {n for k, n in lst}
+        roots = [n for k, n in lst if not (arm.data.bones[n].parent and arm.data.bones[n].parent.name in names)]
+        chain = max((run(r, names) for r in roots), key=len)
+        use = chain[:3] if len(chain) >= 3 else [n for k, n in lst[:3]]
+        for i, n in enumerate(use):
             out[f"{part}_0{i + 1}_{sd}"] = n
     # plain "Leg" as thigh when there's a separate lower leg, else as calf
     for n, p in parsed.items():
@@ -429,6 +606,7 @@ def build_bonemap(arm, targets, user_map=None, meshes=()):
 
 
 _LAYER_RX = re.compile(r"^(org|mch|def|ctrl|ctl|drv|jnt|bind)[-_.]", re.I)
+CONTROL_NAMES = {"head": "head", "neck": "neck_01", "hips": "pelvis"}     # animation controls named after a body part
 
 
 def own_bones(arm, bmap, inv, tp):
@@ -455,6 +633,11 @@ def own_bones(arm, bmap, inv, tp):
         if n in bmap: owner[n] = n; continue
         if n in above: owner[n] = None; continue
         a = alias.get(_LAYER_RX.sub("", n).lower())
+        if a: owner[n] = a; continue
+        # a control bone named after the body part it moves (Rigify's `head`, `neck`, `hips`): the hair, eyes and
+        # accessories rigged under it follow that part (its parents are MCH-/FK chains of the spine: the head-tails,
+        # hair and eyes under Rigify's head control stuck to the chest)
+        a = inv.get(CONTROL_NAMES.get(_LAYER_RX.sub("", n).lower(), ""))
         if a: owner[n] = a; continue
         po = owner.get(b.parent.name) if b.parent else None
         if po: owner[n] = po; continue
@@ -766,6 +949,7 @@ def fit_character(o):
             bm.to_mesh(x.data); bm.free()
             if not x.data.polygons:
                 log("dropping", x.name, "(only dropped materials)"); bpy.data.objects.remove(x); src_objs.remove(x)
+    mark_cloth_bones(src_objs, o.get("cloth", ""))
     keyed = [x.name for x in src_objs if x.type == "MESH" and x.data.shape_keys]
     face_on = o.get("mode", "3p") == "3p" and o.get("face", "auto") != "off"
     face_src = None
@@ -803,6 +987,9 @@ def fit_character(o):
         if o.get("rigged"):                         # our own 3P rig: the survivor's names, weighted or not
             user_map = {b.name: b.name for b in sarm.data.bones if b.name in targets and
                         (b.name in B4B_MAIN or "_twist_" in b.name)}
+        on_bones = bone_parented_as_skinned(sarm, meshes)
+        if on_bones:
+            log("meshes parented to a bone, skinned to it: " + ", ".join(f"{n} ({b})" for n, b in on_bones))
         skinned = mesh_children(sarm, meshes)
         bmap, kind = build_bonemap(sarm, targets, user_map, skinned)
         missing = [b for b in REQUIRED if b not in bmap.values()]
@@ -1078,6 +1265,7 @@ def fit_character(o):
                 keep_arms(m, None)
         else:
             for me in saved.values(): bpy.data.meshes.remove(me)
+        fp_drop_hanging(tpl, smeshes)
         smeshes = [m for m in smeshes if len(m.data.polygons)]
     if o.get("probe") == "regions":
         body_regions(tpl, smeshes, os.path.join(o["out"], "regions.json"))
@@ -1229,6 +1417,8 @@ def rig_face_bones(o, tpl, meshes, src_bones):
     """3P: skin the face to the template's face bones and record their new bind positions for the importer
     (manifest extras face_bones_m: {bone: [x, y, z]} Blender world metres)."""
     face_module().MOUTH_INTERIOR[0] = o.get("mouth", "auto")
+    face_module().HAIR_SLOT_MATS.update(m for m, sl in (x.split("=", 1) for x in o.get("slot", []))
+                                        if re.search(r"hair", sl, re.I))
     moved = face_module().rig_face(tpl, meshes, src_bones, log)
     if moved:
         o.setdefault("extras", {})["face_bones_m"] = {b: [p.x, p.y, p.z] for b, p in moved.items()}
@@ -1253,9 +1443,11 @@ def secondary_motion(o, tpl, meshes):
         def is_hair(mat):
             if not mat or dm.NOT_HAIR_RX.search(mat): return False
             sl = slot_of.get(mat)
-            return bool(re.search(r"hair", sl, re.I)) if sl else bool(dm.HAIR_RX.search(mat))
+            return bool(re.search(r"hair", sl, re.I)) and not dm.CLOTHES_RX.search(mat) if sl else \
+                bool(dm.HAIR_RX.search(mat))
         chains = [c.split(",") for c in o["hair_bones"].split(";") if c]
-        dm.rig_hair(tpl, meshes, chains, is_hair, log, float(o.get("hair_swing", 1.0)))
+        dm.rig_hair(tpl, meshes, chains, is_hair, log, float(o.get("hair_swing", 1.0)),
+                    rigged=o.get("weights") != "done")
     if o.get("cloth", "off") not in ("off", ""):
         # --cloth_slots: the slots whose master material has bUsedWithClothing (b4bmodel reads it): a cloth section
         # on any other slot renders the engine's default material (grey) and the game logs "missing bUsedWithClothing"
@@ -1272,6 +1464,27 @@ def secondary_motion(o, tpl, meshes):
         elif o["cloth"] not in ("auto", "on"):
             log("cloth: nothing to simulate")
     return meshes
+
+
+def mark_cloth_bones(objs, spec):
+    """--cloth MAT@BONES: each vertex's weight share on source bones matching BONES, kept as a vertex attribute
+    (b4bdangle.bone_attr) through the fit, which renames the source bones to the survivor's."""
+    if "@" not in (spec or ""): return
+    dm = dangle_module()
+    for _, rx, _ in dm.parse_cloth_spec(spec):
+        if not rx: continue
+        r = re.compile(rx, re.I)
+        name, n = dm.bone_attr(rx), 0
+        for m in objs:
+            if m.type != "MESH": continue
+            hit = {g.index for g in m.vertex_groups if r.search(g.name)}
+            a = m.data.attributes.get(name) or m.data.attributes.new(name, "FLOAT", "POINT")
+            for v in m.data.vertices:
+                tot = sum(g.weight for g in v.groups)
+                x = sum(g.weight for g in v.groups if g.group in hit) / tot if tot else 0.0
+                a.data[v.index].value = x
+                n += x >= 0.5
+        log(f"cloth: {n} vertices on the source bones /{rx}/")
 
 
 def used_materials(m):
@@ -1433,7 +1646,7 @@ def unpose_arms(tpl, meshes, chain=False):
     for i, (m, p) in enumerate(mv): mkd.insert(p, i)
     mkd.balance()
     graph = None
-    fits = {}
+    fits, angs, errs = {}, {}, {}
     for sd, sign in (("l", 1), ("r", -1)):          # heroes face +X: their left is +Y
         ua = tpl.pos.get(f"upperarm_{sd}")
         if ua is None: continue
@@ -1501,10 +1714,11 @@ def unpose_arms(tpl, meshes, chain=False):
         q = dt.normalized().rotation_difference(dm.normalized())
         ang = math.degrees(q.angle)
         log(f"unrigged: {side} arm is {ang:.0f} deg from the template's pose")
+        angs[sd] = ang
         # then each arm segment turned onto the model's own arm (its surface): the tip guess alone left a hand
         # hanging behind the template's by 8 cm, which took forearm and thigh weights (and missed the FP view)
-        if graph is None: graph = model_graph(meshes)
-        fit = fit_arm_pose(tpl, mkd, graph, sd, q if ang > 8 else Quaternion(), side)
+        if graph is None: graph, ntree = model_graph(meshes), NormalTrees(meshes)
+        fit = fit_arm_pose(tpl, mkd, graph, sd, q if ang > 8 else Quaternion(), side, ntree, errs)
         fits[sd] = bool(fit)
         if fit:
             rot[sd] = fit
@@ -1541,6 +1755,7 @@ def unpose_arms(tpl, meshes, chain=False):
     for i, p in enumerate(pts): kd.insert(p, i)
     kd.balance()
     face = face_bones_of(tpl)
+    outs = {}
     for m in meshes:
         rule = rules[m.name]
         out = []
@@ -1556,21 +1771,369 @@ def unpose_arms(tpl, meshes, chain=False):
                 first = rule["exact"][0] if "exact" in rule else f"{rule['prefixes'][0]}_{rule['side']}"
                 acc, tot = {first: 1.0}, 1.0
             out.append(fold_face({n: x / tot for n, x in acc.items()}, face) if tot else {"pelvis": 1.0})
-        set_weights(m, out)
+        outs[m] = out
+    # arms far from the template's pose (hanging down) and fitted closely onto the model's own arm: that arm apart
+    # from what it hangs against. Not arms turned by their tip only or fitted loosely (the posed template's arm isn't
+    # on the model's: its tube would cut the model's arm), nor arms near the A-pose (turned a little, the fade into
+    # the clothes bends smoothly with them)
+    fitted_rot = {sd: r for sd, r in rot.items() if fits.get(sd) and angs.get(sd, 0.0) > HARD_ARM_ANGLE
+                  and errs.get(sd, 1.0) < HARD_ARM_FIT}
+    if fitted_rot: harden_arms(tpl, [m for m in meshes if not rules[m.name]], fitted_rot, outs, pts, wts)
+    for m in meshes: set_weights(m, outs[m])
     log("weights: copied from the template" + (" (posed like the model)" if rot else ""))
     fitted = len(fits) == 2 and all(fits.values())    # both arms fitted onto the model's surface
     if not rot: return fitted
     # un-pose: skin to the template with the inverse arm rotation, apply
     pose(True)
+    before = {m: [v.co.copy() for v in m.data.vertices] for m in meshes}
     for m in meshes:
         md = m.modifiers.new("Unpose", "ARMATURE"); md.object = arm
         select_only([m], m)
         bpy.ops.object.modifier_apply(modifier=md.name)
+    if fitted_rot: tear_stretched([m for m in meshes if not rules[m.name]], before)
     for pb in arm.pose.bones:
         pb.matrix_basis = Matrix.Identity(4)
     bpy.context.view_layer.update()
     log("unrigged: arms moved into the template's pose")
     return fitted
+
+
+ARM_BONE_RX = re.compile(r"^(upperarm|lowerarm|hand|wrist|elbow|shoulder|thumb|index|middle|ring|pinky)_(.*_)?[lr]$")
+
+
+def arm_segments(tpl, rot, sd, twts, tpts, bvh):
+    """The model's arm as the fit posed the template's (rot): [(name, start, axis, core, reach, t0)] for the upper
+    arm, forearm and hand. Rays from the posed bone to the model's outermost surface in front, behind and away from
+    the body (not the nearest surface, which may be the coat the arm hangs against) give the arm's width and middle:
+    the tube is moved onto that middle; core: what is that close is arm (1.3 x its radius + 1.5 cm, at least the
+    template's own arm radius); reach: beyond it nothing is (1.9 x + 2 cm). Without those rays: around the bone, the
+    template's radius and the outer side's distance. t0: where along the segment the arm starts to count (the
+    shoulder, up to 0.4 of the upper arm, blends as the template does)."""
+    pos = tpl.pos
+    order = [f"{p}_{sd}" for p in ("clavicle", "upperarm", "lowerarm", "hand")]
+    if not all(b in pos for b in order[1:]): return []
+    Mb = dict(rot.get(sd, ()))
+    M, Ms = Matrix.Identity(4), {}
+    for b in order:
+        if b in Mb: M = Mb[b]
+        Ms[b] = M
+    S, E, W = (Ms[b] @ pos[b] for b in order[1:])
+    hand = [tpts[i] for i, w in enumerate(twts) if w and max(w, key=w.get).endswith("_" + sd) and
+            HAND_BONE_RX.match(max(w, key=w.get))]
+    fa = (W - E).normalized()
+    hl = max([(p - W).dot(fa) for p in hand] or [0.15])
+    T = W + fa * hl
+    lat = Vector((0, 1 if sd == "l" else -1, 0))
+    pre_of = {"upper arm": ("upperarm_", "shoulder_"), "forearm": ("lowerarm_", "elbow_"),
+              "hand": ("hand_", "wrist_", "thumb_", "index_", "middle_", "ring_", "pinky_")}
+    segs = []
+    for name, a, b, t0 in (("upper arm", S, E, 0.4), ("forearm", E, W, 0.0), ("hand", W, T, 0.0)):
+        ax = b - a
+        if ax.length < 1e-4: continue
+        ds = []                                       # tpts: the template posed like the model, as the bones
+        for i, w in enumerate(twts):
+            if not w: continue
+            bn = max(w, key=w.get)
+            if not (bn.endswith("_" + sd) and bn.startswith(pre_of[name])): continue
+            t = (tpts[i] - a).dot(ax) / ax.length_squared
+            if 0.2 < t < 0.8: ds.append((tpts[i] - (a + ax * t)).length)
+        core = sorted(ds)[len(ds) // 2] if len(ds) > 10 else 0.03
+        d = ax.normalized()
+        out = lat - d * lat.dot(d)
+        if out.length < 0.3: out = Vector((0, 0, 1)) - d * d.z       # an arm held out sideways: its top
+        out.normalize()
+        fb = d.cross(out).normalized()
+
+        def last(o, dr):                              # the last surface that way (within 12 cm)
+            q, x = o, None
+            for _ in range(8):
+                hit = bvh.ray_cast(q, dr, 0.12 - (q - o).length)
+                if hit[0] is None: break
+                x = (hit[0] - o).length; q = hit[0] + dr * 1e-4
+            return x
+        outs_, rads, offs = [], [], []
+        for t in (0.3, 0.5, 0.7):
+            o = a + ax * t
+            ro, rf, rb = last(o, out), last(o, fb), last(o, -fb)
+            if ro is not None: outs_.append(ro)
+            if rf is not None and rb is not None:
+                # the arm's width across (front to back), and its middle that way: the sleeve is round, so its
+                # centre lies that far in from its outer side (the side against the body may be one with the coat)
+                R = (rf + rb) / 2
+                rads.append(R)
+                offs.append(fb * ((rf - rb) / 2) + out * ((ro if ro is not None else R) - R))
+        if len(rads) >= 2:
+            R = sorted(rads)[len(rads) // 2]
+            off = sum(offs, Vector()) / len(offs)
+            segs.append((name, a + off, ax, max(core, 1.3 * R + 0.015), 1.9 * max(core, R) + 0.02, t0))
+        else:
+            r = sorted(outs_)[len(outs_) // 2] if outs_ else 0.0
+            segs.append((name, a, ax, core, 1.6 * max(core, r) + 0.01, t0))
+    return segs
+
+
+def harden_arms(tpl, meshes, rot, outs, tpts, twts):
+    """Arm or not, one or the other: below the shoulder, a vertex of the model's arm takes only that arm's bones, any
+    other vertex none of them. Copied as they are, the weights fade from the arm into the clothes it hangs against (a
+    coat's side and back, its hem by the hand, hair over the shoulder) over many centimetres, and un-posing the arm
+    pulled that whole fade out with it in long streaks. The arm: inside the tube around each posed arm bone as thick as
+    the model's arm there (arm_segments), else, where that isn't measured, most of its weights on the arm; lightly
+    smoothed over the surface so the arm comes away along one seam (tear_stretched)."""
+    from mathutils.bvhtree import BVHTree
+    verts, polys = [], []
+    for m in meshes:
+        mw, base = m.matrix_world, len(verts)
+        verts += [mw @ v.co for v in m.data.vertices]
+        polys += [[base + i for i in p.vertices] for p in m.data.polygons]
+    bvh = BVHTree.FromPolygons(verts, polys)
+    body = [i for i, w in enumerate(twts) if w and not any(ARM_BONE_RX.match(n) for n in w)]
+    bkd = KDTree(max(1, len(body)))
+    for i in body: bkd.insert(tpts[i], i)
+    bkd.balance()
+    ids, nb = welded_ids(meshes)
+    report = []
+    for sd in ("l", "r"):
+        if sd not in rot: continue
+        segs = arm_segments(tpl, rot, sd, twts, tpts, bvh)
+        if not segs: continue
+        ai = [i for i, w in enumerate(twts) if any(ARM_BONE_RX.match(n) and n.endswith("_" + sd) for n in w)]
+        akd = KDTree(max(1, len(ai)))
+        for i in ai: akd.insert(tpts[i], i)
+        akd.balance()
+        mine = lambda n: ARM_BONE_RX.match(n) and n.endswith("_" + sd)
+        A, beside = [], []
+        for m in meshes:
+            mw = m.matrix_world
+            for v, w in zip(m.data.vertices, outs[m]):
+                p = mw @ v.co
+                a, near = None, False
+                share = sum(x for n, x in w.items() if mine(n))
+                # the nearest segment (as a capsule: the outside of a bent elbow lies past both of its segments);
+                # not the shoulder (up to t0) and not past the hand (a bag in it keeps what it has)
+                best = None
+                for sg in segs:
+                    name, a0, ax, core, reach, t0 = sg
+                    t = (p - a0).dot(ax) / ax.length_squared
+                    dist = (p - (a0 + ax * max(0.0, min(1.0, t)))).length
+                    if best is None or dist < best[0]: best = (dist, t, sg)
+                if best is not None and best[2][5] <= best[1] and (best[1] <= 1.0 or best[2][0] != "hand") and \
+                        best[0] < 2.5 * best[2][4]:
+                    dist, t, (name, a0, ax, core, reach, t0) = best
+                    near = True
+                    # a hand's fingers spread or curl away from its line: no limit there
+                    a = 1.0 if dist <= core else 0.0 if dist >= reach and name != "hand" else share
+                if a is None: a = share
+                A.append(a); beside.append(near)
+        A = smooth_over(ids, nb, A, SMOOTH_ARM)
+        k = n_arm = n_body = 0
+        for m in meshes:
+            mw = m.matrix_world
+            for v, w in zip(m.data.vertices, outs[m]):
+                a, near = A[k], beside[k]; k += 1
+                if not near: continue
+                a0 = sum(x for n, x in w.items() if mine(n))
+                p = mw @ v.co
+                if a >= 0.5:
+                    if a0 >= 1.0 - 1e-4: continue
+                    nw = {n: x for n, x in w.items() if mine(n)}
+                    if sum(nw.values()) < 0.2:                # the arm's bones from the template's arm there
+                        nw = {}
+                        for co, i, d in akd.find_n(p, 4):
+                            f = 1.0 / max(d, 1e-4)
+                            for n, x in twts[i].items():
+                                if mine(n): nw[n] = nw.get(n, 0.0) + x * f
+                    n_arm += 1
+                else:
+                    if a0 <= 1e-4: continue
+                    nw = {n: x for n, x in w.items() if not mine(n)}
+                    if sum(nw.values()) < 0.2:                # the template's body there
+                        nw = {}
+                        for co, i, d in bkd.find_n(p, 4):
+                            f = 1.0 / max(d, 1e-4)
+                            for n, x in twts[i].items(): nw[n] = nw.get(n, 0.0) + x * f
+                    n_body += 1
+                t = sum(nw.values()) or 1.0
+                w.clear(); w.update({n: x / t for n, x in nw.items()})
+        report.append(f"{'left' if sd == 'l' else 'right'} (" + ", ".join(
+            f"{n} {c * 100:.0f}-{r * 100:.0f}" for n, _, _, c, r, _ in segs) + f" cm): {n_arm} vertices to the "
+            f"arm, {n_body} off it")
+    if report: log("unrigged: arms made one piece, apart from the clothes they hang against: " + "; ".join(report))
+
+
+SMOOTH_ARM = 3          # smoothing passes over the arm's share before it is made hard (harden_arms)
+HARD_ARM_ANGLE = 20     # degrees from the template's arm: arms posed further are made hard (harden_arms) ...
+HARD_ARM_FIT = 0.035    # m: ... when the fitted upper arm and forearm lie at most this far from the model's surface
+
+
+def welded_ids(meshes):
+    """(welded id of every vertex of the meshes in order, neighbour sets of the welded ids): the model_graph weld."""
+    key, ids, nb = {}, [], []
+    for m in meshes:
+        mw = m.matrix_world
+        loc = []
+        for v in m.data.vertices:
+            p = mw @ v.co
+            kk = (round(p.x * 5000), round(p.y * 5000), round(p.z * 5000))
+            if kk not in key: key[kk] = len(nb); nb.append(set())
+            loc.append(key[kk])
+        for e in m.data.edges:
+            a, b = loc[e.vertices[0]], loc[e.vertices[1]]
+            if a != b: nb[a].add(b); nb[b].add(a)
+        ids += loc
+    return ids, nb
+
+
+def smooth_over(ids, nb, vals, passes):
+    """Per-vertex values averaged with their welded neighbours `passes` times; back per vertex."""
+    import numpy as np
+    n = len(nb)
+    x, c = np.zeros(n), np.zeros(n)
+    np.add.at(x, ids, vals); np.add.at(c, ids, 1.0)
+    x /= np.maximum(c, 1)
+    src = np.array([i for i, s in enumerate(nb) for _ in s], dtype=np.int64)
+    dst = np.array([j for s in nb for j in s], dtype=np.int64)
+    deg = np.bincount(src, minlength=n).astype(float)
+    for _ in range(passes):
+        acc = np.bincount(src, weights=x[dst], minlength=n)
+        x = np.where(deg > 0, 0.5 * x + 0.5 * acc / np.maximum(deg, 1), x)
+    return [float(x[i]) for i in ids]
+
+
+TEAR_BACK = 0.12       # m: arm faces this close to a cut (tear_stretched) get a reversed copy
+
+
+def arm_share(m, rx=None):
+    """Each vertex's weight share on arm bones (below the clavicle; rx: those bones only)."""
+    arm = {g.index for g in m.vertex_groups if ARM_BONE_RX.match(g.name) and (rx is None or rx.match(g.name))}
+    out = []
+    for v in m.data.vertices:
+        t = sum(g.weight for g in v.groups)
+        out.append(sum(g.weight for g in v.groups if g.group in arm) / t if t else 0.0)
+    return out
+
+
+def arm_back_faces(meshes, pts, reach, inset=0.0015):
+    """Arm faces (all vertices on the arm bones; not the hands: a hand is closed) with their centre within reach of
+    any of pts get a reversed copy inset along the vertex normals (as b4bdangle.add_back_faces does for a whole
+    garment); weights and UVs come along."""
+    kd = KDTree(len(pts))
+    for i, p in enumerate(pts): kd.insert(p, i)
+    kd.balance()
+    n = 0
+    for m in meshes:
+        me, mw = m.data, m.matrix_world
+        arm, hand = arm_share(m), arm_share(m, HAND_BONE_RX)
+        sel = [f.index for f in me.polygons if all(arm[v] > 0.99 and hand[v] < 0.5 for v in f.vertices) and
+               kd.find(mw @ f.center)[2] <= reach]
+        if not sel: continue
+        corner = [tuple(x.vector) for x in me.corner_normals]
+        nl = len(me.loops)
+        bm = bmesh.new(); bm.from_mesh(me); bm.faces.ensure_lookup_table()
+        # copied by hand in face order (bmesh.ops.duplicate orders the new vertices by memory address: the same
+        # model gave a different add-on each run)
+        dl = bm.verts.layers.deform.active
+        uvs = list(bm.loops.layers.uv.values())
+        cols = list(bm.loops.layers.color.values())
+        nv = {}
+        for f in [bm.faces[i] for i in sel]:
+            for v in f.verts:
+                if v.index in nv: continue
+                c = bm.verts.new(v.co - v.normal * inset)
+                if dl is not None:
+                    for g, w in v[dl].items(): c[dl][g] = w
+                nv[v.index] = c
+            loops = list(f.loops)[::-1]                        # reversed: the copy faces inward
+            g = bm.faces.new([nv[l.vert.index] for l in loops], f)
+            for lo, ln in zip(loops, g.loops):
+                for L in uvs: ln[L].uv = lo[L].uv
+                for L in cols: ln[L] = lo[L]
+        bm.to_mesh(me); bm.free()
+        # originals keep their normals (bmesh writes the old faces first), the copies face inward
+        me.normals_split_custom_set(corner[:nl] + [tuple(me.vertices[me.loops[li].vertex_index].normal)
+                                                   for li in range(nl, len(me.loops))])
+        n += len(sel)
+    if n: log(f"unrigged: {n} arm faces next to the cut got a reversed copy (the inside of the sleeve is drawn)")
+
+
+def welded_pieces(meshes, skip=None):
+    """The meshes' faces in connected pieces, welded by position (UV seams and split parts joined): ({mesh: welded id
+    of each vertex}, find(welded id) -> piece). skip: {mesh: face indices} left out of the joining."""
+    key, parent = {}, []
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]; i = parent[i]
+        return i
+    vid = {}
+    for m in meshes:
+        mw = m.matrix_world
+        ids = []
+        for v in m.data.vertices:
+            p = mw @ v.co
+            kk = (round(p.x * 5000), round(p.y * 5000), round(p.z * 5000))
+            if kk not in key: key[kk] = len(parent); parent.append(len(parent))
+            ids.append(key[kk])
+        vid[m] = ids
+    for m in meshes:
+        ids, sk = vid[m], (skip or {}).get(m, ())
+        for f in m.data.polygons:
+            if f.index in sk: continue
+            r = find(ids[f.vertices[0]])
+            for v in f.vertices[1:]:
+                q = find(ids[v])
+                if q != r: parent[q] = r
+    return vid, find
+
+
+def tear_stretched(meshes, before, k=3.0, min_len=0.03, crumbs=0.015):
+    """Faces the un-posing stretched to over k times their length (and over min_len): where the model's arm was one
+    surface with the clothes it hung against (scans, generated models), a sheet now spans from the body to the arm.
+    They are removed, and with them the crumbs the cut leaves: pieces (welded by position) under `crumbs` of the
+    model's faces that were joined to the rest only through removed faces (a bag's handle between the hand and the
+    bag), which would float in the air."""
+    bad = {}
+    for m in meshes:
+        me, B = m.data, before[m]
+        V = me.vertices
+        bad[m] = set()
+        for f in me.polygons:
+            vs = list(f.vertices)
+            for a, b in zip(vs, vs[1:] + vs[:1]):
+                l1 = (V[a].co - V[b].co).length
+                if l1 > min_len and l1 > k * max((B[a] - B[b]).length, 1e-5):
+                    bad[m].add(f.index); break
+    total = sum(len(x) for x in bad.values())
+    if not total: return
+    vid, find = welded_pieces(meshes, bad)                # pieces of what is left
+    size, cut = {}, set()
+    for m in meshes:
+        ids = vid[m]
+        for f in m.data.polygons:
+            r = find(ids[f.vertices[0]])
+            if f.index in bad[m]: cut.update(find(ids[v]) for v in f.vertices)
+            else: size[r] = size.get(r, 0) + 1
+    nf = sum(len(m.data.polygons) for m in meshes)
+    small = {r for r in cut if size.get(r, 0) < crumbs * nf}
+    n_small = 0
+    edge = []                                             # where the cut runs on the arms
+    for m in meshes:
+        ids = vid[m]
+        gone = [f.index for f in m.data.polygons if f.index in bad[m] or find(ids[f.vertices[0]]) in small]
+        n_small += len(gone) - len(bad[m])
+        if not gone: continue
+        arm = arm_share(m)
+        edge += [m.matrix_world @ m.data.vertices[v].co for i in bad[m] for v in m.data.polygons[i].vertices
+                 if arm[v] > 0.99 and find(ids[v]) not in small]
+        bm = bmesh.new(); bm.from_mesh(m.data); bm.faces.ensure_lookup_table()
+        bmesh.ops.delete(bm, geom=[bm.faces[i] for i in gone], context="FACES")
+        bm.to_mesh(m.data); bm.free()
+    log(f"unrigged: {total} faces stretched between the body and an arm (the arm was one surface with the clothes it "
+        f"hung against): removed" + (f", and {n_small} faces of {len(small)} small pieces cut loose by it" if n_small
+                                     else ""))
+    # the arm has no inner side where it was one with the clothes: the game's one-sided materials would show the
+    # sleeve hollow (in first person the forearm's open side faces the camera). The arm's faces around the cut get a
+    # reversed copy, so its inside is drawn
+    if edge: arm_back_faces(meshes, edge, TEAR_BACK)
 
 
 ARM_PARTS = (("clavicle", ("clavicle_",)), ("upperarm", ("upperarm_", "shoulder_")),
@@ -1623,7 +2186,53 @@ def hand_vertices(graph, J, fa, reach):
     return [Vector(P[i]) for i in dist if float((P[i] - np.array(tuple(J))) @ f) > 0.2 * reach / 1.3]
 
 
-def fit_arm_pose(tpl, mkd, graph, sd, q0, side):
+class NormalTrees:
+    """The model's vertices (world space) in KD-trees by the direction their normal faces (26 directions, each tree
+    holding the vertices within 60 deg of it): the nearest vertex facing about the same way as a given normal; and
+    the model's surface for rays (bvh)."""
+    DIRS = [Vector((x, y, z)).normalized() for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if x or y or z]
+
+    def __init__(self, meshes):
+        from mathutils.bvhtree import BVHTree
+        points, normals, polys = [], [], []
+        for m in meshes:
+            mw, mn = m.matrix_world, m.matrix_world.to_3x3().inverted_safe().transposed()
+            base = len(points)
+            for v in m.data.vertices:
+                points.append(mw @ v.co); normals.append(mn @ v.normal)
+            polys += [[base + i for i in p.vertices] for p in m.data.polygons]
+        self.bvh = BVHTree.FromPolygons(points, polys)
+        groups = [[] for _ in self.DIRS]
+        for i, (p, n) in enumerate(zip(points, normals)):
+            if n.length < 1e-9: continue
+            n = n.normalized()
+            for g, d in zip(groups, self.DIRS):
+                if n.dot(d) > 0.5: g.append(i)
+        self.trees = []
+        for g in groups:
+            kd = KDTree(max(1, len(g)))
+            for i in g: kd.insert(points[i], i)
+            kd.balance()
+            self.trees.append(kd if g else None)
+
+    def dist(self, p, n, clip):
+        """Distance from p to the nearest vertex whose normal faces about like n (at most clip)."""
+        if n.length < 1e-9: return clip
+        kd = self.trees[max(range(len(self.DIRS)), key=lambda j: self.DIRS[j].dot(n))]
+        return min(kd.find(p)[2], clip) if kd else clip
+
+    def outermost(self, p, d, reach):
+        """Distance from p along d to the last surface of the model that way (within reach), or None."""
+        last, o = None, p
+        for _ in range(8):
+            hit = self.bvh.ray_cast(o, d, reach - (o - p).length)
+            if hit[0] is None: break
+            last = (hit[0] - p).length
+            o = hit[0] + d * 1e-4
+        return last
+
+
+def fit_arm_pose(tpl, mkd, graph, sd, q0, side, ntree=None, errs=None):
     """Unrigged model: turn the template's arm segment by segment (clavicle, upper arm, forearm; each about its
     joint, children carried along) so its surface lies on the model's (mean distance to the model's nearest vertex,
     each segment's points and those below it), then the hand onto the model's hand (found over the mesh from the
@@ -1634,21 +2243,41 @@ def fit_arm_pose(tpl, mkd, graph, sd, q0, side):
     names = [p for p, _ in ARM_PARTS]
     if not all(f"{p}_{sd}" in pos for p in names): return None
     pts = {p: [] for p in names}
+    nrm = {p: [] for p in names}
     for tm in tpl.meshes:
+        tn = tm.matrix_world.to_3x3().inverted_safe().transposed()
         for v, w in zip(tm.data.vertices, mesh_weights(tm)):
             if not w: continue
             b = max(w, key=w.get)
             if not b.endswith("_" + sd): continue
             for p, pre in ARM_PARTS:
                 if b.startswith(pre):
-                    pts[p].append(tuple(tm.matrix_world @ v.co)); break
+                    pts[p].append(tuple(tm.matrix_world @ v.co)); nrm[p].append(tuple((tn @ v.normal).normalized()))
+                    break
     if any(len(pts[p]) < 20 for p in names[1:]): return None
     P = {p: np.array(x[::max(1, len(x) // 400)] if x else np.zeros((0, 3))).reshape(-1, 3) for p, x in pts.items()}
+    N = {p: np.array(x[::max(1, len(x) // 400)] if x else np.zeros((0, 3))).reshape(-1, 3) for p, x in nrm.items()}
     tot = {p: Matrix.Identity(4) for p in names}
     CLIP = 0.10
+    lat = Vector((0, 1 if sd == "l" else -1, 0))     # heroes face +X: their left is +Y
 
-    def near(A):
-        return np.array([min(mkd.find(Vector(a))[2], CLIP) for a in A]) if len(A) else np.zeros(0)
+    def near(A, NA=None):
+        if not len(A): return np.zeros(0)
+        if ntree is not None and NA is not None:
+            # to the nearest model vertex facing the same way: an arm pressed into a coat's side or lying across the
+            # skirt is near the model's surface everywhere, but only a real arm has surface facing every way round it
+            out = []
+            for a, n in zip(A, NA):
+                a, n = Vector(a), Vector(n)
+                e = ntree.dist(a, n, CLIP)
+                if n.dot(lat) > 0.6:
+                    # the arm's outer side against the model's outermost surface that way: inside the coat, next to
+                    # the arm, the coat's wall is near too, but the sleeve is still further out
+                    last = ntree.outermost(a, lat, CLIP)
+                    if last is not None: e = max(e, last)
+                out.append(e)
+            return np.array(out)
+        return np.array([min(mkd.find(Vector(a))[2], CLIP) for a in A])
 
     def moved(p, M):
         A = P[p]
@@ -1656,8 +2285,11 @@ def fit_arm_pose(tpl, mkd, graph, sd, q0, side):
         R = np.array(M)
         return A @ R[:3, :3].T + R[:3, 3]
 
+    def turned(p, M):
+        return N[p] @ np.array(M)[:3, :3].T if len(N[p]) else N[p]
+
     def err(k, S):
-        e = [near(moved(p, S @ tot[p])).mean() for p in names[k:] if len(P[p])]
+        e = [near(moved(p, S @ tot[p]), turned(p, S @ tot[p])).mean() for p in names[k:] if len(P[p])]
         if names[k] == "hand":                         # the model's vertices around the hand -> the template's hand
             H = moved("hand", S @ tot["hand"])
             c = H.mean(0)
@@ -1721,8 +2353,14 @@ def fit_arm_pose(tpl, mkd, graph, sd, q0, side):
         log(f"unrigged: {side} arm: no fit onto the model's surface (hand {after * 100:.1f} cm off); arm turned by "
             f"its tip only")
         return None
+    # how far the upper arm and forearm lie from the model's surface (the hand is checked above): an arm fitted
+    # with its elbow off the model's (a local best of the turn search) still passes the hand test
+    seg = {p: float(np.mean([min(mkd.find(Vector(a))[2], CLIP) for a in moved(p, tot[p])]))
+           for p in ("upperarm", "lowerarm") if len(P[p])}
+    if errs is not None: errs[sd] = max(seg.values(), default=0.0)
     log(f"unrigged: {side} arm fitted onto the model's: " + ", ".join(report) +
-        f"; hand surface distance {before * 100:.1f} -> {after * 100:.1f} cm")
+        f"; hand surface distance {before * 100:.1f} -> {after * 100:.1f} cm (" +
+        ", ".join(f"{p} {x * 100:.1f}" for p, x in seg.items()) + " cm)")
     return out
 
 
@@ -1888,6 +2526,60 @@ def fp_arm_mask(tpl, m, segs):
     return arm.tolist()
 
 
+FP_HANG = 0.10           # m: a piece of the first-person arms whose vertices lie (median) further from the arm bones
+FP_HANG_FACE = 0.20      # m: ... or with over FP_HANG_SHARE of them further than this, and any face all of whose
+FP_HANG_SHARE = 0.2      # vertices are further, is left out (fp_drop_hanging)
+
+
+def fp_drop_hanging(tpl, meshes):
+    """First person: leave out what hangs off the arms: pieces (welded by position) lying mostly more than FP_HANG
+    from the arm bones or reaching past FP_HANG_FACE with a good part of them, and faces further than FP_HANG_FACE.
+    Wide kimono sleeves, ribbons, ornaments and props held in the hand are skinned to the forearm and hand (their own
+    swinging bones aren't the survivor's): in the first-person view, where the game bends the arms right in front of
+    the camera, they stood up as big planks and spikes over the gun."""
+    import numpy as np
+    segs = [(n, a, b) for n, a, b in body_segments(tpl) if ARM_BONES_RX.match(n) or n.startswith("clavicle_")]
+    if not segs: return
+    A = np.array([tuple(a) for _, a, _ in segs]); AB = np.array([tuple(b) for _, _, b in segs]) - A
+    L2 = np.maximum((AB * AB).sum(1), 1e-12)
+
+    left = np.array([n.endswith("_l") for n, _, _ in segs])
+
+    def dist(P):
+        """(distance to the nearest arm bone, on the left arm's) per point"""
+        P = np.asarray(P).reshape(-1, 3)
+        t = np.clip(np.einsum("nsk,sk->ns", P[:, None, :] - A[None], AB) / L2, 0.0, 1.0)
+        d = np.linalg.norm(A[None] + t[..., None] * AB[None] - P[:, None, :], axis=2)
+        return d.min(1), left[d.argmin(1)]
+    vid, find = welded_pieces(meshes)
+    D, L = {}, {}
+    for m in meshes:
+        D[m], L[m] = dist([tuple(m.matrix_world @ v.co) for v in m.data.vertices]) if len(m.data.vertices) else \
+            (np.zeros(0), np.zeros(0, bool))
+    per, side = {}, {}
+    for m in meshes:
+        for i, x in enumerate(vid[m]):
+            r = find(x)
+            per.setdefault(r, []).append(D[m][i]); side[r] = side.get(r, 0) + (1 if L[m][i] else -1)
+    # each arm's biggest piece is the arm itself, however far from the survivor's bones (a blocky figure's arm boxes)
+    keep = {max((r for r in per if (side[r] > 0) == sd), key=lambda r: len(per[r]), default=None) for sd in (True, False)}
+    far = {r for r, ds in per.items() if r not in keep and (float(np.median(ds)) > FP_HANG or
+                                                             float(np.mean(np.array(ds) > FP_HANG_FACE)) > FP_HANG_SHARE)}
+    n_p, n_f = len(far), 0
+    for m in meshes:
+        ids, d = vid[m], D[m]
+        gone = [f.index for f in m.data.polygons if find(ids[f.vertices[0]]) in far or
+                (find(ids[f.vertices[0]]) not in keep and all(d[v] > FP_HANG_FACE for v in f.vertices))]
+        if not gone: continue
+        n_f += len(gone)
+        bm = bmesh.new(); bm.from_mesh(m.data); bm.faces.ensure_lookup_table()
+        bmesh.ops.delete(bm, geom=[bm.faces[i] for i in gone], context="FACES")
+        bm.to_mesh(m.data); bm.free()
+    if n_f:
+        log(f"fp: left out {n_f} faces hanging off the arms ({n_p} pieces lying mostly over {FP_HANG * 100:.0f} cm from "
+            f"the arm bones: wide sleeves, ribbons, ornaments; they would stand up over the gun in first person)")
+
+
 def keep_arms(m, mask=None):
     W = mesh_weights(m)
     armv = [sum(x for n, x in w.items() if ARM_BONES_RX.match(n)) / max(1e-6, sum(w.values())) >= 0.5 for w in W]
@@ -1918,13 +2610,13 @@ def keep_arms(m, mask=None):
 # ---- materials, atlas, LODs, export ---------------------------------------------------------------------------------
 
 TEX_KEYS = {"basecolor": ("albedo", "basecolor", "base_color", "basemap", "base_map", "diffuse", "color", "colour", "_bc",
-                          "_d.", "_d_", "_diff", "_col", "_alb"),
+                          "_d.", "_d_", "_diff", "_col", "_alb", "_cl."),
             "normal": ("normal", "_n.", "_n_", "_nrm", "_nor", "norm"),
             "roughness": ("rough",), "metallic": ("metal",), "ao": ("_ao", "occlusion", "ambient"),
             "orm": ("rmao", "_orm", "orm.", "_arm.", "occlusionroughnessmetallic"), "mask": ("maskmap", "mask_map", "_mask"),
             "gloss": ("gloss", "smooth"), "alpha": ("alpha", "opacity", "transparen"),
             "skip": ("emissi", "height", "displace", "_disp", "bump", "spec", "sss", "subsurface", "cavity", "curvature",
-                     "thickness", "id_map", "_id.", "matcap", "shade", "_rim", "outline")}
+                     "thickness", "id_map", "_id.", "matcap", "shade", "_rim", "outline", "_dfl.")}
 IMG_EXT = (".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp", ".webp", ".dds")   # DDS: BC1-BC7 (game rips)
 NO_MATERIAL = "none"                  # the label of faces / objects without a material (--slot none=..., --tex none=...)
 TEX_CACHE = None                      # set per run: where embedded (packed) images are written
@@ -1987,6 +2679,22 @@ def classify_files(files):
 _IMAGES = {}
 
 
+TEX_DIR_NAMES = ("textures", "texture", "tex", "maps")
+
+
+def source_tex_dirs(src):
+    """Where a model's textures may be: its own folder, plus a textures/ folder next to that folder (download layouts
+    such as Sketchfab's source/model.fbx + textures/*.png). Only such named folders of the parent, never the parent."""
+    d = os.path.dirname(os.path.abspath(src))
+    out = [d]
+    par = os.path.dirname(d)
+    if par != d:
+        for f in sorted(os.listdir(par)):
+            q = os.path.join(par, f)
+            if f.lower() in TEX_DIR_NAMES and os.path.isdir(q) and q != d: out.append(q)
+    return out
+
+
 def images_in(dirs):
     for d in dirs:
         if d not in _IMAGES:
@@ -2006,9 +2714,12 @@ def companion_maps(bc_path, dirs, name=""):
     material only links the colour, or has generic names like 'Material #25'). {role: file}"""
     stem = os.path.splitext(os.path.basename(bc_path))[0]
     root = _BC_SUFFIX_RX.sub("", stem) or stem
+    own = os.path.dirname(os.path.abspath(bc_path))
     out = {}
+    # the colour's own folder first: downloads with colour variants (Textures_Skin1/, Textures_Skin2/) repeat the same
+    # file names in each folder; then PNG/TGA before a DDS of the same name
     for f in sorted(set(images_in(list(dirs) + [os.path.dirname(bc_path)])),
-                    key=lambda f: (f.lower().endswith(".dds"), f)):     # PNG/TGA before a DDS of the same name
+                    key=lambda f: (os.path.dirname(os.path.abspath(f)) != own, f.lower().endswith(".dds"), f)):
         s = os.path.splitext(os.path.basename(f))[0]
         if s.lower() == stem.lower() or not s.lower().startswith(root.lower()): continue
         rest = s[len(root):]
@@ -2018,10 +2729,89 @@ def companion_maps(bc_path, dirs, name=""):
     return out
 
 
+# a non-colour map's channel part: head_Normal_OpenGL, head_Mixed_AO, head_Roughness, head_n (Substance Painter
+# exports: <set>_BaseColor, _Normal_OpenGL/_DirectX, _Roughness, _Metallic, _AO / _Mixed_AO)
+_MAP_SUFFIX_RX = re.compile(r"[_\-. ](mixed[_\-. ])?(normal|nrm|nor|n|roughness|rough|metallic|metalness|metal|ao|"
+                            r"ambient_?occlusion|occlusion|orm|rmao|gloss(iness)?|smoothness)([_\-. ](opengl|directx|"
+                            r"ogl|gl|dx))?$", re.I)
+
+
+def colour_beside(map_path):
+    """The base colour file of the set a linked non-colour map belongs to, by name, in that map's own folder:
+    X_Normal_OpenGL.png -> X_BaseColor.png / X_Base_Color.png (else None)."""
+    stem = os.path.splitext(os.path.basename(map_path))[0]
+    root = _MAP_SUFFIX_RX.sub("", stem)
+    d = os.path.dirname(os.path.abspath(map_path))
+    if root == stem or not os.path.isdir(d): return None
+    for f in sorted(os.listdir(d), key=lambda f: (f.lower().endswith(".dds"), f)):
+        s, ext = os.path.splitext(f)
+        if ext.lower() not in IMG_EXT or not s.lower().startswith(root.lower()): continue
+        rest = s[len(root):]
+        if rest and rest[0] in "_-. " and role_from_name("x" + rest + ext) == "basecolor" and \
+                not _MAP_SUFFIX_RX.search(s):
+            return os.path.join(d, f)
+    return None
+
+
 def mask_like_alpha(path):
     """A file's alpha channel looks like a cut-out mask (hair strands): plenty of clear and of solid texels."""
     st = alpha_stats(path)
     return bool(st) and st[0] > 0.15 and st[0] < 0.9 and st[1] < 0.5
+
+
+def material_name_keys(base):
+    """Name parts to look for in texture file names, most specific first: the material name, then without an export
+    hash / UE prefixes (MI_, M_, F_MED_ ...), then with trailing words dropped down to two words."""
+    k = base.replace(" ", "_")
+    keys = [k] if k and k != NO_MATERIAL else []
+    s = re.sub(r"_[0-9a-f]{6,8}$", "", k)
+    t = re.sub(r"^((mi|mat|m)_)?((f|m)_)?(med|sml|lrg|tal|xl)_", "", s)     # M_MED_, M_F_MED_, F_MED_
+    s = t if t != s else re.sub(r"^(mi|mat|m)_", "", s)
+    words = s.split("_")
+    while len(words) >= 2:
+        w = "_".join(words)
+        if w not in keys: keys.append(w)
+        words = words[:-1]
+    return keys
+
+
+_borrowing = set()
+
+
+def files_named(key_name, tex_dirs):
+    """{role: file} of the texture files named <...>key_name<_role> (the closest names first)."""
+    out, cands = {}, []
+    for f in images_in(tex_dirs):
+        fl = os.path.basename(f).lower().replace(" ", "_")
+        i = fl.find(key_name)
+        if i >= 0: cands.append((len(fl) - len(key_name), f))
+    for _, f in sorted(cands):
+        k = role_from_name(f)
+        if k and k != "skip": out.setdefault(k, f)
+    return out
+
+
+# UE game rips (Fortnite): parts whose material links no texture of its own but uses another set's, by the last word of
+# the name: the eyes are painted in a corner of the head's texture, hair uses the "face accessory" set
+BORROWED_SET = ((re.compile(r"eyes?|eyeballs?"), "head", "the eyes use the head material's"),
+                (re.compile(r"hair"), "faceacc", "hair uses the face-accessory textures"))
+
+
+def borrowed_set(mat):
+    """(material, why) whose textures a material of the same set without its own uses: X_Eyes_<hash> -> X_Head_<hash2>,
+    X_Hair -> textures T_X_FaceAcc_* (a material or just the files: then the name part to look for)."""
+    keys = material_name_keys(re.sub(r"\.\d{3}$", "", mat.name).lower())
+    for rx, other, why in BORROWED_SET:
+        want = set()
+        for k in keys:
+            w = k.split("_")
+            if len(w) >= 2 and rx.fullmatch(w[-1]): want.add("_".join(w[:-1] + [other]))
+        if not want: continue
+        for m in bpy.data.materials:
+            if m is mat or not m.users: continue
+            if want & set(material_name_keys(re.sub(r"\.\d{3}$", "", m.name).lower())): return m, why
+        return sorted(want, key=len)[-1], why        # no such material: its texture files by name
+    return None, None
 
 
 def material_textures(mat, tex_dirs, user=None, n_materials=1):
@@ -2089,22 +2879,71 @@ def material_textures(mat, tex_dirs, user=None, n_materials=1):
         log(f"  material {base}: {os.path.basename(out['alpha'])} is linked only as the opacity; its name says base "
             f"colour: used as the colour too")
         out["basecolor"] = out["alpha"]
+    if "basecolor" not in out:
+        # only a normal (or roughness ...) map linked: Blender's FBX export keeps just the images wired straight into
+        # the shader, so a colour that goes through a Mix node (x AO) is lost while the normal map stays; the set's
+        # colour is next to it by name (X_Normal_OpenGL.png -> X_BaseColor.png)
+        for k in ("normal", "roughness", "metallic", "ao", "orm", "gloss"):
+            bc = colour_beside(out[k]) if k in out else None
+            if bc:
+                log(f"  material {base}: no colour image linked, only {os.path.basename(out[k])} ({k}); the colour "
+                    f"of its set next to it: {os.path.basename(bc)}")
+                out["basecolor"] = bc
+                break
     if "basecolor" not in out and mat is not None:
         # nothing linked: guess by material name; files named exactly after it first (<mat>_BaseColor before
-        # <mat>Inner_BaseColor, another material's set)
-        key_name = base.replace(" ", "_")
-        cands = []
-        for f in images_in(tex_dirs):
-            fl = os.path.basename(f).lower().replace(" ", "_")
-            i = fl.find(key_name) if key_name else -1
-            if i < 0: continue
-            nxt = fl[i + len(key_name):i + len(key_name) + 1]
-            cands.append((0 if not nxt.isalnum() else 1, f))
-        best = min((c for c, f in cands), default=None)
-        for c, f in cands:
-            if c != best: continue
-            k = role_from_name(f)
-            if k and k != "skip": out.setdefault(k, f)
+        # <mat>Inner_BaseColor, another material's set). Then the name as UE rips write it: material MI_X_Body_1cbb1ecc
+        # (M_/MI_ prefix, F_MED_ size tag, export hash) for textures T_X_Body_D; last, trailing words dropped
+        # (X_Head_WM -> X_Head), never below two words.
+        for key_name in material_name_keys(base):
+            cands = []
+            for f in images_in(tex_dirs):
+                fl = os.path.basename(f).lower().replace(" ", "_")
+                i = fl.find(key_name)
+                if i < 0: continue
+                rest = os.path.splitext(fl)[0][i + len(key_name):]
+                # X_D before X_Body_D (only a map tag left after the name), then a word boundary, then anything
+                cands.append((0 if re.fullmatch(r"[_\-. ]+[a-z0-9]+(\.[a-z]+)?", rest) or not rest else
+                              1 if not rest[:1].isalnum() else 2, f))
+            if not cands and key_name != base.replace(" ", "_"):
+                # the name part's words in order with others between (Cosmos_Body: T_M_MED_Cosmos_Heavy_Body_D),
+                # whole words or their ends (Armor: BodyArmor; Body is not BodyArmor); fewest words between first
+                kw = key_name.split("_")
+                for f in images_in(tex_dirs):
+                    fw = re.split(r"[_\-. ]+", os.path.basename(f).lower())
+                    j, gap, start = 0, 0, None
+                    for x, w in enumerate(fw):
+                        if j < len(kw) and (w == kw[j] or (len(kw[j]) >= 4 and w.endswith(kw[j]))):  # Armor: BodyArmor
+                            if start is None: start = x
+                            j += 1
+                        elif start is not None and j < len(kw): gap += 1
+                    if j == len(kw): cands.append((2 + gap, f))
+            best = min((c for c, f in cands), default=None)
+            for c, f in cands:
+                if c != best: continue
+                k = role_from_name(f)
+                if k and k != "skip": out.setdefault(k, f)
+            if "basecolor" in out:
+                if key_name != base.replace(" ", "_"):
+                    log(f"  material {base}: textures found by the name part {key_name!r}: "
+                        f"{', '.join(os.path.basename(v) for v in out.values())}")
+                break
+    if "basecolor" not in out and mat is not None and not _borrowing:
+        other, why = borrowed_set(mat)
+        got = {}
+        if isinstance(other, str):                   # only texture files: T_X_FaceAcc_D ...
+            got = files_named(other, tex_dirs)
+            label = other
+        elif other is not None:
+            _borrowing.add(mat.name)
+            try:
+                got = material_textures(other, tex_dirs, user, n_materials)
+            finally:
+                _borrowing.discard(mat.name)
+            label = re.sub(r"\.\d{3}$", "", other.name)
+        if "basecolor" in got:
+            log(f"  material {base}: no textures of its own; {why} ({label}): {os.path.basename(got['basecolor'])}")
+            for k, v in got.items(): out.setdefault(k, v)
     if "basecolor" not in out and n_materials == 1:
         got = classify_files(list(images_in(tex_dirs)))
         if "basecolor" in got:
@@ -2669,7 +3508,7 @@ def finish(o, tpl, meshes):
     out = o["out"]
     os.makedirs(out, exist_ok=True)
     TEX_CACHE = os.path.join(out, "textures")
-    tex_dirs = [os.path.dirname(os.path.abspath(o["source"]))] + ([o["textures"]] if o.get("textures") else [])
+    tex_dirs = source_tex_dirs(o["source"]) + ([o["textures"]] if o.get("textures") else [])
     for m in meshes:                                           # triangulate + clean up before LODs and export
         select_only([m], m)
         bpy.ops.object.mode_set(mode="EDIT")
@@ -2957,7 +3796,7 @@ def inspect(src, out, tex_user=None):
     global TEX_CACHE
     TEX_CACHE = os.path.join(os.path.dirname(out), "textures")
     objs = import_any(src)
-    tex_dirs = [os.path.dirname(os.path.abspath(src))]
+    tex_dirs = source_tex_dirs(src)
     info = {"objects": [], "materials": [], "armatures": [], "material_info": {}}
     mats = []
     for o in objs:
@@ -3017,6 +3856,12 @@ def inspect(src, out, tex_user=None):
                 info["material_info"][n]["textures"] = tx
                 info["material_info"][n]["look"] = appearance(tx, parts.get(n, []))
             continue
+        c = bsdf_values(m).get("basecolor")
+        if not tx.get("basecolor") and c and max(c) - min(c) < 0.01 and min(c) >= 0.4:
+            # nothing to colour it with (a file exported without its images, only the exporter's default light grey,
+            # 0.5-0.8; dark flat colours are meant): say so here, else the modder only finds out from a white preview
+            log(f"  material {n}: WARNING: no colour image found and its colour is a flat grey ({c[0]:.2f}): it will "
+                f"look plain white/grey; if the download has its textures elsewhere: --tex {n}=<file prefix|folder>")
         mi = {"textures": tx, "faces": faces.get(n, 0), "blend": getattr(m, "blend_method", "OPAQUE"),
               "factor": basecolor_factor(m), "objects": owners.get(n, []), "own_objects": solo.get(n, [])}
         ap = tx.get("alpha") or tx.get("basecolor")

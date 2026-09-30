@@ -4,8 +4,9 @@
 # Steam must be running. Extra args are passed to the game.
 # B4B_STEAM=flatpak (launch/lane.sh; lane 2, test prefixes only): Proton and the game run inside the Flatpak Steam's
 # own sandbox (flatpak enter), sharing its PID and SysV IPC namespaces and /dev/shm, so the game's Steam
-# API reaches the Flatpak client (account dreamsofants) and never the native one. Needs that Steam started by
-# launch/flatpak-steam.sh (own IPC namespace); refused otherwise.
+# API reaches the Flatpak client (account dreamsofants) and never the native one; Steam3Master = that client's
+# loopback service port (both clients share the network namespace, the native one may own the default 57343). Needs
+# that Steam started by launch/flatpak-steam.sh (own IPC namespace); refused otherwise.
 set -euo pipefail
 steam="$HOME/.local/share/Steam"
 source "$(dirname "$0")/lane.sh"   # B4B_LANE=2: the Flatpak game copy
@@ -28,6 +29,8 @@ if [[ $B4B_STEAM == flatpak ]]; then   # preflight before touching the game fold
     echo "run.sh: B4B_STEAM=flatpak refused: $st; (re)start it with launch/flatpak-steam.sh start" \
          "(docs/investigations/flatpak-steam.md)" >&2; exit 1; }
   parent=$(sed -E 's/^flatpak steam: pid ([0-9]+),.*/\1/' <<<"$st") ns=$(readlink "/proc/$parent/ns/ipc")
+  service=$(sed -nE 's/.*, service (127\.0\.0\.1:[0-9]+),.*/\1/p' <<<"$st")
+  [[ -n $service ]] || { echo "run.sh: B4B_STEAM=flatpak: no service port for the Flatpak Steam ($st)" >&2; exit 1; }
   # The game joins that sandbox with `flatpak enter` (all its namespaces). NOT through Steam's LaunchAlongsideSteam
   # D-Bus service: the native Steam registers the same well-known name, so it may lead to the NATIVE client.
   instance=
@@ -52,7 +55,9 @@ if [[ $B4B_STEAM == flatpak ]]; then
   # `steam`): ~ there is $fphome (its Steam at ~/.local/share/Steam), the test prefix is exposed at its host path.
   # flatpak enter starts with an empty environment: Steam's own (from its process) plus ours.
   sgame="$HOME${game#"$fphome"}" ssteam="$HOME/.local/share/Steam"
-  envs=(STEAM_COMPAT_DATA_PATH="$B4B_PREFIX" STEAM_COMPAT_CLIENT_INSTALL_PATH="$ssteam")
+  # Steam3Master: the game's steamclient.so otherwise connects to 127.0.0.1:57343, which belongs to whichever
+  # Steam client started first (flatpak-steam.sh); the native one drops it and the game dies in ~6 s
+  envs=(STEAM_COMPAT_DATA_PATH="$B4B_PREFIX" STEAM_COMPAT_CLIENT_INSTALL_PATH="$ssteam" Steam3Master="$service")
   if [[ -n ${GAMESCOPE_WAYLAND_DISPLAY:-} ]]; then
     # under B4B_GPU's gamescope (launch/instance.sh; its sockets in $XDG_RUNTIME_DIR = <runtime>/b4b-lane2): its
     # Vulkan WSI layer (Flatpak extension org.freedesktop.Platform.VulkanLayer.gamescope//25.08) presents through

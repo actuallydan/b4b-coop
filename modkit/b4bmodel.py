@@ -673,10 +673,12 @@ def fit_args(o, keys=("bonemap", "drop", "weights", "twist", "facing", "face", "
 # ---- which template slot each of the model's materials goes to (--slot overrides) -----------------------------------
 SLOT_SKIP_RX = re.compile(r"(_lod$|teeth|glass|lens|eye|hidden|cloth\d*$|occ)", re.I)
 MAT_HAIR_RX = re.compile(r"hair|fur\b|ponytail|pony_?tail|afro|bangs?\b|fringe|braid|\bbun\b|mane|beard|mustache|"
-                         r"moustache|wig|sideburn", re.I)
+                         r"moustache|wig|sideburn|lekku|montral|head_?tails?", re.I)
 MAT_OVERLAY_RX = re.compile(r"lash|brow(?!n)|eyeline|eye_?liner|stubble", re.I)
 MAT_EYE_RX = re.compile(r"eye|iris|cornea|pupil|sclera", re.I)
-MAT_SKIN_RX = re.compile(r"skin|face|head|flesh|body|mouth|teeth|tongue|nail", re.I)
+# "skin" with a number after it is a colour variant (top_Skin1 / top_Skin2: a model sold with several "skins"), not
+# skin: such materials go by their other name parts and what their texels look like
+MAT_SKIN_RX = re.compile(r"skin(?![_\-. ]?\d)|face|head|flesh|body|mouth|teeth|tongue|nail", re.I)
 MAT_CLOTH_ZONES = [(re.compile(r"pant|trouser|jean|short|skirt|leg|bottom|shoe|boot|sock|feet|foot|lower", re.I),
                     re.compile(r"leg|pant|lower", re.I)),
                    (re.compile(r"gear|bag|belt|hat|cap\b|helmet|glove|glass|accessor|strap|armou?r|mask|pouch|holster|"
@@ -781,6 +783,10 @@ def auto_slots(mats, minfo, s3, user, regions=None):
             drop.append(m)
             why[m] = (f"objects without a material ({', '.join(objs[:4])}{' ...' if len(objs) > 4 else ''}); keep them "
                       f"with --slot none=<slot> [--tex none=<image>]")
+            continue
+        if re.search(r"(^|[_\-. ])outline([_\-. ]|$)", m, re.I):
+            # toon outline (inverted hull): a black shell around the whole body that the game's shaders can't flip
+            drop.append(m); why[m] = "toon outline shell (drawn inside out in its game; here it would cover the body)"
             continue
         clear = inf.get("alpha_clear", 0.0)
         alpha = clear > 0.2 and (inf.get("blend", "OPAQUE") != "OPAQUE" or "alpha" in inf.get("textures", {}) or clear > 0.4)

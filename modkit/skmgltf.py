@@ -712,7 +712,7 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
     tmpl_ntc = tmpl_lod["static_vb"]["num_texcoords"]
     # the bind skeleton of a model fitted with its own proportions: the glTF's joints are compared to it
     set_bone_positions(s, bind_bones or {})
-    lods = []
+    lods, uv_cut = [], False
     for i, src in enumerate(srcs):
         print(f"LOD{i}: {src}")
         verts, sections, ntc = read_gltf(Gltf(to_gltf(src)), s, bind, matmap)
@@ -720,7 +720,14 @@ def import_gltf(template, srcs, out, matmap=None, bind="keep", copies=1, sockets
             if slot in recolor:
                 for v in {x for t in tris for x in t}:
                     verts[v] = verts[v][:5] + (recolor[slot],) + verts[v][6:]
-        lods.append(build_lod(s, verts, sections, max(ntc, tmpl_ntc), tmpl_lod))
+        # the mesh gets the template's UV channel count: its materials read only those, and more crashes the game.
+        # A model with 7 UV sets (Sketchfab export) gave a mesh that took down every machine's render thread the moment
+        # it was worn (UE 4.25 draws a skeletal mesh with at most MAX_TEXCOORDS = 4; retail survivors have 1-3)
+        if ntc > tmpl_ntc and not uv_cut:
+            uv_cut = True
+            print(f"  the model has {ntc} UV channels, the template {tmpl_ntc}: kept the first {tmpl_ntc} "
+                  f"(its materials read only those; more crashes the game's renderer)")
+        lods.append(build_lod(s, verts, sections, tmpl_ntc, tmpl_lod))
     if len(srcs) == 1 and copies > 1:
         lods = lods * copies
     nl = min(len(lods), len(m["lods"]))
