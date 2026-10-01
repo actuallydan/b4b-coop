@@ -7,7 +7,7 @@ Guide: docs/meshes.md; how it works: docs/investigations/mesh-mods.md §6 (b4b-c
         [--mode 3p|fp] [--proportions own|fit|0..1] [--bonemap map.json] [--lods 1,0.5,0.25,0.12,0.05]
         [--slot SRCMAT=SLOT]... [--drop REGEX]
         [--weights source|transfer] [--twist template|none] [--textures DIR] [--facing -y] [--atlas SET=m1,m2]...
-        [--drop_mat MATERIAL]... [--face auto|off] [--mouth auto|on|off] [--face_eyes x,y,z;x,y,z] [--hair_bones a,b,c;d,e [--hair_swing 1]] [--cloth auto|MAT,...]
+        [--drop_mat MATERIAL]... [--face auto|off] [--mouth auto|on|off] [--face_eyes x,y,z;x,y,z] [--hair_bones a,b,c;d,e [--hair_swing 1]] [--hair_pin on|off] [--cloth auto|MAT,...]
         [--slotset SLOT=SET]... [--tex MAT=<prefix|dir>]... [--probe 1]
   blender -b --python blender/b4bfit.py -- weapon --template T.glb --source gun.fbx --out DIR
         [--forward +x] [--up +z] [--scale fit|<factor>] [--anchor trigger|grip|none] [--part REGEX=BONE]...
@@ -950,6 +950,7 @@ def fit_character(o):
             if not x.data.polygons:
                 log("dropping", x.name, "(only dropped materials)"); bpy.data.objects.remove(x); src_objs.remove(x)
     mark_cloth_bones(src_objs, o.get("cloth", ""))
+    if o.get("mode", "3p") == "3p": dangle_module().mark_hair_bones(src_objs, log)
     keyed = [x.name for x in src_objs if x.type == "MESH" and x.data.shape_keys]
     face_on = o.get("mode", "3p") == "3p" and o.get("face", "auto") != "off"
     face_src = None
@@ -1436,18 +1437,22 @@ def secondary_motion(o, tpl, meshes):
     """3P: --hair_bones "a,b,c;d,e": skin the back hair to the survivor's simulated hair chains (--hair_swing 0..1);
     --cloth auto|MAT[:cape|:lower],...: split skirts, coat tails and capes off as cloth sections and build their
     simulation meshes (manifest extras "cloth", written by modkit/cloth.py). Returns the meshes (cloth pieces added)."""
-    if not o.get("hair_bones") and o.get("cloth", "off") in ("off", ""): return meshes
+    pin = o.get("hair_pin", "on") != "off"
+    if not o.get("hair_bones") and not pin and o.get("cloth", "off") in ("off", ""): return meshes
     dm = dangle_module()
+    slot_of = dict(x.split("=", 1) for x in o.get("slot", []))
+    def is_hair(mat):
+        if not mat or dm.NOT_HAIR_RX.search(mat): return False
+        sl = slot_of.get(mat)
+        return bool(re.search(r"hair", sl, re.I)) and not dm.CLOTHES_RX.search(mat) if sl else \
+            bool(dm.HAIR_RX.search(mat))
     if o.get("hair_bones"):
-        slot_of = dict(x.split("=", 1) for x in o.get("slot", []))
-        def is_hair(mat):
-            if not mat or dm.NOT_HAIR_RX.search(mat): return False
-            sl = slot_of.get(mat)
-            return bool(re.search(r"hair", sl, re.I)) and not dm.CLOTHES_RX.search(mat) if sl else \
-                bool(dm.HAIR_RX.search(mat))
         chains = [c.split(",") for c in o["hair_bones"].split(";") if c]
         dm.rig_hair(tpl, meshes, chains, is_hair, log, float(o.get("hair_swing", 1.0)),
                     rigged=o.get("weights") != "done")
+    if pin:
+        # after the chain: long hair lying on the back keeps only the swing its clearance from the body allows
+        dm.pin_hair(tpl, meshes, is_hair, log)
     if o.get("cloth", "off") not in ("off", ""):
         # --cloth_slots: the slots whose master material has bUsedWithClothing (b4bmodel reads it): a cloth section
         # on any other slot renders the engine's default material (grey) and the game logs "missing bUsedWithClothing"
@@ -1464,6 +1469,47 @@ def secondary_motion(o, tpl, meshes):
         elif o["cloth"] not in ("auto", "on"):
             log("cloth: nothing to simulate")
     return meshes
+
+
+def garment_bone_faces(parts):
+    """Faces (of [(object, polygons)]) mostly on the source rig's own garment physics bones (b4bdangle.GARMENT_BONES:
+    Fortnite dyn_skirt_*, dyn_coat_* ...), for b4bmodel: such a material goes on a clothing slot and its skirt or coat
+    becomes cloth with --cloth auto. Returns the face count (0 without such bones)."""
+    rx = re.compile(dangle_module().GARMENT_BONES, re.I)
+    n, pts, allz = 0, [], []
+    for o, ps in parts:
+        hit = {g.index for g in o.vertex_groups if rx.search(g.name)}
+        mw = o.matrix_world
+        allz += [(mw @ v.co).z for v in o.data.vertices]
+        if not hit: continue
+        share = []
+        for v in o.data.vertices:
+            tot = sum(g.weight for g in v.groups)
+            share.append(sum(g.weight for g in v.groups if g.group in hit) / tot if tot else 0.0)
+        for p in ps:
+            if sum(share[i] for i in p.vertices) / len(p.vertices) >= 0.5:
+                n += 1
+                pts += [mw @ o.data.vertices[i].co for i in p.vertices]
+    if not n: return 0
+    # it must hang like a skirt or coat (b4bdangle.hang_check, before the fit: the crotch at half the body's
+    # height, or the rig's thigh joints): coat tails a hand long, a collar or a hip ruffle stay skinned, and the
+    # material keeps its own slot
+    z0, z1 = min(allz), max(allz)
+    H = max(1e-6, z1 - z0)
+    crotch = z0 + 0.5 * H
+    arm = next((md.object for o, _ in parts for md in o.modifiers if md.type == "ARMATURE" and md.object), None)
+    if arm:                                         # the rig's thigh joints, when it names them
+        th = [arm.matrix_world @ b.head_local for b in arm.data.bones
+              if re.search(r"(^|[_.\- ])(thigh|upperleg|upper_leg|upleg)", b.name, re.I)
+              and not re.search(r"twist|roll|helper|ik|dyn", b.name, re.I)]
+        if th: crotch = min(p.z for p in th)
+    top, bot = max(p.z for p in pts), min(p.z for p in pts)
+    below = [p for p in pts if p.z < crotch - 0.02 * H]
+    wide = below and max(max(p.x for p in below) - min(p.x for p in below),
+                         max(p.y for p in below) - min(p.y for p in below)) >= 0.065 * H
+    if top < crotch + 0.02 * H or bot > crotch - 0.08 * H or not wide:
+        return 0
+    return n
 
 
 def mark_cloth_bones(objs, spec):
@@ -3869,6 +3915,8 @@ def inspect(src, out, tex_user=None):
             st = alpha_stats(ap)
             if st: mi["alpha_clear"], mi["alpha_soft"] = st
         mi["look"] = appearance(tx, parts.get(n, []))
+        gb = garment_bone_faces(parts.get(n, []))
+        if gb: mi["garment_bones"] = gb
         bc = tx.get("basecolor")
         if bc and os.path.isfile(bc):
             cov = uv_cover(parts.get(n, []))

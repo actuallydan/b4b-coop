@@ -24,6 +24,8 @@ and installs); guide: docs/meshes.md. How it works: docs/investigations/mesh-mod
                                 fit: stretched onto the survivor's joints; a number blends. FP arms always fit
         [--hair-physics auto|off]  auto (default): long hair swings on the survivor's physics hair bones (templates with a
                                    hair chain: Holly, Mom, ...; mesh-mods.md §14) [--hair-swing 0..1]
+        [--hair-pin auto|off]  auto (default): long hair lying on the back/shoulders follows the body under it as far as
+                               its clearance needs (it would swing through it with the head or the hair chain)
         [--cloth auto|off|MAT[:cape|:lower],...]  auto (default): skirts, dresses, long coats (open front too) and capes
                                    become cloth on any outfit (one without cloth gets a clothing asset added); named
                                    garments must also hang like one (from above the crotch to well below it), parts
@@ -721,7 +723,11 @@ def region_fit(a, b):
     return sum(min(a.get(r, 0.0), b.get(r, 0.0)) for r in REGIONS)
 
 
-def auto_slots(mats, minfo, s3, user, regions=None):
+GARMENT_BONE_FACES = 150    # faces on the rig's own garment bones that make a material a garment (b4bfit inspect)
+GARMENT_BONES = r"^dyn_(main_)?(skirt|skit|dress|gown|coat|cape|cloak|robe|poncho|kilt|tail)"   # = b4bdangle's
+
+
+def auto_slots(mats, minfo, s3, user, regions=None, cloth_on=True):
     """{material: slot} for every kept material, and the dropped ones. --slot MAT=SLOT (or =drop) wins; the rest by
     what the material is: its name and its images' names when they say it (hair, lashes, eyes, skin, trousers ...),
     else what it looks like and where it sits on the body: alpha cards -> the hair slot; texels mostly in skin colours ->
@@ -822,6 +828,12 @@ def auto_slots(mats, minfo, s3, user, regions=None):
         # section would render grey: skin masters don't draw clothing)
         cloth_named = re.search(r"cloth|suit|shirt|pant", n) or GARMENT_RX.search(m) or \
             (GARMENT_RX.search(n) and not MAT_SKIN_RX.search(m))
+        # a game rip's body material that carries a skirt or coat on the rig's own garment bones (Fortnite dyn_skirt_*,
+        # dyn_coat_*): a clothing slot, so that part can be cloth (on a skin slot it stays rigid on the hips and the
+        # legs go through it). Its bare skin is drawn by the outfit's cloth material then
+        dyn = cloth_on and inf.get("garment_bones", 0) >= GARMENT_BONE_FACES and not cloth_named and cloth
+        if dyn:
+            cloth_named = True
         named = any(rx.search(n) for rx in (MAT_SKIN_RX, MAT_CLOTH_ZONES[0][0], MAT_CLOTH_ZONES[1][0])) or cloth_named
         r = mreg.get(m, {})
         if skin and not cloth_named and (MAT_SKIN_RX.search(n) or single or
@@ -838,6 +850,11 @@ def auto_slots(mats, minfo, s3, user, regions=None):
         for zi, (rx_mat, rx_slot) in enumerate(MAT_CLOTH_ZONES):
             if rx_mat.search(n):
                 out[m], why[m] = cloth_slot(m, rx_slot if zi < 2 else None)
+                if dyn:
+                    if zi == 1:                      # not gear: a body-wide material (Pearl... matched "ear")
+                        out[m], why[m] = cloth_slot(m, MAT_CLOTH_ZONES[2][1])
+                    why[m] = (f"a skirt/coat on the model's own garment bones ({inf['garment_bones']} faces): a clothing "
+                              f"slot ({why[m]}), so the garment can be cloth; --slot {m}=<skin slot> keeps it skinned")
                 if zi == 2 and not re.search(r"body|torso|top|upper|jacket|shirt", n) and not GARMENT_RX.search(m):
                     by_look.add(m)                   # (a dress is named: it doesn't follow its necklace to gear)
                 break
@@ -912,8 +929,12 @@ def survivor(o):
                 (["--rigged_out", rigged] if unrigged else []))
     rig_args = ["--rigged", rigged] if unrigged and os.path.exists(rigged) else []
     regions = json.load(open(os.path.join(rp, "regions.json")))
-    slot3, drop = auto_slots(mats, minfo, s3, user, regions)
+    slot3, drop = auto_slots(mats, minfo, s3, user, regions, cloth_on=o.get("cloth", "auto") != "off")
     o.o["drop_mat"] = drop
+    if o.get("cloth", "auto") in ("auto", "on"):
+        cslots = {sn for sn, mi, tex, master in s3 if master_uses_clothing(master, src)}
+        o.o["garment_bone_mats"] = [m for m in mats if m not in drop and slot3.get(m) in cslots and
+                                    minfo.get(m, {}).get("garment_bones", 0) >= GARMENT_BONE_FACES]
     mats = [m for m in mats if m not in drop]
     if not mats: die("every material of the model is dropped: nothing left to fit")
     bc3 = {s: basecolor_of(tex) for s, mi, tex, master in s3}
@@ -1366,17 +1387,24 @@ def dangle_args(o, tp, src):
             log(f"hair: {os.path.basename(tp)}'s physics asset ({(pa or '?').split('.')[-1]}) has no simulated hair "
                 f"bones for its skeleton: the hair moves with the head (templates with a hair chain: Holly (Elite 00 "
                 f"...), Holly Elite 06, Walker Elite 03, Doc Elite 03, Mom, Mom Elite 07)")
+    if o.get("hair_pin"): a += ["--hair_pin", o["hair_pin"]]
     if o.get("cloth", "auto") != "off":
-        a += ["--cloth", o.get("cloth", "auto")]
+        spec = o.get("cloth", "auto")
+        if spec in ("auto", "on") and o.get("garment_bone_mats"):
+            # materials with a skirt or coat on the rig's own garment bones: those faces, on top of auto's
+            spec = "auto," + ",".join(f"{m}@{GARMENT_BONES}" for m in o["garment_bone_mats"])
+        a += ["--cloth", spec]
         n = len(cloth.cloth_assets(skm.SkeletalMesh(tp)))
         # outfits without (enough) clothing assets get new ones, copied from a retail coat's: have it extracted
-        missing = [x for x in cloth.NEEDS if not os.path.exists(upkg.game_path_to_file(x, src) or "")]
+        # ... and the physics assets of the outfit's own clothing assets (collision bodies: cloth.write_asset)
+        need = cloth.NEEDS + cloth.asset_physics_assets(skm.SkeletalMesh(tp))
+        missing = [x for x in need if not os.path.exists(upkg.game_path_to_file(x, src) or "")]
         if missing and find_b4bmod():
             subprocess.run([sys.executable, find_b4bmod(), "extract", *missing, "-o", src], capture_output=True,
                            text=True)
-            missing = [x for x in cloth.NEEDS if not os.path.exists(upkg.game_path_to_file(x, src) or "")]
-        if missing:
-            log(f"cloth: {', '.join(missing)} not extracted: skirts/coats/capes only on outfits with cloth "
+            missing = [x for x in need if not os.path.exists(upkg.game_path_to_file(x, src) or "")]
+        if any(x in cloth.NEEDS for x in missing):
+            log(f"cloth: {', '.join(x for x in missing if x in cloth.NEEDS)} not extracted: skirts/coats/capes only on outfits with cloth "
                 f"({os.path.basename(tp)} has {n} clothing asset(s))")
             if not n: a = a[:-2]
         if "--cloth" in a:
