@@ -6,9 +6,15 @@ Unofficial private co-op for **Back 4 Blood**: play the game's offline mode toge
 > Unofficial and unaffiliated. For playing a game you own with friends in offline mode. It never touches the
 > official online services. Use at your own risk. See [Safety & disclaimer](#safety--disclaimer).
 
+> This mod was made quickly for my group of friends, it is not something I intend to support with any degree of
+> dedication. Pull requests for features or bug fixes are welcome. If you find it useful and fun, consider starring
+> the project and sharing it with friends. Eventually running your own server might be the only way to play this game
+> cooperatively.
+
 
 ## Install
-> Upgrading from an older b4bcoop? Do step 3 of [Uninstall](#uninstall) first.
+> Already have b4bcoop 0.7.0 or newer? You don't need to install again: update from inside the game, see
+> [Update](#update). Upgrading from something older? Do step 3 of [Uninstall](#uninstall) first.
 
 **Everyone who plays together installs it, and everyone needs the same
 version.**
@@ -117,23 +123,46 @@ Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `
   Hope or a mission. Fallback: the host looks up their 17-digit Steam ID (Steam → click your account name at the top
   right → Account details), and you type `/join steam:<that number>` in the game's chat while in your own Fort Hope.
 
-## Status
+## Features
 
-The mod works notionally. Development is in progress and it still requires rigorous testing.
+**Co-op**
+- Your offline Fort Hope is a co-op game: you host automatically, and Steam friends join with **Join Game** in their
+  Steam friends list or through a Steam invite. Steam's peer-to-peer networking, so no port forwarding.
+- Everyone follows the host into missions and across chapters, and joiners take over bot slots.
+- Everyone plays with their **own deck**, keeps their **own rewards** (supply points, skull totems, unlocks,
+  consumables land in their own profile) and can play **burn cards**, charged to their own profile.
+- **5+ players** (`teamsize=5` on the host); a clean "Server full." when nobody else fits.
+- Who may join: Steam friends by default, or anyone, or a list of Steam IDs. Kick, ban and lock.
+- Everyone must run the same version; a mismatch is refused with a message that points to the Updates tab.
 
-Hosting, joining through Steam (no port forwarding required), following into missions and across chapters, taking over bot slots, using your own deck, **your own rewards** (supply points etc. land in your profile), **burn cards** for everyone.
+**In game**
+- The **`~` window**: players, session, camera, flashlight, cheats, add-ons, models, add-on browser and updates, with
+  key bindings and settings saved for you. The same things also work as chat commands (`/help`).
+- **Manual flashlight** toggle (L), plus a wider, longer or brighter beam for your own view.
+- **Third-person camera** for your own hero (`/thirdperson`, N), with free look while you stand still.
+- **Change your look** with `/model`: other survivors' outfits and pieces, and add-on outfits. Others see it too if
+  they have the add-on; otherwise they see your survivor.
+- **Cheats** (host, opt-in, `/cheats on`): god mode, fly, noclip, spawn, horde control, slow motion and more, as a
+  sandbox. Rewards still work.
 
-The game has almost the entire retail experience with **no third-party network traffic**.
+**Add-ons**
+- Drop `.pak` add-ons into `b4bcoop-addons`: textures, custom outfits and weapon looks (up to 512 add-ons and 512
+  outfits). Load order and on/off in the `~` window. Nobody learns which add-ons you have; the host decides whether
+  joiners may bring gameplay-changing ones.
+- **Browse** tab: add, remove and update free add-ons from a signed catalog (still empty for now).
+- **Modkit** (separate download, `b4bcoop-modkit-<version>.zip`): turn a downloaded character (FBX, glTF/glb, VRM, OBJ,
+  DAE, .blend) or a gun model into an outfit or weapon look, with hair physics, cloth for skirts, coats and capes,
+  talking and blinking faces, and first-person arms. See [modkit/README.md](modkit/README.md).
 
-So far we've implemented:
-- a **manual flashlight toggle** (L), optional, and a wider/longer/brighter beam for your own view (`~` window, Flashlight)
-- an optional **third-person camera** for your own hero (`/thirdperson`), with free look around it while you stand still
-- **5-player+** sessions (`teamsize=5` on the host), and a clean "Server full." instead of a host crash when too many
-join. Steam joins between two real accounts are verified; clicking Join Game in Steam's own friends list is new in
-this version and not yet tested between two accounts.
+**Updates and safety**
+- **In-game updater** (`~` → Updates, since 0.7.0): checks GitHub, verifies the release signature, installs on the
+  next start, and can go back; an update that doesn't start properly is reverted automatically.
+- No third-party network traffic: the game's online services are blocked while the mod runs, and the game's own port
+  only listens on your PC.
 
-- Verified on Linux (Proton) and Windows (see Troubleshooting).
-- Supports the current Steam build only; the mod checks the build and does nothing on a mismatch presently.
+**Limits**
+- Tested on Linux (Proton) and Steam Deck; Windows is lightly tested (see Troubleshooting).
+- Supports the current Steam build of Back 4 Blood only; on another build the mod checks and does nothing.
 
 ## Safety & disclaimer
 - **Unofficial.** Not made, endorsed or supported by Turtle Rock Studios or Warner Bros. Games.

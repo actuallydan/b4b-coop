@@ -70,6 +70,13 @@ cat > "$out/b4bcoop-README.txt" <<TXT
 b4bcoop $version (protocol $protocol) - private Back 4 Blood co-op in offline mode, with your Steam friends.
 No Warner Bros / Turtle Rock servers. Everyone who plays together needs the mod, and the same version.
 
+This mod was made quickly for my group of friends, it is not something I intend to support with any degree of
+dedication. Pull requests for features or bug fixes are welcome. If you find it useful and fun, consider starring
+the project and sharing it with friends. Eventually running your own server might be the only way to play this game
+cooperatively.
+
+Already have b4bcoop 0.7.0 or newer? You don't need to install again: update from inside the game (see UPDATE).
+
 INSTALL (Windows, Linux and Steam Deck - the same steps)
 1. Open the game folder: in Steam, right-click Back 4 Blood > Manage > Browse local files.
    It is the folder with Back4Blood.exe and a folder named Gobi in it. On Steam Deck, use Desktop Mode.
