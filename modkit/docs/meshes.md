@@ -199,8 +199,9 @@ Long hair, skirts, long coats and capes move with the character instead of stick
 default; `--hair-physics off` / `--cloth off` turn them off):
 ```
 b4bmod survivor model.fbx --outfit .../3P_Walker_Elite_00_SKM ...
-b4bfit: cloth: collision capsules pelvis r15, spine_01 r13, spine_03 r14, thigh_l r9, thigh_r r11, calf_l r9, calf_r r8 cm
-b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel over 315 deg, 10x19 (190 vertices), top 129 cm, hem 5 cm
+b4bfit: cloth: collision capsules pelvis r19-18, spine_02 r21-20, spine_03 r19-20, thigh_l r11-9, thigh_r r10-9, calf_l r9-6, calf_r r9-6 cm
+b4bfit: cloth: capsules 1.3 cm thicker: 90 % of the garment lies within that of its particles
+b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel over 315 deg, 17x28 (476 vertices), top 129 cm, hem 5 cm
   cloth: new clothing asset 3P_Walker_Elite_00_SKM_Clothing_0 in 3P_Walker_Elite_00_SKM.uasset (collision: 3P_Walker_Elite_07_Cloth_PA)
 ```
 - `--hair-physics auto`: the hair behind and below the head goes on the survivor's ponytail bones, which the game
@@ -208,9 +209,17 @@ b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel 
   Walker Elite 03, Doc Elite 03, **Mom** (two pigtails; also Mom Elite 04 and 07). Mom's pigtails hang in front of her
   shoulders: hair hanging along them there (braids, twin tails, head-tails) swings too, and hair down the middle of
   the back takes both pigtails. Head-tails (lekku, montrals) count as hair. On others the log says so and the hair
-  stays on the head. `--hair-swing 0.5` swings it half as much (hair that clips into the back). Clothes on the hair
+  stays on the head. `--hair-swing 0.5` swings it half as much. Clothes on the hair
   slot (a lace dress with alpha) never swing as hair, and only hair that hangs from the head swings: stockings, bows or
-  trims that share the hair's material (anime rips) stay where they are.
+  trims that share the hair's material (anime rips) stay where they are. Hair is found by its material, or by the
+  model's own hair bones (`dyn_C_hair_1`, `J_Sec_Hair1_01` ...: Fortnite rips keep their hair on a `FaceAcc`
+  material).
+- **Long hair lying on the body follows the body** (any survivor, also without hair bones; `--hair-pin off` turns it
+  off): hair riding on the head or the ponytail bones would sweep through the back, bottom and legs when the head turns
+  or the ponytail swings (the further below the head, the further it moves). Each hair vertex keeps only as much of that
+  motion as its distance from the body allows; the rest follows the back, shoulders or hips under it. Hair near the
+  head and hair hanging well off the body still swings; a braid down the back moves with the back
+  (`b4bfit: hair: 2204 of 4245 hanging hair vertices follow the body where they lie on it ...`).
 - `--cloth auto`: garments that hang become cloth, which the game simulates: they sway when walking, trail and flare
   when running or turning, and settle when standing. Found by the material's name **or its colour image's name**
   (game rips name materials `Material #35` but the image `jacket.png`):
@@ -228,8 +237,13 @@ b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel 
   - Only materials on a **clothing slot** swing: the game draws cloth only with materials made for it
     (`bUsedWithClothing`; the survivors' outfit and hair materials, not the skin ones). Garments (dress, skirt,
     coat, ... in the material name) always go to a clothing slot; one you put on a skin slot yourself stays skinned.
+  - Game rips that rig their skirts and coats to their own physics bones (Fortnite `dyn_skirt_*`, `dyn_skit_layer_*`,
+    `dyn_coat_*`, `dyn_cape_*` ...): the faces on those bones become cloth even when they share one `Body` material
+    with the skin (`cloth: 'MI_..._Body': only its faces on the source bones /^dyn_.../`). Such a material goes on the
+    outfit's clothing slot (the slot table says why), because a skin slot can't draw cloth and a skirt left rigid on
+    the hips lets the legs through it. `--slot MAT=<skin slot>` keeps it skinned.
   - `--cloth <material>,<material>` picks them yourself; `<material>:cape` or `<material>:lower` says how it hangs
-    when the guess is wrong.
+    when the guess is wrong; `<material>@<bones>` takes only its faces on source bones matching `<bones>` (a regex).
 - Works on **any outfit**: one that has cloth in the game (Holly Elite 00/04, Karlee Elite 06, Doc Elite 03, Walker
   Elite 07) lends its own; others get a clothing asset added to your mesh (copied from Walker Elite 07's coat, which
   `b4bmod` extracts for you). Several garments (a skirt and a cape) get one each.
@@ -247,8 +261,13 @@ b4bfit: cloth: ['Coat'] -> 6672 cloth faces (lower), simulation mesh open panel 
   `B4B_CLOTH_TUNE='{"damping": 0.5, "gravity": 1.2}'` overrides values for experiments (keys: `damping`, `gravity`,
   `linear_drag`, `linear_inertia`, `angular_inertia`, `bend`, `friction`, `hem_mass`, `maxd` (max distance at the hem,
   share of the length), `maxd_exp`, `self_radius` (cm) ...; `modkit/cloth.py` `NV_DEFAULTS`/`GARMENTS`).
-- The cloth bumps into the character's legs and body: capsules fitted to your model's own legs, hips and back, plus
-  the game's leg capsules for skirts and coats.
+- The cloth bumps into the character's legs and body: capsules fitted to your model's own legs, hips and back
+  (tapered: each end as thick as the skin around it, a little outside it; a leg hidden under a long dress takes the
+  other's), plus the game's leg capsules for skirts and coats. The simulation mesh has its particles about 5 cm apart
+  (a leg slipped between particles 10 cm apart) and lies in the middle of the garment's layers, and the capsules are
+  thickened by how far the garment reaches inside it, so what you see stays outside the legs, not only the particles
+  (`cloth: capsules 1.3 cm thicker ...`). Where the garment hugs the body at rest (the hips), a capsule is kept inside
+  it (`capsules kept inside the garment at rest`), else the cloth would stand off as a bell.
 - A garment made of single faces (no lining) gets its inside drawn when it swings open; skirts use the outfit's
   two-sided material variant when there is one.
 - Check the cloth before the game: `blender -b --python blender/preview.py -- <work>/fit3p/lod0.glb preview.png --sim

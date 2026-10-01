@@ -84,6 +84,20 @@ def cloth_assets(s):
     return out
 
 
+def asset_physics_assets(s):
+    """/Game/... paths of the physics assets the mesh's clothing assets collide with (their bodies are counted against
+    NvCloth's sphere limit and listed in UsedBoneNames: b4bmodel extracts them)."""
+    out = []
+    for _, e in cloth_assets(s):
+        if e is None: continue
+        t, _ = uprops.parse(s.pkg, bytes(s.pkg.export_data(e)))
+        pa = uprops.find(t, "PhysicsAsset")
+        if pa is not None and pa.value:
+            path = s.pkg.obj_path(pa.value)
+            if path and path.split(".")[0] not in out: out.append(path.split(".")[0])
+    return out
+
+
 # ---- geometry ------------------------------------------------------------------------------------------------------
 
 def sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -162,10 +176,20 @@ class Sim:
     def record(self, p, n, t, tris=None):
         """FMeshToMeshVertData tuple for a point p with unit normal n and tangent t (cm)."""
         tris = tris or self.candidates(p)
-        ti = min(tris, key=lambda i: point_tri_dist2(p, *(self.V[x] for x in self.T[i])))
+        order = sorted(tris, key=lambda i: point_tri_dist2(p, *(self.V[x] for x in self.T[i])))
+        best = None
+        # the nearest triangle first; a point far off the surface (a layer well inside a pleated skirt) can make the
+        # offset solve run away on it (a vertex thrown a metre off): then the next triangles, the best reconstruction
+        for ti in order[:6]:
+            a, b, c = self.T[ti]
+            args = (self.V[a], self.V[b], self.V[c], self.Nm[a], self.Nm[b], self.Nm[c])
+            pos = solve(p, *args)
+            q = [sum(w * (self.V[x][k] - self.N[x][k] * pos[3]) for w, x in zip(pos[:3], (a, b, c))) for k in range(3)]
+            err = math.dist(q, p)
+            if best is None or err < best[0]: best = (err, ti, args, pos)
+            if err < 0.05: break
+        _, ti, args, pos = best
         a, b, c = self.T[ti]
-        args = (self.V[a], self.V[b], self.V[c], self.Nm[a], self.Nm[b], self.Nm[c])
-        pos = solve(p, *args)
         nrm = solve(add(p, n), *args)
         tan = solve(add(p, t), *args)
         return tuple(pos) + tuple(nrm) + tuple(tan) + (a, b, c, 0, 0.0, 0)
@@ -418,6 +442,28 @@ def pa_bones(pa_path, src):
     return out
 
 
+MAX_SPHERES = 32                 # NvCloth's limit on collision spheres per cloth (capsules are pairs of them)
+CAPSULE_PRIORITY = ("thigh_l", "thigh_r", "calf_l", "calf_r", "pelvis", "spine_01", "spine_02", "spine_03")
+
+
+def pa_spheres(pa_path, src):
+    """Collision spheres a physics asset gives the cloth (a sphere 1, a capsule 2), None if it isn't extracted."""
+    if not pa_path: return 0
+    f = upkg.game_path_to_file(pa_path.split(".")[0].split(":")[0], src or "")
+    if not f or not os.path.exists(f): return None
+    p = upkg.Package(f)
+    n = 0
+    for e in p.exports:
+        if p.class_name(e) != "SkeletalBodySetup": continue
+        t, _ = uprops.parse(p, bytes(p.export_data(e)))
+        ag = uprops.find(t, "AggGeom")
+        if ag is None: continue
+        for k, w in (("SphereElems", 1), ("SphylElems", 2)):
+            x = uprops.find(ag.value, k)
+            if x is not None: n += w * len(x.value["items"])
+    return n
+
+
 def fname_str(pkg, s):
     """FName of string s in pkg (as the name map holds it: whole, or split into base + number), added if missing."""
     import re
@@ -446,9 +492,10 @@ def collision_data(pkg, caps, used, G, bone_names, scale=1.0):
         ids = []
         for end in ("a", "b"):
             lp = skmgltf.mp(inv, c[end])
+            r = c.get("r" + end, c["r"])                # tapered: each end its own radius (NvCloth cones)
             spheres.append(uprops.Tagged([
                 uprops.Prop("BoneIndex", "IntProperty", 0, None, None, used.index(b), pkg.fname_of("BoneIndex")),
-                uprops.Prop("Radius", "FloatProperty", 0, None, None, float(c["r"] * scale), pkg.fname_of("Radius")),
+                uprops.Prop("Radius", "FloatProperty", 0, None, None, float(r * scale), pkg.fname_of("Radius")),
                 _vec_prop(pkg, "LocalPosition", lp)]))
             ids.append(len(spheres) - 1)
         conns.append(uprops.Tagged([
@@ -526,6 +573,12 @@ def apply(s, sims, log=print, cloth_lods=CLOTH_LODS, src=None):
             lod["cloth_vb"] = skm.Obj(strip=(1, 0), data=(64, off, blob), index_mapping=mapping)
             fix_buffers_size(s, lod)
     err = max(map_error(sim, s, cloth_lods, k) for k, sim in enumerate(sims_objs))
+    # how far the drawn garment lies from its particles (the collision holds the particles; what lies further in can
+    # still go into a leg): b4bdangle builds the simulation surface in the middle of the garment's layers
+    ds = sorted(abs(r[3]) for sec in s.m["lods"][0]["sections"] for r in (sec.get("cloth_mapping") or []))
+    if ds:
+        log(f"cloth: drawn garment within {ds[len(ds) // 2]:.1f} cm (half of it) / {ds[int(0.9 * (len(ds) - 1))]:.1f} cm "
+            f"(90 %) of its simulation surface")
     log(f"cloth: {bound} cloth section(s) bound, mapping error max {err:.3f} cm")
     return [x[1] for x in names]
 
@@ -568,8 +621,19 @@ def write_asset(s, k, sd, ai, ae, bone_names, G, mode, src, log, cloth_lods):
     # collision bones through it; retail assets list their physics asset's bones even without weights on them)
     pa_i = uprops.find(tree, "PhysicsAsset")
     pa_path = pkg.obj_path(pa_i.value) if pa_i and pa_i.value else None
-    caps = [dict(c, a=blender_to_ue(c["a"]), b=blender_to_ue(c["b"]), r=c["r"] * 100.0)
+    caps = [dict(c, a=blender_to_ue(c["a"]), b=blender_to_ue(c["b"]),
+                 **{k: c[k] * 100.0 for k in ("r", "ra", "rb", "r_min") if k in c})
             for c in (sd.get("collision") or [])] if mode != "pa" else []
+    # NvCloth takes at most 32 collision spheres (a capsule is two); the physics asset's come first, our capsules
+    # fill the rest, legs first (a skirt or coat passes through a leg it doesn't collide with)
+    pa_n = pa_spheres(pa_path, src)
+    room = max(0, (MAX_SPHERES - (pa_n if pa_n is not None else 12)) // 2)
+    if len(caps) > room:
+        order = lambda c: next((i for i, b in enumerate(CAPSULE_PRIORITY) if c["bone"] == b), len(CAPSULE_PRIORITY))
+        keep = sorted(caps, key=order)[:room]
+        log(f"cloth: {len(caps) - len(keep)} capsule(s) left out ({', '.join(c['bone'] for c in caps if c not in keep)}):"
+            f" NvCloth takes {MAX_SPHERES} spheres, the physics asset has {pa_n if pa_n is not None else '~12'}")
+        caps = [c for c in caps if c in keep]
     for b in pa_bones(pa_path, src) + [c["bone"] for c in caps]:
         if b in bone_names and b not in used: used.append(b)
     lod_items = uprops.find(tree, "LodData").value["items"]
@@ -626,6 +690,7 @@ def write_asset(s, k, sd, ai, ae, bone_names, G, mode, src, log, cloth_lods):
     log(f"cloth: {sd.get('shape', 'tube')} {len(V)} vertices / {len(T)} triangles -> {aname} ({cloth_lods} LODs, max "
         f"distance up to {max(maxd):.0f} cm, {sum(fixed)} fixed, bones {used}"
         f"{f', {len(conns)} collision capsules' if conns else ''}"
+        f"{f' + {pa_n} physics asset spheres' if pa_n else ''}"
         f"{', physics asset ' + pa_path.split('.')[-1] if pa_path else ''})")
     return sim, aname, guid
 
