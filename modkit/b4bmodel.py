@@ -175,6 +175,71 @@ def mi_chain(obj_path, src):
     return tex, master
 
 
+def mi_scalars_chain(obj_path, src):
+    """{scalar: value} of a material instance, resolved up the parent chain as far as it is extracted (the nearest
+    instance wins; values only the master sets are not there)."""
+    out, seen = {}, 0
+    while obj_path and seen < 10:
+        f = upkg.game_path_to_file(obj_path.split(".")[0], src)
+        if not f or not os.path.exists(f): break
+        try:
+            parent, _, s_, _ = upkg.read_material_instance(f)
+        except StopIteration:
+            break
+        for k, x in s_.items(): out.setdefault(k, x)
+        obj_path = parent; seen += 1
+    return out
+
+
+def slot_uv_density(skm_file):
+    """{slot name: UV0 area per cm² of surface} over the LOD0 sections of a skeletal mesh (how much texture a cm of the
+    mesh gets: the scale every UV-tiled detail map is drawn at)."""
+    s = skm.SkeletalMesh(skm_file)
+    lod = s.m["lods"][0]
+    P, idx = lod["positions"]["positions"], lod["indices"]["indices"]
+    nt, UV = lod["static_vb"]["num_texcoords"], lod["static_vb"]["uvs"]
+    acc = {}
+    for sec in lod["sections"]:
+        name = s.name(s.m["materials"][sec["material_index"]]["slot_name"])
+        a = acc.setdefault(name, [0.0, 0.0])
+        b = sec["base_index"]
+        for t in range(sec["num_triangles"]):
+            i, j, k = (idx[b + 3 * t + n][0] for n in range(3))
+            p, q, r = P[i], P[j], P[k]
+            u = (q[0] - p[0], q[1] - p[1], q[2] - p[2]); v = (r[0] - p[0], r[1] - p[1], r[2] - p[2])
+            a[0] += 0.5 * math.sqrt((u[1] * v[2] - u[2] * v[1]) ** 2 + (u[2] * v[0] - u[0] * v[2]) ** 2 +
+                                    (u[0] * v[1] - u[1] * v[0]) ** 2)
+            A, B, C = UV[i * nt], UV[j * nt], UV[k * nt]
+            a[1] += 0.5 * abs((B[0] - A[0]) * (C[1] - A[1]) - (C[0] - A[0]) * (B[1] - A[1]))
+    return {k: uv / w for k, (w, uv) in acc.items() if w > 0 and uv > 0}
+
+
+DETAIL_TILING_RX = re.compile(r"tiling", re.I)
+DETAIL_SCALE_MIN = 1.15      # UVs within 15% of the retail density keep the retail tiling
+
+
+def detail_tiling(mans, moddir, src, tt):
+    """Micro-detail maps (skin pores and noise, fabric weaves) are tiled over UV0 by a 'Tiling' scalar tuned to the
+    retail UVs. A model's UVs usually give a part far less texture per cm (an atlas of a game rip: hands 3-4x less), so
+    the pores came out 3-4x too big (scaly skin up close in first person). Each slot's tiling scalars are multiplied by
+    sqrt(retail density / ours), measured on the template and on the written mesh; first person wins for a material
+    instance both meshes use."""
+    scale = {}
+    for man, tpl in sorted(mans, key=lambda x: "/FP_" in x[1].replace("\\", "/")):
+        mesh = out_file(tpl, moddir)
+        if not os.path.exists(mesh): continue
+        ret, new = slot_uv_density(tpl), slot_uv_density(mesh)
+        for s, mi, tex, master in mesh_slots(tpl, src):
+            if master and HAIR_MASTER_RX.search(master): continue     # hair: its own material (hair_texture_set)
+            if s in new and s in ret: scale[mi] = max(0.25, min(8.0, math.sqrt(ret[s] / new[s])))
+    for mi, f in scale.items():
+        if max(f, 1 / f) < DETAIL_SCALE_MIN: continue
+        vals = {k: v * f for k, v in mi_scalars_chain(mi, src).items() if DETAIL_TILING_RX.search(k) and v > 0}
+        if not vals: continue
+        owned = tt.adopt_mi(mi, owned_prefix(mans[0][1]))
+        if owned: tt.mi_scalars.append((owned, vals))
+
+
 def mesh_slots(skm_file, src, static=False):
     """[(slot name, MI path, {param: texture}, master)] of a skeletal (or static) mesh."""
     if static:
@@ -408,10 +473,10 @@ class TexTool:
         return self.adopted[pkg]
 
     def run(self):
-        if not self.jobs: return
-        jp = os.path.join(self.work, "texture_jobs.json")
-        json.dump(self.jobs, open(jp, "w"), indent=1)
-        run_blender(["compose", jp])
+        if self.jobs:
+            jp = os.path.join(self.work, "texture_jobs.json")
+            json.dump(self.jobs, open(jp, "w"), indent=1)
+            run_blender(["compose", jp])
         for j in self.jobs:
             r = subprocess.run([sys.executable, self.b4bmod, "texture", j["asset"], j["out"], "-o", self.moddir,
                                 "--quality", self.quality, "--src", self.src], capture_output=True, text=True)
@@ -1060,6 +1125,16 @@ def survivor(o):
                 if old is None: cur["tiles"].append(t)
                 elif old.get("absent") and not t.get("absent"): cur["tiles"][cur["tiles"].index(old)] = t
     textures_for({"sets": sets}, tp, tt)
+    # a slot drawing another slot's texture set (FP Arms draws ArmSkin's colour/normal/PBR) still has textures of its
+    # own, e.g. the outfit master's microtile mask: left retail, its fabric patterns land anywhere on the new UVs
+    # (scaly hands in first person). Those are made too, on that set's layout.
+    for man, mesh in mans:
+        for s, mi, tex, master in mesh_slots(mesh, src):
+            st = man["slots"].get(s)
+            if st and st != s and st in sets and not (master and HAIR_MASTER_RX.search(master)):
+                tt.compose_set(sets[st], tex, owned_prefix(mesh), master, mi, None)
+    detail_tiling(mans, moddir, src, tt)
+    tt.run()
     for (man, _), tag in zip(mans, ("3p", "fp")):
         prev = {slot: tt.preview[st] for slot, st in man["slots"].items() if st in tt.preview}
         json.dump(prev, open(os.path.join(work, f"preview_textures_{tag}.json"), "w"), indent=1)
