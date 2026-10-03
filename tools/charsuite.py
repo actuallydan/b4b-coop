@@ -288,10 +288,12 @@ def wear(S, r, tag):
     """Host puts the outfit on; host and client (both with the add-on) must log it and show its mesh on the host's
     hero (the host: its own). Returns True when worn."""
     name = r.e["expect"]
+    # already on (the campaign run's save keeps the host's looks from Fort Hope into the mission): nothing new is logged
+    worn = bool((lambda h: h and h["you"])(wearer(H, name)) and wearer(C, name))
     for g in S.logs.values(): g.mark()
     out = e2e.agent(H, "model", name)
     rx = rf"models: hero slot \d+ wears outfit {re.escape(name)}\b"
-    seen = {n: e2e.wait_for(lambda n=n: S.logs[n].grep(rx), 30, 1) for n in (H, C)}
+    seen = {n: worn or e2e.wait_for(lambda n=n: S.logs[n].grep(rx), 30, 1) for n in (H, C)}
     w_h = e2e.wait_for(lambda: (lambda h: h if h and h["you"] else None)(wearer(H, name)), 10, 1)
     w_c = e2e.wait_for(lambda: wearer(C, name), 10, 1)
     ok = bool(all(seen.values()) and w_h and w_c)

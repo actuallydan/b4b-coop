@@ -27,6 +27,8 @@ if [[ -n ${B4B_GPU:-} ]]; then   # render on another GPU (lane.sh): a GPU with n
     export B4B_HOST_RUNTIME_DIR="$rt" XDG_RUNTIME_DIR="$rt/b4b-lane2"
     [[ -d $XDG_RUNTIME_DIR ]] || { echo "no $XDG_RUNTIME_DIR: start the Flatpak Steam with launch/flatpak-steam.sh start" >&2; exit 1; }
   fi
-  exec gamescope --backend headless --prefer-vk-device "${id:6:4}:${id:2:4}" -W 960 -H 540 -w 960 -h 540 -- "$here/run.sh" "$@"
+  # B4B_RES=WxH: another size (e.g. 1920x1080 for close-up screenshots; the prefix's GameUserSettings.ini must match)
+  res=${B4B_RES:-960x540}; w=${res%x*}; h=${res#*x}
+  exec gamescope --backend headless --prefer-vk-device "${id:6:4}:${id:2:4}" -W $w -H $h -w $w -h $h -- "$here/run.sh" "$@"
 fi
 exec "$here/run.sh" "$@"
