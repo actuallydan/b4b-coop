@@ -29,7 +29,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
   - `netguard.c` outbound-traffic guard from DllMain (DNS/WinHTTP/TCP allowlist, EOS network off; `netguard`
     command, `netguard=` ini keys); docs/investigations/outbound-traffic.md.
-  - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log` (`b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
+  - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<yyyymmdd>-<hhmmss>-<winpid>.log` (last 20 kept: Wine reuses PIDs; tests `b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
   - `cards.c` host card-ownership override for remote players (interim).
   - `flashlight.c` manual flashlight toggle (`flashlight` command, `flashlight list`, ini hotkey); verified live.
     docs/investigations/flashlight.md.
