@@ -5,8 +5,8 @@
 // go to anyone). The host announces its addons_policy; the joiner checks its own add-ons against it and, if they
 // don't pass, doesn't join, telling only its own player what to switch off.
 //   policies (host, ini addons_policy=, /addons policy <x> for the session):
-//     any       everyone may join, whatever they run
-//     cosmetic  (default, ADDONS_POLICY_DEFAULT) no gameplay-affecting add-ons (addonclass.c decides, not the author)
+//     any       (default since #43, ADDONS_POLICY_DEFAULT; was cosmetic) everyone may join, whatever they run
+//     cosmetic  no gameplay-affecting add-ons (addonclass.c decides, not the author)
 //     none      no add-ons at all
 //     match     cosmetic ones are free; gameplay ones must be exactly the host's. Choosing it is the host's opt-in to
 //               reveal its OWN gameplay add-on ids (first 8 hex digits of the content id), which the joiner needs.
@@ -34,7 +34,7 @@
 #include "overlay.h"
 
 enum { POL_ANY, POL_COSMETIC, POL_NONE, POL_MATCH, POL_UNKNOWN };
-#define ADDONS_POLICY_DEFAULT POL_COSMETIC   // the one place to change the default (docs: COMMANDS.md, addons.md)
+#define ADDONS_POLICY_DEFAULT POL_ANY        // the one place to change the default (docs: COMMANDS.md, addons.md)
 static const char *POLICY_NAMES[] = {"any", "cosmetic", "none", "match"};
 static int policy = ADDONS_POLICY_DEFAULT;
 
@@ -352,7 +352,7 @@ int addons_mp_slash(const char *sub, char *arg, Out *o) {
 // ~ window, Add-ons tab (addons.c): the host's policy (saved to b4bcoop.ini, like editing addons_policy=). A client
 // sees the radios greyed out, with the reason.
 void addons_mp_panel(void) {
-    static const char *DESC[] = {"everyone, whatever they run", "cosmetic add-ons only (default)", "only players without add-ons",
+    static const char *DESC[] = {"everyone, whatever they run (default)", "cosmetic add-ons only", "only players without add-ons",
                                  "cosmetic free; gameplay add-ons must be the same as yours (joiners see your gameplay add-ons' ids)"};
     ov_heading("Who may join with add-ons (host)");
     ov_begin_perm(CMD_HOST);

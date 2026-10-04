@@ -352,7 +352,8 @@ def pick_card(cards, avoid=()):
 
 def duo(args):
     """The 2-instance regression: everything in --quick."""
-    S = Session("duo", 2)
+    # addons_policy=cosmetic: the default (any, #43) lets every login in, so the announce/check path below needs a rule
+    S = Session("duo", 2, ini_extra="addons_policy=cosmetic")
     S.prepare()   # golden profiles back first, so "before" is a known-good profile
     before = {i: load_profile(profile_path(i)) for i in (1, 2)}
     for i in (1, 2):
