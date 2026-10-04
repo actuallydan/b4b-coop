@@ -131,7 +131,7 @@ int addons_outfits(AddonOutfit *out, int max) {
 // ---- added weapon looks: addoninfo `weapon=<name>|<code>|<FP mesh>|<3P static mesh>|<3P skeletal mesh>|<title>`
 // (modkit: b4bmod weapon --as; docs/investigations/new-assets.md §9). weaponlooks.c puts them on the chooser's weapon
 // of that code (/model <name>). Mesh fields may be empty (at least one set). ----
-#define MAX_WEAPONS 64
+#define MAX_WEAPONS 512
 typedef struct { Addon *addon; char name[33], code[16], fp[200], sm3p[200], skm3p[200], title[64]; } Weapon;
 static Weapon WP[MAX_WEAPONS];
 static int nWP;
