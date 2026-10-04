@@ -1483,6 +1483,10 @@ void models_slash(const char *verb, char *rest, Out *o) {
     }
     me = nw;
     me.on = 1;
+    // Same slot and hero as now: no settle wait (tick_me waits 3 s on a new slot/hero only, for the game's own sends;
+    // a fresh wish used to look like a new slot, so every /model and every Models-tab click took 2-3 s to show).
+    UObject *cur_slot = ps_slot(my_ps());
+    if (ready_slot(cur_slot)) me.slot_idx = U_INDEX(cur_slot) * 64 + slot_hero(cur_slot);
     snprintf(me.label, sizeof me.label, "%s", label);
     out_printf(o, "you now look like %s (/model reset to undo)\n", label);
     if (nw.npc && outfit_by_name(label)) out_printf(o, "(an add-on outfit: players without that add-on see your survivor)\n");
