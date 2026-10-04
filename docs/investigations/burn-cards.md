@@ -233,7 +233,15 @@ show the loading screen overlay).
 - The retail walk-out trigger (step 10) was not run. `burncard charge` calls the same `OnSafeRoomStateChanged`
   UFunction, so only the trigger differs.
 - The duffel-bag "maxed-out burn card" test sees 0 for remote players (§2), which is cosmetic.
-- A remote player who disconnects before the charge keeps the card for free (the charge is dropped, and logged).
+- A remote player who disconnects before the charge and does not come back keeps the card (the charge is dropped,
+  logged `controller gone, charge dropped`). One who rejoins the same mission before the charge is charged
+  (2026-10-04, lane 2): the host keeps each synthetic key's player key (`admin_ps_key`) and, when the controller that
+  played the card is gone or has lost its connection (`Player` null; the old controller can outlive the connection
+  until GC, and the charge used to go to it and vanish), resolves the key to the one remote player with that key
+  (`charging b4bcoop.burn.N -> remote player's profile (rejoined since the card was played)`). The client's
+  rewardguard keeps its uncharged plays across world changes and accepts the -1 only on the map the card was played
+  on. Live: client played Burn_RollGunSMG, `leave`, `join`, `takeover 1`, `burncard charge`: `[CLIENT RPC] adjusting
+  consumable Burn_RollGunSMG by -1`, client profile spent 0 -> 1, host unchanged.
 - Not tested across two machines / two accounts; the key fix does not depend on the ids, so no difference is expected.
 
 ## 7. Addresses

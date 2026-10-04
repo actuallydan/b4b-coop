@@ -27,6 +27,7 @@
 #include "MinHook.h"
 #include "ue.h"
 #include "log.h"
+#include "cmds.h"
 
 // void GCM::PlayBurnCard(UGameplayCardManager*, AGobiPlayerState*, const FDataTableRowHandle* card)
 #define ADDR_PLAYBURNCARD VA(0x141776EA0ull)
@@ -80,7 +81,7 @@ static int nlog;
 // Synthetic charge keys: "b4bcoop.burn.<n>" -> the controller that played the card.
 #define KEY_PREFIX L"b4bcoop.burn."
 #define NKEYS 64
-static struct { UObject *pc; int32_t idx; int remote; } keys[NKEYS];
+static struct { UObject *pc; int32_t idx; int remote; char who[80]; } keys[NKEYS];   // who: admin_ps_key of the player
 static int next_key;
 
 static UObject *human_pc(UObject *ps, int *remote) {
@@ -125,6 +126,7 @@ static void play_detour(UObject *gcm, UObject *ps, void *card) {
         // queued: bind the slot's charge to this controller
         int k = next_key++ % NKEYS;
         keys[k].pc = pc; keys[k].idx = U_INDEX(pc); keys[k].remote = remote;
+        admin_ps_key(ps, keys[k].who, sizeof keys[k].who);
         static wchar_t wkey[32];
         int len = _snwprintf(wkey, 31, KEY_PREFIX L"%d", k);
         wkey[31] = 0;
@@ -147,15 +149,38 @@ static int32_t getqty_detour(UObject *ppc, void *product) {
     return q;
 }
 
+// A remote player who disconnected after playing a card and came back before the charge has a new controller: find
+// it by the player key the card was played under (exactly one remote match; local copies in tests share one id).
+static UObject *rejoined(const char *who) {
+    UObject **pa; int n = admin_player_array(&pa), hits = 0;
+    UObject *found = NULL;
+    char key[80];
+    for (int i = 0; who[0] && i < n; i++) {
+        int remote = 0;
+        UObject *pc = human_pc(pa[i], &remote);
+        if (!pc || !remote) continue;
+        admin_ps_key(pa[i], key, sizeof key);
+        if (!strcmp(key, who)) { found = pc; hits++; }
+    }
+    return hits == 1 ? found : NULL;
+}
+
 static UObject *findppc_detour(UObject *ctx, FString *id) {
     size_t pl = wcslen(KEY_PREFIX);
     if (!id || !id->data || id->num < (int)pl + 1 || wcsncmp(id->data, KEY_PREFIX, pl)) return orig_findppc(ctx, id);
     int k = (int)wcstol(id->data + pl, NULL, 10);
     if (k < 0 || k >= NKEYS) return NULL;
     UObject *pc = keys[k].pc;
-    UObject *ppc = pc && ue_object_at(keys[k].idx) == pc ? ue_get_ptr(pc, "GobiPlayerProfileComponent") : NULL;
+    // a remote player's old controller can outlive its connection until the next GC: no connection = gone
+    int live = pc && ue_object_at(keys[k].idx) == pc && (!keys[k].remote || ue_get_ptr(pc, "Player"));
+    UObject *ppc = live ? ue_get_ptr(pc, "GobiPlayerProfileComponent") : NULL;
+    const char *how = "";
+    if (!ppc && keys[k].remote && (pc = rejoined(keys[k].who))) {
+        ppc = ue_get_ptr(pc, "GobiPlayerProfileComponent");
+        how = " (rejoined since the card was played)";
+    }
     LOG("burncards: charging b4bcoop.burn.%d -> %s player's profile%s", k, keys[k].remote ? "remote" : "local",
-        ppc ? "" : ": controller gone, charge dropped");
+        ppc ? how : ": controller gone, charge dropped");
     return ppc;
 }
 
