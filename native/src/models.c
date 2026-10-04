@@ -24,6 +24,9 @@
 //     rows; turning it off resets every such slot.
 //   - Added outfits (add-ons with `outfit=` lines, addons.c; docs/investigations/new-assets.md): a made-up outfit row
 //     "b4bcoop.outfit.<name>" like the NPC bodies; every machine with that add-on puts its 3P mesh and FP arms on.
+//   - Made-up rows on everything that wears a set (cutscene stand-ins, lineup mannequins, #37): applyslot_detour.
+//   - The game's customization screen (#33): real rows of that name for the add-on outfits; the profile never stores
+//     them (equip_detour / getprof_detour, b4bcoop-outfits.txt).
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +97,7 @@ static int is_rowstruct(UObject *t, const char *name) {
     return rs && !strcmp(ue_obj_name(rs, b, sizeof b), name);
 }
 static int is_live(UObject *o) { return o && !(U_FLAGS(o) & 0x30); }
+static int is_ours(FName row) { char b[16]; return !strncmp(ue_name(row, b, sizeof b), "b4bcoop.", 8); }   // b4bcoop.npc/outfit.*
 static UFunction *fn_of(UObject *o, const char *name) { return o ? ue_find_function(U_CLASS(o), name) : NULL; }
 static int32_t parm_off(UFunction *f, const char *p) { FField *x = f ? ue_find_prop(f, p) : NULL; return x ? FP_OFFSET(x) : -1; }
 
@@ -154,7 +158,7 @@ static void build_catalogue(void) {
                 for (int j = 0; j < cm->num && n_cat < MAX_ENTRIES; j++) {
                     char *ce = sparse_at(cm, j, 0x18);
                     uint8_t *cr = ce ? *(uint8_t **)(ce + 8) : NULL;
-                    if (!cr) continue;
+                    if (!cr || is_ours(*(FName *)ce)) continue;   // our add-on outfit rows (screen_rows) are not the game's
                     Entry *en = &cat[n_cat++];
                     memset(en, 0, sizeof *en);
                     en->hero = n_heroes; en->table = ct; en->row = *(FName *)ce; en->slot = CC_SLOT(cr) & 3;
@@ -307,7 +311,7 @@ static UObject *npc_mesh(Npc *n) { return mesh_on(n->path, "3P_Biped_SK", &n->me
 #define OUTFIT_PREFIX "b4bcoop.outfit."
 typedef struct {
     char name[33], hero[24], title[64], addon[96], p3[200], pf[200];
-    UObject *m3, *mf; int32_t i3, i_f; int bad, fpbad;
+    UObject *m3, *mf; int32_t i3, i_f; int bad, fpbad, rowfail, inpak;
 } Outf;
 #define MAX_OUTFS 512
 static Outf outfs[MAX_OUTFS];
@@ -393,7 +397,8 @@ static UObject *slot_owner(UObject *slot) { return slot ? ue_get_ptr(slot, "Owni
 static int foreign(const RowHandle *h, int hero) {
     if (!h->table) return 0;
     int t = hero_by_table(h->table);
-    return t < 0 || t != hero || !dt_row(h->table, h->row);   // not a real row: an NPC body
+    // not a real row: an NPC body; ours: an add-on outfit, also where screen_rows put a real row for it in the table
+    return t < 0 || t != hero || !dt_row(h->table, h->row) || is_ours(h->row);
 }
 static int set_foreign(const CustSet *s, int hero) {
     for (int k = 0; k < 4; k++) if (foreign(&s->slot[k], hero)) return 1;
@@ -439,6 +444,19 @@ static int want_hero(Want *w, int hi) {
     if (!e) return -1;
     want_pick(w, e);
     return 0;
+}
+
+// A set wearing a made-up outfit row with pieces missing (the customization screen sends outfit-only sets): the
+// hero's first row per piece, which is what machines without the look show (the game needs all three pieces then).
+static int complete_pieces(CustSet *s, int hero) {
+    int done = 0;
+    if (hero < 0 || s->last != SLOT_OUTFIT || !s->slot[SLOT_OUTFIT].table || !is_ours(s->slot[SLOT_OUTFIT].row)) return 0;
+    for (int k = 0; k < 3; k++) {
+        if (s->slot[k].table && dt_row(s->slot[k].table, s->slot[k].row)) continue;
+        for (int i = heroes[hero].first; i < heroes[hero].first + heroes[hero].count; i++)
+            if (cat[i].slot == k) { s->slot[k].table = cat[i].table; s->slot[k].row = cat[i].row; done++; break; }
+    }
+    return done;
 }
 
 // cur + picks. A head/torso/legs pick clears the outfit (the game shows the outfit when LastEquipSlot is Outfit, the
@@ -672,73 +690,418 @@ static void set_mesh(UObject *comp, UObject *mesh) {
     ue_process_event(comp, f, p);
 }
 // Hitboxes stay the wearer's: a body mesh brings its own PhysicsAsset (an add-on outfit: its template survivor's, e.g.
-// a female survivor's smaller bodies on Walker; an NPC body: the NPC's). Before the first swap on a pawn we note the
-// PhysicsAsset of the game's own mesh and put it back as the component's override (SetPhysicsAsset ->
-// PhysicsAssetOverride, which later SetSkeletalMesh calls keep), so a look never changes how the hero is hit.
-static struct { UObject *pawn, *pa; int32_t pi, pai; } wearer_pas[32];
-static int is_our_mesh(UObject *m) {
-    for (int i = 0; i < n_outfs; i++) if (outfs[i].m3 == m) return 1;
-    for (int i = 0; i < n_npcs; i++) if (npcs[i].mesh == m) return 1;
-    return 0;
-}
-static UObject *wearer_pa(UObject *pawn, UObject *body) {
-    int free_i = -1;
-    for (int i = 0; i < 32; i++) {
-        if (wearer_pas[i].pawn == pawn && ue_object_at(wearer_pas[i].pi) == pawn)
-            return ue_object_at(wearer_pas[i].pai) == wearer_pas[i].pa ? wearer_pas[i].pa : NULL;
-        if (free_i < 0 && (!wearer_pas[i].pawn || ue_object_at(wearer_pas[i].pi) != wearer_pas[i].pawn)) free_i = i;
-    }
-    UObject *cur = ue_get_ptr(body, "SkeletalMesh");
-    UObject *pa = cur && !is_our_mesh(cur) ? ue_get_ptr(cur, "PhysicsAsset") : NULL;
-    if (!pa || free_i < 0) return NULL;
-    wearer_pas[free_i].pawn = pawn; wearer_pas[free_i].pi = U_INDEX(pawn);
-    wearer_pas[free_i].pa = pa; wearer_pas[free_i].pai = U_INDEX(pa);
+// a female survivor's smaller bodies on Walker; an NPC body: the NPC's). The wearer's own is the PhysicsAsset of the
+// set's torso piece (what the game shows for the set without the look: compose keeps the pieces complete); it is put
+// on the body component as its override (SetPhysicsAsset -> PhysicsAssetOverride, which later SetSkeletalMesh calls
+// keep), so a look never changes how the hero is hit.
+static struct { UObject *table, *pa; FName row; int32_t pai; } torso_pas[24];
+static UObject *wearer_pa(const CustSet *cur, int hero) {
+    const RowHandle *t = &cur->slot[SLOT_TORSO];
+    uint8_t *r = t->table && !is_ours(t->row) ? dt_row(t->table, t->row) : NULL;
+    if (!r && hero >= 0) { t = &heroes[hero].defskin; r = t->table ? dt_row(t->table, t->row) : NULL; }   // no pieces: the default outfit
+    if (!r) return NULL;
+    static int next;
+    for (int i = 0; i < 24; i++)
+        if (torso_pas[i].table == t->table && fname_eq(torso_pas[i].row, t->row) && torso_pas[i].pa && ue_object_at(torso_pas[i].pai) == torso_pas[i].pa)
+            return torso_pas[i].pa;
+    char p[200];
+    ue_name(HMD_MESHPATH(CC_3P(r)), p, sizeof p);
+    UObject *m = strcmp(p, "None") ? load_asset(p) : NULL, *pa = m ? ue_get_ptr(m, "PhysicsAsset") : NULL;
+    if (!pa) return NULL;
+    int i = next++ % 24;
+    torso_pas[i].table = t->table; torso_pas[i].row = t->row; torso_pas[i].pa = pa; torso_pas[i].pai = U_INDEX(pa);
     return pa;
 }
-static void keep_wearer_pa(UObject *body, UObject *pa) {
+static int keep_wearer_pa(UObject *body, UObject *pa) {   // 1 if it was changed
     static UFunction *f; static int32_t pp, pr;
     if (!f) { f = fn_of(body, "SetPhysicsAsset"); pp = parm_off(f, "NewPhysicsAsset"); pr = parm_off(f, "bForceReInit"); }
-    if (!f || pp < 0 || !pa) return;
+    if (!f || pp < 0 || !pa) return 0;
     int32_t ov = ue_prop_offset(body, "PhysicsAssetOverride");
-    if (ov >= 0 && *(UObject **)((char *)body + ov) == pa) return;
+    if (ov >= 0 && *(UObject **)((char *)body + ov) == pa) return 0;
     uint8_t p[32] = {0};
     *(UObject **)(p + pp) = pa;
     if (pr >= 0) p[pr] = 1;
     ue_process_event(body, f, p);
+    return 1;
 }
+
+// The 3P body mesh of a made-up outfit row (NPC body or add-on outfit) and, for add-on outfits, the FP arms; NULL when
+// the row is not ours or the look isn't here (add-on not mounted, mesh failed to load).
+static UObject *look_meshes(FName row, UObject **fp, Npc **npc, Outf **outf) {
+    Npc *np = npc_of_row(row);
+    Outf *of = np ? NULL : outfit_of_row(row);
+    UObject *mesh = np && !np->bad ? npc_mesh(np) : of ? mesh_on(of->p3, "3P_Biped_SK", &of->m3, &of->i3, &of->bad, "outfit") : NULL;
+    if (fp) *fp = mesh && of && !of->fpbad ? mesh_on(of->pf, "FP_Biped_SK", &of->mf, &of->i_f, &of->fpbad, "outfit arms") : NULL;
+    if (npc) *npc = np;
+    if (outf) *outf = of;
+    return mesh;
+}
+
+// The game's per-slot apply of a customization set (FCharacterCustomizationSet -> mesh components): one function for
+// everything that wears a set: heroes (0x141BE5E20 -> 0x141B75AD0), cutscene stand-ins (APlayerStandIn, e.g. the
+// Act 3 escape: SetAppearanceToMatchPlayerSlot copies the slot's set), the lineup / character-select / customization
+// mannequins. bool (ctx {set*, comps*}, slot, first-person comp, third-person comp): false when the row isn't in its
+// table; for the outfit slot the caller then applies the three pieces instead, and on true with LastEquipSlot Outfit
+// it empties the head and legs components. So for a made-up outfit row whose look is here (NPC body, add-on outfit
+// not given a real row by screen_rows), we put the look on and answer true: every such actor shows it exactly like a
+// real outfit (#37: stand-ins showed the survivor). Synchronous like the game's own (blocking loads).
+#define ADDR_APPLYSLOT VA(0x141B75B90ull)
+static const uint8_t SIG_APPLYSLOT[] = {0x40,0x55,0x53,0x56,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x8d,0xac,0x24,
+                                        0x10,0xfc,0xff,0xff,0x48,0x81,0xec,0xf0};
+typedef uint8_t (*ApplySlotFn)(void **ctx, uint8_t slot, UObject *fp, UObject *body);
+static ApplySlotFn orig_applyslot;
+static int n_slot_applied;
+static uint8_t applyslot_detour(void **ctx, uint8_t slot, UObject *fp, UObject *body) {
+    uint8_t r = orig_applyslot(ctx, slot, fp, body);
+    if (r || slot != SLOT_OUTFIT || !ctx || !ctx[0]) return r;
+    const RowHandle *h = &((CustSet *)ctx[0])->slot[SLOT_OUTFIT];
+    if (!h->table || !is_ours(h->row)) return r;
+    UObject *fpm = NULL, *mesh = look_meshes(h->row, &fpm, NULL, NULL);
+    if (!mesh) return r;
+    if (body) set_mesh(body, mesh);
+    if (fp) {
+        if (fpm) set_mesh(fp, fpm);
+        else orig_applyslot(ctx, SLOT_TORSO, fp, NULL);   // no arms of its own (NPC bodies): the torso piece's
+    }
+    if (n_slot_applied++ < 50 || !(n_slot_applied % 100)) {
+        char a[96], b[80], c[96];
+        UObject *owner = body ? U_OUTER(body) : NULL;
+        LOG("models: %s on %s (%s)", ue_name(h->row, b, sizeof b), owner ? ue_obj_name(owner, a, sizeof a) : "?",
+            owner ? ue_obj_name(U_CLASS(owner), c, sizeof c) : "?");
+    }
+    return 1;
+}
+
+// Every machine, heroes whose replicated set names a made-up outfit row (NPC body, add-on outfit): the look and the
+// wearer's hitboxes. The apply hook above (or the game, for a real row) normally put the look on already; this keeps
+// it (a later re-apply, a pawn the hook missed) and logs each new wearer once.
+static struct { UObject *pawn; int32_t pi; FName row; } worn[16];
 static int n_npc_applied;
-static void tick_npc(void) {   // NPC bodies and add-on outfits (made-up outfit rows)
+static void tick_npc(void) {
     UObject **s; int n = hero_slots(&s);
     for (int i = 0; i < n; i++) {
         CustSet *cur = slot_set(s[i]);
         UObject *pawn = slot_pawn(s[i]);
         if (!cur || !pawn || cur->last != SLOT_OUTFIT || !cur->slot[SLOT_OUTFIT].table) continue;
         FName row = cur->slot[SLOT_OUTFIT].row;
-        Npc *np = npc_of_row(row);
-        Outf *of = np ? NULL : outfit_of_row(row);
-        UObject *mesh = np && !np->bad ? npc_mesh(np) : of ? mesh_on(of->p3, "3P_Biped_SK", &of->m3, &of->i3, &of->bad, "outfit") : NULL;
+        if (!is_ours(row)) continue;
+        Npc *np; Outf *of; UObject *fpm;
+        UObject *mesh = look_meshes(row, &fpm, &np, &of);
         UObject *body = mesh ? ue_get_ptr(pawn, "Mesh") : NULL;
         if (!body) continue;
-        if (of && !of->fpbad) {   // first-person arms (NPC bodies have none: the survivor's stay)
-            UObject *fpm = mesh_on(of->pf, "FP_Biped_SK", &of->mf, &of->i_f, &of->fpbad, "outfit arms");
-            UObject *arms = fpm ? comp_of(pawn, "FirstPersonArms") : NULL;
+        if (fpm) {   // first-person arms (NPC bodies have none: the survivor's stay)
+            UObject *arms = comp_of(pawn, "FirstPersonArms");
             if (arms && ue_get_ptr(arms, "SkeletalMesh") != fpm) set_mesh(arms, fpm);
         }
-        if (ue_get_ptr(body, "SkeletalMesh") == mesh) continue;
-        UObject *pa = wearer_pa(pawn, body);   // before the swap: the game's own mesh is still on
-        set_mesh(body, mesh);
-        UObject *mpa = ue_get_ptr(mesh, "PhysicsAsset");
-        if (pa && mpa != pa) keep_wearer_pa(body, pa);
+        int changed = 0;
+        if (ue_get_ptr(body, "SkeletalMesh") != mesh) { set_mesh(body, mesh); changed = 1; }
+        if (!n_cat) need_catalogue();
+        UObject *pa = wearer_pa(cur, slot_hero(s[i])), *mpa = ue_get_ptr(mesh, "PhysicsAsset");
+        if (pa && pa != mpa) changed |= keep_wearer_pa(body, pa);
         UObject *head = comp_of(pawn, "ThirdPersonHeadMesh"), *legs = comp_of(pawn, "ThirdPersonLegsMesh");
-        if (head && ue_get_ptr(head, "SkeletalMesh")) set_mesh(head, NULL);
-        if (legs && ue_get_ptr(legs, "SkeletalMesh")) set_mesh(legs, NULL);
-        n_npc_applied++;
+        if (head && ue_get_ptr(head, "SkeletalMesh")) { set_mesh(head, NULL); changed = 1; }
+        if (legs && ue_get_ptr(legs, "SkeletalMesh")) { set_mesh(legs, NULL); changed = 1; }
+        int seen = i < 16 && worn[i].pawn == pawn && ue_object_at(worn[i].pi) == pawn && fname_eq(worn[i].row, row);
+        if (changed) n_npc_applied++;
+        if (seen && !changed) continue;
+        if (i < 16) { worn[i].pawn = pawn; worn[i].pi = U_INDEX(pawn); worn[i].row = row; }
         char pb[96];
         LOG("models: hero slot %d wears %s %s (hitboxes: %s)", i, np ? "NPC" : "outfit", np ? np->name : of->name,
             pa ? ue_obj_name(pa, pb, sizeof pb) : mpa ? "the look's own" : "none");
     }
 }
+// ---- added outfits on the game's customization screen (#33; docs/investigations/new-assets.md §11) ----
+// Every mounted add-on outfit gets a real row "b4bcoop.outfit.<name>" in every survivor's <Hero>_Customization_DT,
+// on this machine only (same name as the made-up row of /model, so everything above treats both alike). The screen
+// lists the table's rows, so the outfit shows up there for every survivor: unlocked (the lock check only knows rows a
+// Products_DT product unlocks), the title as its name, the game's generic skin icon (no product, no icon). The game
+// itself then applies the row like any outfit, on every actor that wears a set.
+// The profile never holds such a row: equipping it saves the profile's previous look for that survivor instead
+// (equip_detour) and remembers the add-on outfit in b4bcoop-outfits.txt next to the config ("<survivor> <outfit>");
+// reading the profile's look (FCharacterCustomizationUtils::GetProfileCustomization, getprof_detour) answers with the
+// remembered outfit while its add-on is mounted. So the game without b4bcoop or without the add-on loads a profile it
+// knows, and shows the survivor's previous look.
+#define ADDR_GMALLOC VA(0x1469E59F0ull)     // FMalloc* GMalloc; vtable +0x20 Realloc(this, ptr, size, align)
+typedef void *(*ReallocFn)(void *self, void *p, size_t n, uint32_t align);
+static void *gm_realloc(void *p, size_t n) {
+    void *gm = *(void **)ADDR_GMALLOC;
+    return gm ? ((ReallocFn)(*(void ***)gm)[4])(gm, p, n, 16) : NULL;
+}
+// TMap<FName, uint8*> (UDataTable::RowMap) in this build: TSparseArray {TArray elements 0x18 {key, value, HashNextId,
+// HashIndex}; TBitArray inline 4 dwords +0x10, secondary +0x20, NumBits +0x28, MaxBits +0x2c; FirstFreeIndex +0x30,
+// NumFreeIndices +0x34}, hash {inline +0x38, secondary +0x40}, HashSize +0x48. Hash of an FName as the set's FindId
+// (0x140BCE720) computes it.
+static uint32_t fname_hash(FName n) {
+    uint32_t blk = n.idx >> 18, off = n.idx & 0xffff;
+    return (blk << 21) + off + (off << 16) + (off >> 4) + n.num + blk;
+}
+static int rowmap_add(void *map, FName key, void *row) {
+    char *m = map;
+    TArray *el = map;
+    int32_t *nbits = (int32_t *)(m + 0x28), maxbits = *(int32_t *)(m + 0x2c), nfree = *(int32_t *)(m + 0x34);
+    int32_t hsize = *(int32_t *)(m + 0x48);
+    uint32_t *bits = *(uint32_t **)(m + 0x20) ? *(uint32_t **)(m + 0x20) : (uint32_t *)(m + 0x10);
+    int32_t *hash = *(int32_t **)(m + 0x40) ? *(int32_t **)(m + 0x40) : (int32_t *)(m + 0x38);
+    if (hsize <= 0 || (hsize & (hsize - 1))) return -1;
+    if (nfree || *nbits != el->num) return -2;   // tables are loaded without holes; anything else: leave it alone
+    if (el->num + 1 > maxbits) {   // allocation flags full: grow them (inline 4 dwords -> heap, as TBitArray does)
+        int32_t nmax = (maxbits + 128 + 31) & ~31;
+        uint32_t *nb = gm_realloc(NULL, (size_t)nmax / 8);
+        if (!nb) return -3;
+        memset(nb, 0, (size_t)nmax / 8);
+        memcpy(nb, bits, (size_t)((maxbits + 31) / 32) * 4);
+        uint32_t *old = *(uint32_t **)(m + 0x20);
+        *(uint32_t **)(m + 0x20) = nb; *(int32_t *)(m + 0x2c) = nmax;
+        if (old) gm_realloc(old, 0);   // Realloc to 0 = free
+        bits = nb;
+    }
+    for (int i = 0; i < el->num; i++) {   // our hash must be the game's
+        char *e = (char *)el->data + (size_t)i * 0x18;
+        if (*(int32_t *)(e + 0x14) != (int32_t)(fname_hash(*(FName *)e) & (uint32_t)(hsize - 1))) return -4;
+    }
+    if (el->num >= el->max) {
+        void *d = gm_realloc(el->data, (size_t)(el->max + 16) * 0x18);
+        if (!d) return -5;
+        el->data = d; el->max += 16;
+    }
+    int idx = el->num;
+    char *e = (char *)el->data + (size_t)idx * 0x18;
+    *(FName *)e = key; *(void **)(e + 8) = row;
+    int32_t hi = (int32_t)(fname_hash(key) & (uint32_t)(hsize - 1));
+    *(int32_t *)(e + 0x14) = hi; *(int32_t *)(e + 0x10) = hash[hi];
+    bits[idx >> 5] |= 1u << (idx & 31);
+    el->num++; (*nbits)++;
+    hash[hi] = idx;
+    return idx;
+}
+static int text_of(const char *s, void *ftext) {   // FText (0x18) owning a new text: KismetTextLibrary.Conv_StringToText
+    UClass *k = ue_find_class("KismetTextLibrary");
+    UObject *cdo = k ? UC_CDO(k) : NULL;
+    UFunction *f = fn_of(cdo, "Conv_StringToText");
+    int32_t pi = parm_off(f, "inString"), pr = parm_off(f, "ReturnValue");   // sic: "inString"
+    if (!f || pi < 0 || pr < 0 || UFN_PARMSSIZE(f) > 64) return !cdo ? -2 : !f ? -3 : -4;
+    wchar_t w[128]; int n = 0;
+    for (; s[n] && n < 127; n++) w[n] = (wchar_t)(unsigned char)s[n];
+    w[n] = 0;
+    uint8_t p[64] = {0};
+    FString *in = (FString *)(p + pi);
+    in->data = w; in->num = in->max = n + 1;
+    ue_process_event(cdo, f, p);
+    memcpy(ftext, p + pr, 0x18);   // the reference moves into the row (never released: rows live as long as the table)
+    return *(void **)ftext ? 0 : -1;
+}
+// A CharacterCustomizationRow (0x320) for an add-on outfit, built field by field (no shallow copies of the template's
+// maps/texts): the template row (the survivor's default outfit) gives the vtable, quality and equip sound.
+static uint8_t *outfit_row_new(const uint8_t *tmpl, const Outf *o) {
+    uint8_t *r = gm_realloc(NULL, 0x320);
+    if (!r) { LOG("models: row for %s: no memory", o->name); return NULL; }
+    memset(r, 0, 0x320);
+    memcpy(r, tmpl, 8);                                     // FTableRowBase vtable
+    char desc[160];
+    snprintf(desc, sizeof desc, "Add-on outfit (%s). Players without this add-on see your survivor.", o->addon);
+    char up[64];   // the game's outfit names are upper case
+    snprintf(up, sizeof up, "%s", o->title[0] ? o->title : o->name);
+    for (char *c = up; *c; c++) *c = (char)toupper((unsigned char)*c);
+    int te = text_of(up, r + 0x08);
+    if (!te) te = text_of(desc, r + 0x20);
+    if (te) { LOG("models: row for %s: no text (%d)", o->name, te); return NULL; }   // leaks 0x320
+    r[0x38] = tmpl[0x38];                                   // Quality
+    memcpy(r + 0x40, tmpl + 0x40, 8);                       // EquipSound
+    r[0x48] = SLOT_OUTFIT;
+    char *fp = CC_FP(r), *tp = CC_3P(r);
+    *(int32_t *)(fp + 0xa0) = *(int32_t *)(tp + 0xa0) = -1;   // weak pointers: none (the soft path resolves)
+    *(int32_t *)(r + 0x1e0 + 0xa0) = -1;                    // ThirdPersonMeshDefinition_XB1PS4_Override: empty
+    for (int k = 0; k < 3; k++) *(int32_t *)(r + 0x2a8 + k * 0x28) = -1;   // animation overrides: none
+    HMD_MESHPATH(tp) = make_name(o->p3);
+    // no arms of its own (converted mods may lack them): the survivor's default outfit's, never an empty FP mesh
+    HMD_MESHPATH(fp) = o->pf[0] ? make_name(o->pf) : HMD_MESHPATH(CC_FP(tmpl));
+    return r;
+}
+static int screen_off;            // ini outfits_screen=0: no rows (then /model only)
+static struct { int32_t ti; int n; } done[32];   // per survivor: table checked with that many outfits
+static int n_rows_added, n_rows_failed;
+static float rows_acc;
+static int mesh_in_paks(const char *objpath) {   // "/Game/A/B.B" -> Gobi/Content/A/B.uasset is in a mounted pak
+    char key[260];
+    const char *dot = strrchr(objpath, '.');
+    if (_strnicmp(objpath, "/Game/", 6) || !dot) return 0;
+    snprintf(key, sizeof key, "Gobi/Content/%.*s.uasset", (int)(dot - objpath - 6), objpath + 6);
+    return paks_file_exists(key);
+}
+static void screen_rows(float dt) {
+    static int read_ini;
+    if (!read_ini) {   // ini outfits_screen=0 (read at the first tick: b4bcoop.ini is read after models_init)
+        const char *v = cmds_ini_value("outfits_screen");
+        read_ini = 1;
+        if (v && !strcmp(v, "0")) { screen_off = 1; LOG("models: add-on outfits on the customization screen: off (outfits_screen=0)"); }
+    }
+    if (screen_off || (rows_acc -= dt) > 0) return;
+    rows_acc = 5;
+    if (n_outfs < 0) build_outfits();
+    if (!n_outfs) return;
+    need_catalogue();
+    int added = n_rows_added;
+    for (int h = 0; h < n_heroes && h < 32; h++) {
+        UObject *t = heroes[h].custtable;
+        uint8_t *tmpl = heroes[h].defskin.table ? dt_row(heroes[h].defskin.table, heroes[h].defskin.row) : NULL;
+        if (!t || !is_live(t) || !tmpl || !is_rowstruct(t, "CharacterCustomizationRow")) continue;
+        if (done[h].ti == U_INDEX(t) && done[h].n == n_outfs) continue;
+        done[h].ti = U_INDEX(t); done[h].n = n_outfs;
+        for (int i = 0; i < n_outfs; i++) {
+            Outf *o = &outfs[i];
+            if (o->bad || o->rowfail) continue;
+            if (!o->inpak) {   // never a row whose mesh isn't there: the game would put an empty mesh on
+                o->inpak = mesh_in_paks(o->p3) ? 1 : -1;
+                if (o->inpak < 0) LOG("models: outfit %s: %s not in the mounted add-ons, /model only", o->name, o->p3);
+            }
+            if (o->inpak < 0) continue;
+            char rn[64];
+            snprintf(rn, sizeof rn, OUTFIT_PREFIX "%s", o->name);
+            FName key = make_name(rn);
+            if (dt_row(t, key)) continue;
+            uint8_t *r = outfit_row_new(tmpl, o);
+            int idx = r ? rowmap_add(DT_ROWMAP(t), key, r) : -6;
+            char tn[64];
+            if (idx < 0) {
+                o->rowfail = 1; n_rows_failed++;
+                LOG("models: no customization-screen row for outfit %s in %s (%d): /model only", o->name, ue_obj_name(t, tn, sizeof tn), idx);
+                continue;
+            }
+            n_rows_added++;
+        }
+    }
+    if (n_rows_added > added) LOG("models: %d customization-screen row(s) added (add-on outfits for every survivor, %d in all)", n_rows_added - added, n_rows_added);
+}
 
+// b4bcoop-outfits.txt: the add-on outfit each survivor wears, picked on the customization screen
+typedef struct { char hero[24], outfit[33]; } Pick;
+static Pick picks[32];
+static int n_picks = -1;
+static void picks_path(char *path, size_t n) {
+    const char *cfg = cmds_config_path(), *s1 = strrchr(cfg, '\\'), *s2 = strrchr(cfg, '/');
+    const char *sl = s1 > s2 ? s1 : s2;
+    int dir = sl ? (int)(sl - cfg + 1) : 0;
+    snprintf(path, n, "%.*sb4bcoop-outfits.txt", dir, cfg);
+}
+static void picks_load(void) {
+    n_picks = 0;
+    char path[MAX_PATH], line[128];
+    picks_path(path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f) && n_picks < 32) {
+        char h[32], o[48];
+        if (line[0] == '#' || sscanf(line, "%31s %47s", h, o) != 2) continue;
+        snprintf(picks[n_picks].hero, sizeof picks[n_picks].hero, "%s", h);
+        snprintf(picks[n_picks].outfit, sizeof picks[n_picks].outfit, "%s", o);
+        n_picks++;
+    }
+    fclose(f);
+}
+static const char *pick_of(const char *hero) {
+    if (n_picks < 0) picks_load();
+    for (int i = 0; i < n_picks; i++) if (!_stricmp(picks[i].hero, hero)) return picks[i].outfit;
+    return NULL;
+}
+static void pick_set(const char *hero, const char *outfit) {   // outfit NULL: none
+    if (n_picks < 0) picks_load();
+    const char *cur = pick_of(hero);
+    if (outfit ? cur && !strcmp(cur, outfit) : !cur) return;
+    int i = 0;
+    while (i < n_picks && _stricmp(picks[i].hero, hero)) i++;
+    if (!outfit) { if (i < n_picks) picks[i] = picks[--n_picks]; }
+    else {
+        if (i == n_picks && n_picks < 32) n_picks++;
+        if (i < n_picks) { snprintf(picks[i].hero, sizeof picks[i].hero, "%s", hero); snprintf(picks[i].outfit, sizeof picks[i].outfit, "%s", outfit); }
+    }
+    char path[MAX_PATH];
+    picks_path(path, sizeof path);
+    FILE *f = fopen(path, "w");
+    if (!f) { LOG("models: can't write %s", path); return; }
+    fprintf(f, "# b4bcoop: add-on outfits picked on the customization screen (survivor outfit). Your profile keeps the\n"
+               "# survivor's previous look, which the game shows without b4bcoop or without the add-on.\n");
+    for (int k = 0; k < n_picks; k++) fprintf(f, "%s %s\n", picks[k].hero, picks[k].outfit);
+    fclose(f);
+    LOG("models: %s now wears %s on the customization screen", hero, outfit ? outfit : "a game outfit");
+}
+static int hero_by_def(const RowHandle *h) {   // a CharacterDefinitionRow handle (HeroDefinitions_DT, hero_N)
+    if (!h || !h->table) return -1;
+    need_catalogue();
+    for (int i = 0; i < n_heroes; i++) if (heroes[i].deftable == h->table && fname_eq(heroes[i].defrow, h->row)) return i;
+    return -1;
+}
+
+// FCharacterCustomizationUtils::GetProfileCustomization(PlayerController, hero row handle, out set): the profile's
+// look for that survivor (default skin in the outfit slot first, then the saved set if valid and unlocked). Used by
+// AGobiPlayerState::InitCustomizationSet (-> ServerSelectCustomizationSet), the customization screen and the
+// mannequins. Our own controller only: the remembered add-on outfit replaces the outfit slot while its row exists.
+#define ADDR_GETPROF VA(0x141B769C0ull)
+static const uint8_t SIG_GETPROF[] = {0x40,0x53,0x57,0x41,0x55,0x41,0x56,0x48,0x83,0xec,0x78,0x4d,0x8b,0xe8,0x4c,0x8b,
+                                      0xf2,0x48,0x8b,0xd9,0x48,0x85,0xc9,0x0f};
+typedef void (*GetProfFn)(UObject *pc, RowHandle *hero, CustSet *out);
+static GetProfFn orig_getprof;
+static int no_subst;              // the host refused our add-on outfit: the profile's own look until the next map
+static int n_subst, reinit_due;
+static void getprof_detour(UObject *pc, RowHandle *hero, CustSet *out) {
+    orig_getprof(pc, hero, out);
+    if (!pc || !out || pc != ue_local_pc() || screen_off || no_subst || models_off()) return;
+    int hi = hero_by_def(hero);
+    const char *nm = hi >= 0 ? pick_of(heroes[hi].slug) : NULL;
+    Outf *of = nm ? outfit_by_name(nm) : NULL;
+    char rn[64];
+    snprintf(rn, sizeof rn, OUTFIT_PREFIX "%s", nm ? nm : "");
+    FName row = of ? make_name(rn) : (FName){0};
+    if (!of || !dt_row(heroes[hi].custtable, row)) return;   // add-on not mounted here (or no row): the profile's look
+    if (!is_client()) {   // host: the look the campaign run saves for us (runrefresh_detour) is the profile's
+        UObject *slot = ps_slot(my_ps());
+        if (slot) note_clean(slot, out);
+    }
+    for (int k = 0; k < 3; k++) {   // complete pieces: what players without the add-on see
+        if (out->slot[k].table && dt_row(out->slot[k].table, out->slot[k].row)) continue;
+        for (int i = heroes[hi].first; i < heroes[hi].first + heroes[hi].count; i++)
+            if (cat[i].slot == k) { out->slot[k].table = cat[i].table; out->slot[k].row = cat[i].row; break; }
+    }
+    out->slot[SLOT_OUTFIT].table = heroes[hi].custtable; out->slot[SLOT_OUTFIT].row = row;
+    out->last = SLOT_OUTFIT;
+    if (n_subst++ < 20) LOG("models: %s wears add-on outfit %s (customization screen)", heroes[hi].slug, nm);
+}
+
+// The profile component's EquipCharacterCustomizationSet(hero row handle, set) (logs "applying customization set to
+// %s"; only caller: the customization screen when it closes with a changed look). Our rows never reach the profile.
+#define ADDR_EQUIP VA(0x141BC3C00ull)
+static const uint8_t SIG_EQUIP[] = {0x40,0x55,0x53,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x57,0x48,0x8d,0x6c,0x24,0xe0,
+                                    0x48,0x81,0xec,0x20,0x01,0x00,0x00,0x48};
+typedef void (*EquipFn)(UObject *prof, RowHandle *hero, CustSet *set);
+static EquipFn orig_equip;
+static void equip_detour(UObject *prof, RowHandle *hero, CustSet *set) {
+    int hi = set ? hero_by_def(hero) : -1;
+    if (hi < 0) { orig_equip(prof, hero, set); return; }
+    char nm[40];
+    int wears = set->last == SLOT_OUTFIT && set->slot[SLOT_OUTFIT].table && outfit_row(set->slot[SLOT_OUTFIT].row, nm, sizeof nm);
+    int any = 0;
+    for (int k = 0; k < 4; k++) any |= set->slot[k].table && is_ours(set->slot[k].row);
+    pick_set(heroes[hi].slug, wears ? nm : NULL);
+    if (!any) { orig_equip(prof, hero, set); return; }
+    // the profile keeps the previous look in every slot that names one of our rows (the screen's own set, which it
+    // sends to the server next, is left as it is)
+    CustSet prev, copy = *set;
+    memset(&prev, 0, sizeof prev);
+    UObject *pc = ue_local_pc();
+    if (pc && orig_getprof) orig_getprof(pc, hero, &prev);
+    uint8_t prev_last = prev.slot[prev.last & 3].table ? prev.last : SLOT_OUTFIT;   // no saved set: the default skin
+    for (int k = 0; k < 4; k++) {
+        if (!copy.slot[k].table || !is_ours(copy.slot[k].row)) continue;
+        int keep = prev.slot[k].table && !is_ours(prev.slot[k].row) && dt_row(prev.slot[k].table, prev.slot[k].row);
+        copy.slot[k].table = keep ? prev.slot[k].table : (k == SLOT_OUTFIT ? heroes[hi].defskin.table : NULL);
+        copy.slot[k].row = keep ? prev.slot[k].row : (k == SLOT_OUTFIT ? heroes[hi].defskin.row : (FName){0});
+        copy.slot[k].display.data = NULL; copy.slot[k].display.num = copy.slot[k].display.max = 0;
+        if (copy.last == k) copy.last = keep ? prev_last : SLOT_OUTFIT;
+    }
+    char b[64];
+    LOG("models: profile keeps %s's look (%s) instead of add-on outfit %s", heroes[hi].slug,
+        (handle_str(&copy.slot[copy.last & 3], b, sizeof b), b), wears ? nm : "-");
+    orig_equip(prof, hero, &copy);
+}
 void models_tick(float dt) {
     if ((tick_acc += dt) < 0.5f) return;
     dt = tick_acc; tick_acc = 0;
@@ -746,6 +1109,13 @@ void models_tick(float dt) {
     if (!w || !ue_local_pc()) return;
     tick_npc();
     wlooks_tick(dt);
+    screen_rows(dt);
+    if (!is_client()) no_subst = 0;
+    if (reinit_due) {   // the host refused our add-on outfit: send the profile's own look instead
+        UObject *ps = my_ps(), *slot = ps_slot(ps);
+        reinit_due = 0;
+        if (!me.on && slot && !reinit_from_profile(ps, slot)) LOG("models: sent the profile's own look instead");
+    }
     if (!me.on && !others[0].on) {   // cheap path: nothing wished (others[] is compacted on use)
         int any = 0;
         for (int i = 0; i < MAX_OTHERS; i++) any |= others[i].on;
@@ -763,12 +1133,13 @@ static int host_off = -1;          // client: the host's /models state as its no
 static char refusal[160];          // client: the host's last refusal of our look, until our next /model (Models tab)
 void models_host_notice(const char *text) {
     if (me.on && !strncmp(text, REFUSED_NOTICE, sizeof REFUSED_NOTICE - 1)) { me.gave_up = 1; LOG("models: refused by the host"); }
+    if (n_subst && !no_subst && !strncmp(text, REFUSED_NOTICE, sizeof REFUSED_NOTICE - 1)) { no_subst = 1; reinit_due = 1; }
     if (!strncmp(text, REFUSED_NOTICE, sizeof REFUSED_NOTICE - 1) || !strncmp(text, WREFUSED_NOTICE, sizeof WREFUSED_NOTICE - 1)) {
         snprintf(refusal, sizeof refusal, "%s", text);
         if (strstr(text, "(/models)")) host_off = 1;
     }
     if (!strncmp(text, "[host] model swaps are off", 26)) host_off = 1;
-    if (!strncmp(text, "[host] model swaps are on", 25)) { host_off = 0; refusal[0] = 0; }
+    if (!strncmp(text, "[host] model swaps are on", 25)) { host_off = 0; refusal[0] = 0; no_subst = 0; }
     wlooks_host_notice(text);
 }
 int models_off(void) { return is_client() ? host_off == 1 : locked; }
@@ -778,6 +1149,13 @@ typedef void (*SelectSetFn)(UObject *ps, const CustSet *set);
 static SelectSetFn orig_selectset;
 static void selectset_detour(UObject *ps, const CustSet *set) {
     UObject *slot = ps_slot(ps);
+    CustSet full;
+    if (set && slot) {   // made-up outfit row without pieces: complete them before the set replicates
+        need_catalogue();
+        full = *set;
+        for (int k = 0; k < 4; k++) full.slot[k].display.data = NULL, full.slot[k].display.num = full.slot[k].display.max = 0;
+        if (complete_pieces(&full, slot_hero(slot))) set = &full;
+    }
     if (set && slot && ps != my_ps()) {
         need_catalogue();
         char n[64];
@@ -1515,6 +1893,116 @@ static void cmd_rows(const char *filter, Out *o) {
     }
 }
 
+// #33: rows, picks, substitutions; #37: actors that wear a set besides heroes (cutscene stand-ins, mannequins)
+static void cmd_screen(Out *o) {
+    if (n_picks < 0) picks_load();
+    out_printf(o, "screen rows: %s, added %d, failed %d; profile looks answered with an add-on outfit: %d%s; slot applies: %d\n",
+               screen_off ? "off" : "on", n_rows_added, n_rows_failed, n_subst, no_subst ? " (host refused: off)" : "", n_slot_applied);
+    for (int i = 0; i < n_picks; i++) out_printf(o, "pick: %s %s%s\n", picks[i].hero, picks[i].outfit, outfit_by_name(picks[i].outfit) ? "" : " (add-on not here)");
+    char b[64], rn[64];
+    for (int h = 0; h < n_heroes; h++) {
+        int k = 0;
+        for (int i = 0; i < n_outfs; i++) { snprintf(rn, sizeof rn, OUTFIT_PREFIX "%s", outfs[i].name); k += dt_row(heroes[h].custtable, make_name(rn)) != NULL; }
+        out_printf(o, "  %s: %s %d rows (%d ours)\n", heroes[h].slug, heroes[h].custtable ? ue_obj_name(heroes[h].custtable, b, sizeof b) : "-",
+                   heroes[h].custtable ? ((TArray *)DT_ROWMAP(heroes[h].custtable))->num : 0, k);
+    }
+}
+static void cmd_standins(const char *cls, Out *o) {
+    const char *names[] = {"PlayerStandIn", "CustomizationMannequin"};
+    const char *props[] = {"CustomizationSet", "DesiredCustomizationSet"};
+    char a[128], b[64];
+    need_catalogue();
+    for (int c = 0; c < 2; c++) {
+        if (cls && *cls && _stricmp(cls, names[c])) continue;
+        UClass *k = ue_find_class(names[c]);
+        for (int32_t i = 0, n = ue_num_objects(); k && i < n; i++) {
+            UObject *x = ue_object_at(i);
+            if (!is_live(x) || !ue_is_a(x, k)) continue;
+            int32_t so = ue_prop_offset(x, props[c]), hd = ue_prop_offset(x, "bHidden");
+            out_printf(o, "%s [%s] hidden=%d\n", ue_full_path(x, a, sizeof a), ue_obj_name(U_CLASS(x), b, sizeof b), hd >= 0 ? *((uint8_t *)x + hd) & 1 : -1);
+            if (so >= 0) {
+                CustSet *st = (CustSet *)((char *)x + so);
+                for (int s2 = 0; s2 < 4; s2++) { char hb[96]; handle_str(&st->slot[s2], hb, sizeof hb); out_printf(o, "    set.%s %s\n", SLOTN[s2], hb); }
+                out_printf(o, "    set.last %d\n", st->last);
+            }
+            dump_comps(x, o);
+        }
+    }
+}
+
+// mdl cs open | list | equip <row> | close: the customization screen without walking to it (dev; #33 tests)
+static UObject *live_of(const char *cls) {
+    UClass *c = ue_find_class(cls);
+    for (int32_t i = ue_num_objects() - 1; c && i >= 0; i--) {   // newest first
+        UObject *x = ue_object_at(i);
+        if (is_live(x) && ue_is_a(x, c) && x != UC_CDO(U_CLASS(x))) return x;
+    }
+    return NULL;
+}
+static void cmd_cs(const char *a, const char *arg, Out *o) {
+    UObject *ps = my_ps(), *slot = ps_slot(ps), *mgr = live_of("CharacterCustomizationManager");
+    UObject *scr = live_of("CharacterCustomizationScreen");
+    int32_t ho = slot ? ue_prop_offset(slot, "CurrentHeroRowHandle") : -1;
+    if (!strcmp(a, "open")) {
+        UFunction *f = fn_of(mgr, "EnterCharacterCustomization");
+        uint8_t p[64] = {0};
+        if (f) { *(UObject **)(p + parm_off(f, "GobiPlayerState")) = ps; ue_process_event(mgr, f, p); }
+        game_exec("OpenScreen CharacterCustomization 0");
+        scr = live_of("CharacterCustomizationScreen");
+        UFunction *g = fn_of(scr, "SetCharacter");
+        if (!g || ho < 0) { out_printf(o, "no screen (%p) or hero\n", (void *)scr); return; }
+        memset(p, 0, sizeof p);
+        RowHandle *h = (RowHandle *)(p + parm_off(g, "CharacterRowHandle")), *src = (RowHandle *)((char *)slot + ho);
+        h->table = src->table; h->row = src->row;
+        ue_process_event(scr, g, p);
+        out_printf(o, "screen open for %s\n", slot_hero(slot) >= 0 ? heroes[slot_hero(slot)].slug : "?");
+        return;
+    }
+    if (!scr) { out_printf(o, "no screen\n"); return; }
+    if (!strcmp(a, "list")) {
+        UFunction *f = fn_of(scr, "GetCustomizations");
+        uint8_t p[64] = {0};
+        if (!f) return;
+        p[parm_off(f, "InSlot")] = SLOT_OUTFIT;
+        ue_process_event(scr, f, p);
+        TArray *arr = (TArray *)(p + parm_off(f, "ReturnValue"));   // UICustomizationData (0x340), left as is (dev)
+        UClass *k = ue_find_class("KismetTextLibrary");
+        UFunction *t = k ? fn_of(UC_CDO(k), "Conv_TextToString") : NULL;
+        for (int i = 0; i < arr->num; i++) {
+            uint8_t *e = (uint8_t *)arr->data + (size_t)i * 0x340;
+            char rn[80], nm[96] = "?";
+            if (t) {
+                uint8_t q[64] = {0};
+                memcpy(q + parm_off(t, "InText"), e + 8 + 8, 0x18);
+                ue_process_event(UC_CDO(k), t, q);
+                FString *fs = (FString *)(q + parm_off(t, "ReturnValue"));
+                int j = 0;
+                for (; fs->data && j < fs->num && fs->data[j] && j < 95; j++) nm[j] = fs->data[j] < 128 ? (char)fs->data[j] : '?';
+                nm[j] = 0;
+            }
+            out_printf(o, "%2d %-40s \"%s\" locked=%d dlc=%d\n", i, ue_name(*(FName *)e, rn, sizeof rn), nm, e[0x328], e[0x329]);
+        }
+        return;
+    }
+    if (!strcmp(a, "equip") && arg) {
+        UFunction *f = fn_of(scr, "EquipCustomization");
+        uint8_t p[64] = {0};
+        if (!f) return;
+        p[parm_off(f, "InSlot")] = SLOT_OUTFIT;
+        *(FName *)(p + parm_off(f, "RowName")) = make_name(arg);
+        ue_process_event(scr, f, p);
+        out_printf(o, "equipped %s on the screen\n", arg);
+        return;
+    }
+    if (!strcmp(a, "close")) {
+        game_exec("CloseScreen CharacterCustomization 0");
+        UFunction *f = fn_of(mgr, "ExitCharacterCustomization");
+        uint8_t p[64] = {0};
+        if (f) { *(UObject **)(p + parm_off(f, "GobiPlayerState")) = ps; ue_process_event(mgr, f, p); }
+        out_printf(o, "closed\n");
+    }
+}
+
 // mdl dump | rows [filter] | setslot <hero#> <entry> | rpc <entry> | reinit | mesh <hero#> <comp> <path> | load <path>
 //     | skm [filter] | reg [filter] [class]
 int models_cmd(const char *verb, char *rest, Out *o) {
@@ -1525,6 +2013,13 @@ int models_cmd(const char *verb, char *rest, Out *o) {
     char *a3 = a2 ? strtok(NULL, "") : NULL;
     if (!sub || !strcmp(sub, "dump")) { cmd_dump(o); return 1; }
     if (!strcmp(sub, "rows")) { cmd_rows(a1, o); return 1; }
+    if (!strcmp(sub, "screen")) {
+        if (a1 && !strcmp(a1, "retry")) { memset(done, 0, sizeof done); rows_acc = 0; for (int i = 0; i < n_outfs; i++) outfs[i].rowfail = 0; }
+        cmd_screen(o);
+        return 1;
+    }
+    if (!strcmp(sub, "standins")) { cmd_standins(a1, o); return 1; }
+    if (!strcmp(sub, "cs") && a1) { cmd_cs(a1, a2, o); return 1; }
     if (!strcmp(sub, "setslot") && a2) {
         UObject *h = nth_hero(atoi(a1)), *slot = h ? ue_get_ptr(h, "OccupiedPlayerSlot") : NULL;
         Want w = {0}; char label[48];
@@ -1642,6 +2137,12 @@ int models_init(void) {
     overlay_add_panel("Models", 60, models_panel);
     wlooks_init();
     hook(ADDR_RUNREFRESH, SIG_RUNREFRESH, sizeof SIG_RUNREFRESH, (void *)runrefresh_detour, (void **)&orig_runrefresh, "campaign run save");
+    hook(ADDR_APPLYSLOT, SIG_APPLYSLOT, sizeof SIG_APPLYSLOT, (void *)applyslot_detour, (void **)&orig_applyslot, "customization apply");
+    // the profile guard first: rows only when it is in (an equipped row must never reach the profile)
+    hook(ADDR_EQUIP, SIG_EQUIP, sizeof SIG_EQUIP, (void *)equip_detour, (void **)&orig_equip, "profile equip");
+    if (orig_equip) hook(ADDR_GETPROF, SIG_GETPROF, sizeof SIG_GETPROF, (void *)getprof_detour, (void **)&orig_getprof, "profile look");
+    if (!orig_equip || !orig_getprof) screen_off = 1;
+    if (screen_off) LOG("models: add-on outfits on the customization screen: off (hooks)");
     if (memcmp((void *)ADDR_SELECTSET, SIG_SELECTSET, sizeof SIG_SELECTSET)) { LOG("models: SelectCustomizationSet signature mismatch, no host lock"); return -1; }
     if (MH_CreateHook((void *)ADDR_SELECTSET, (void *)selectset_detour, (void **)&orig_selectset) != MH_OK ||
         MH_EnableHook((void *)ADDR_SELECTSET) != MH_OK) { LOG("models: hook failed, no host lock"); orig_selectset = NULL; return -1; }

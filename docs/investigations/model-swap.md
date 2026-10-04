@@ -138,6 +138,35 @@ Visual checks by screenshots on both windows (kept out of git), state checks wit
   profiles; no `b4bcoop.npc` string in any save.
 - `tools/e2e.py --quick` on this build (protocol 2): 12/12 passed (371 s).
 
+## Cutscenes, lineups, mannequins (#37, 2026-10-04, lane 2 / Flatpak Proton)
+- **Bug**: in non-interactive cutscenes (#37: the Act 3 escape; tested on the escape of `MAP_PERS_TheClog_E`, "The Broken Bird", which works the same way), players in an
+  added outfit or an NPC body showed as their own survivor. Cutscenes don't film the heroes: they use level-placed
+  `PlayerStandIn_BP` actors (`APlayerStandIn`, in the cinematic sublevels `Method_TheClogE_00x0_Option4`), whose
+  replicated `CustomizationSet` (+0x330) is copied from the slot (`SetAppearanceToMatchPlayerSlot`). Their update
+  (0x1416118F0: `ThirdPersonMainMesh`/`ThirdPersonHeadMesh`/`ThirdPersonLegsMesh` at weak +0x3BC/+0x3C4/+0x3CC) runs
+  the same set apply as the hero (0x141B75AD0); the made-up outfit row isn't in the table, so the apply showed the
+  set's pieces. `tick_npc` only knew the heroes. Same for the lineup/character-select/customization mannequins
+  (`CustomizationMannequin_BP`, `DesiredCustomizationSet`), which inline the same per-slot apply.
+- **Fix**: hook on the per-slot apply **0x141B75B90** `bool (ctx {set*, comps*}, slot, FP comp, 3P comp)`, the one
+  function every set-wearing actor goes through (heroes, stand-ins, mannequins). It returns false when the row isn't
+  in its table; for the outfit slot the caller then applies the pieces, and on true with LastEquipSlot Outfit it empties
+  head and legs. After the original: outfit slot, false, row `b4bcoop.*` with its look here -> SetSkeletalMesh of the
+  look on the 3P component (overrides emptied), the outfit's FP arms on the FP component (NPC bodies: the torso piece's
+  arms, by calling the original for the torso slot with no 3P component), answer true. Synchronous like the game's own
+  apply. Logged `models: b4bcoop.<...> on <actor> (<class>)` (first 50, then every 100th). With #33 the add-on outfits
+  are real rows on machines that have the add-on (new-assets.md §11), so this hook mainly carries NPC bodies and
+  `outfits_screen=0`; machines without the add-on still show the pieces.
+- **Live** (`multi.sh 2`, `/model` and `mission .../MAP_PERS_TheClog_E Easy`, cutscene started with `callp
+  CutsceneCoordinator StartCutscene`): with the add-on rows (both machines with the add-ons): every stand-in of the
+  host (Ciri) and the client (Lara Croft) wears the outfit on both machines (`mdl standins`: 6 + 3 stand-ins with
+  `/Game/b4bcoop/outfits/...`); the post-round lineup after `endmission 1` shows both outfits on host and client
+  (`end_contact.png`). Hook path (host `outfits_screen=0` + `/model ciri`, client `addons=0` + `/model vanessa`): host log
+  `b4bcoop.outfit.ciri on PlayerStandIn_BP3_...` (6 stand-ins), `b4bcoop.npc.vanessa on PlayerStandIn_BP_...`,
+  `... on CustomizationMannequin_BP_3`; client: Vanessa on its 3 stand-ins and its mannequin, the host's Ciri as
+  Evangelo's base pieces (no add-on: fallback, not invisible). Screenshots: host sees Ciri on the train roof, the
+  client Evangelo at the same moment (`cs2_pair.png`, `~/.local/share/b4b-coop/screen-test/shots/`, not committed).
+- Dev: `mdl standins [PlayerStandIn|CustomizationMannequin]` (set + mesh components of every such actor).
+
 ## Limits / open
 - NPC bodies are seen only by players with b4bcoop (protocol 2). Without it: the survivor (the made-up outfit row is
   ignored by the game; the pieces of the set, if complete, are shown).
