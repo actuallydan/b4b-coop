@@ -653,7 +653,7 @@ Remove it again to play co-op. The log then only says `off (-b4bcoop=off on the 
 
 ### The log, and reporting a problem
 
-- The log is `Gobi\Binaries\Win64\b4bcoop-<number>.log` in the game folder. Every game start writes a new one: take
+- The log is `Gobi\Binaries\Win64\b4bcoop-<date>-<time>-<number>.log` in the game folder. Every game start writes a new one (the last 20 are kept): take
   the **newest**. Its first lines show the version, e.g. `b4bcoop 0.3.0 (protocol 1)`.
 - No new log after starting the game = the mod didn't load (check that all files from the zip are in place).
 - Windows only: if the mod doesn't load, also `Gobi\Binaries\Win64\b4bcoop-launcher.log` (if it exists).

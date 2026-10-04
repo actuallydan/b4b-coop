@@ -45,7 +45,7 @@ Built with zig cc + MinHook as an X3DAudio1_7.dll proxy (and a dev-only legacy d
 instance) via `tools/b4b.py`; player builds (`native/build.sh --release`, `B4B_RELEASE`) have no command server:
 `status | players | host | join <steam:id64 | ip> | exec <console cmd> | find <substr> | call <Class> <Func> [cdo] | peek <hex> [n]`.
 Hooks: UGameEngine::Tick (game-thread command queue), UEngine::SetClientTravel 0x144130880, FMsg::Logf_Internal
-0x142411DB0 (engine log -> b4bcoop-<pid>.log). Global UE_LOG gate byte at 0x1469BD96D (shipping leaves it 0).
+0x142411DB0 (engine log -> b4bcoop-<date>-<time>-<pid>.log). Global UE_LOG gate byte at 0x1469BD96D (shipping leaves it 0).
 
 Proven: offline Fort Hope `?listen` host; client `open ip:7777` joins camp; host mission start redirected to
 `servertravel ...?listen`; client joins mission, PlayerSlotManager gives it a slot and TakeOverBot (retail hot-join path).
