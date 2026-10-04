@@ -129,7 +129,8 @@ like `/kick 1` use. The host also sees each player's ping and Steam ID (`#1 Alex
   shot. `thirdperson_aimfix=0` turns this off: shots then land `side`/`height` units beside the crosshair point, at
   every range, and pick-ups react to what is that far beside it. Aiming with right mouse is always exact.
 
-**`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope.
+**`/join steam:<id>`**: the fallback when **Join Game** in Steam doesn't work. Use it from your own Fort Hope. Like
+Join Game, it keeps trying for 3 minutes if the host doesn't answer yet (for example while it loads a mission).
 - `<id>` is the host's 17-digit Steam ID. The host finds it in Steam: click your account name at the top right →
   **Account details**.
 - Joining by IP address (`/join 1.2.3.4`) works only with `host_ip=1` (advanced, see below). Without it the reply
@@ -612,7 +613,7 @@ it off. Try `netguard=off` only if something won't start or connect, and tell us
 
 **`join`**: optional; **Join Game** in Steam is the normal way to join. With `join=steam:<host's Steam ID>` your game
 joins that host by itself whenever you're alone in your offline Fort Hope (you still sign in Offline yourself; it waits until you have), and
-tries again every 20 seconds until it gets in. Several hosts can be listed with commas; they're tried in turn. It
+keeps trying until it gets in (a few seconds after a failed attempt, then every 15 seconds). Several hosts can be listed with commas; they're tried in turn. It
 turns hosting off (unless `host=1`). A Steam **Join Game** click overrides it.
 ```ini
 join=steam:7656119XXXXXXXXXX
