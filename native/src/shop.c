@@ -222,7 +222,7 @@ static DWORD WINAPI fetch_worker(void *arg) {
     ItemRt *r = NULL;
     LOG("shop: getting the add-on list %s", url);
     if (!updater_http_get(url, SHOP_MAX_CATALOG, &json, &jn, err, sizeof err) || !updater_http_get(sigurl, 1024, &sig, &sn, err, sizeof err)) {
-        setmsg(C_ERROR, "Could not get the add-on list: %s.", err); goto out;
+        setmsg(C_ERROR, "Could not get the add-on list: %s. Details: the shop: and netguard: lines of the b4bcoop log.", err); goto out;
     }
     if (!upd_catalog_verify((char *)json, jn, sig, sn, pubkey, &c, err, sizeof err)) { setmsg(C_ERROR, "Not shown: %s.", err); goto out; }
     r = calloc(c.n ? c.n : 1, sizeof *r);
@@ -230,7 +230,9 @@ static DWORD WINAPI fetch_worker(void *arg) {
     EnterCriticalSection(&cs);
     next_cat = c; next_rt = r; have_next = 1;   // the game thread takes it over (shop_tick); r stays valid after that
     LeaveCriticalSection(&cs);
-    setmsg(C_READY, "%d add-on(s) in the list (updated %s)%s.", c.n, c.updated[0] ? c.updated : "?", c.n_bad ? "; some entries were not usable" : "");
+    if (!c.n) setmsg(C_READY, "Reached the shop, but its list is empty (updated %s): no add-ons are published there yet%s.",
+                     c.updated[0] ? c.updated : "?", c.n_bad ? " (or none usable by this b4bcoop)" : "");
+    else setmsg(C_READY, "%d add-on(s) in the list (updated %s)%s.", c.n, c.updated[0] ? c.updated : "?", c.n_bad ? "; some entries were not usable" : "");
     if (c.n_bad) LOG("shop: %d catalog entr%s skipped (bad fields)", c.n_bad, c.n_bad == 1 ? "y" : "ies");
     // thumbnails: only bytes whose SHA-256 the signed list names are decoded
     for (int i = 0; i < c.n; i++) {
