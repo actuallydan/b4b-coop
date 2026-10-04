@@ -78,6 +78,11 @@ fi
 # the native client's own service port (57343 if it has it, else its first loopback listener by fd)
 if [[ -z ${Steam3Master:-} ]]; then
   np=$(pgrep -u "$(id -u)" -f "^$steam/ubuntu12_32/steam( |$)" | head -1) || true
+  if [[ -z $np ]] && pgrep -u "$(id -u)" -f "/com.valvesoftware.Steam/.*/ubuntu12_32/steam( |$)" >/dev/null; then
+    echo "run.sh: the native Steam client is not running, only the Flatpak one: the game would reach the Flatpak client" \
+         "(wrong account) and die; start the native Steam first" >&2
+    exit 1
+  fi
   if [[ -n $np ]]; then
     svc=$(ss -ltnpH src 127.0.0.1 2>/dev/null | sed -nE "s/.* 127\.0\.0\.1:([0-9]+) .*pid=$np,fd=([0-9]+).*/\2 \1/p" |
       sort -n | awk '$2 == 57343 {f=$2} NR == 1 {l=$2} END {p = f ? f : l; if (p) print "127.0.0.1:" p}')
