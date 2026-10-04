@@ -98,6 +98,14 @@ mechanisms fighting, which is what turns into "sometimes it doesn't work" over r
 - **Sign-in**: `IsSignedIn()` of the local controller (0 on the title, 1 after sign-in and on a connected client),
   steps every 0.5 s.
 
+## Rerun on the merged build (lane 2, dreamsofants, 2026-10-04)
+After merging main (0.9.x: default `addons_policy=any`, burn-card rejoin, instant `/model`, dated logs), same 20 cells
+× 2 on lane 2 (`B4B_STEAM=flatpak`, three pairs on the 4090, `/tmp/b4b-jointest-l2-final`): **40/40**, medians
+camp:cold 38, camp:title 7, camp:camp 4, camp:ini 38 (one attempt now: the host's default policy `any` no longer
+refuses the first login), boot 52/55, title 44, fhload 8, load 6, mload 42/14/14, m2c 17/49, lobby 36/6, play 8/39.
+Steam P2P on one account (Flatpak): camp 0/1, mload 0/1 before stopping the run: a handshake completes, then the
+login never arrives within 90 s (one account's packet loss, as in steam-p2p.md); not a measure of the change.
+
 ## Steam P2P on one account (after)
 `camp:p2p` 1/3, `mload:p2p` 3/3 (`/tmp/b4b-jointest-p2p`). One account is the lossy case of steam-p2p.md (Steam hands
 packets for "our" SteamID to either copy): the failed runs are repeated DTLS handshake failures over 3 minutes. What
@@ -110,6 +118,25 @@ answered (`cmds_join_answered`).
 `Welcomed` 7 s later, `travel: not kicking 1 remote client(s)` on the host, no competing join. It needed
 `B4B_INI_EXTRA1..5=addons=0`: lane 1's game folder now holds the player's add-ons (several "gameplay" physics assets),
 which fail the default cosmetic policy, so the client stops joining (correct behaviour, but it fails e2e's join).
+Since #43 the default policy is `any`, so this no longer applies.
+
+## Two-account check (to run; needs Dan's account free)
+Steam's friends-list **Join Game** is `steam://rungame/924970/<friend id64>/<url-encoded connect string>` in the
+Steam client (steamui `JoinGame` → `steam://rungame/<app>/<id>/<connect>`); with the game running Steam posts
+`GameRichPresenceJoinRequested_t` (337) to it, so opening that URL in the client's Steam is the real Join Game path
+(#10) without clicking in the UI. `tools/jointest2acct.py` does it per trial:
+1. Hold both locks: `launch/gamelock.sh acquire <me>` and `B4B_STEAM=flatpak launch/gamelock.sh acquire <me>`.
+2. Native Steam signed in to Hergmgurk, `native-steam-in-use` absent; then `launch/flatpak-steam.sh start` (the native
+   client first, so each owns its own service port; run.sh passes the right `Steam3Master` either way).
+3. Install the build in both lanes: `launch/install.sh` and `B4B_STEAM=flatpak launch/install.sh`.
+4. `tools/jointest2acct.py /tmp/b4b-2acct camp*3 title*2 mload*3 m2c*2`: host = lane 1 test1 (`-Port=7787`), client
+   = lane 2 test1; the client reads the host's connect from its own Steam (`friends`), its Steam opens the rungame
+   URL (`flatpak enter <instance> .../ubuntu12_32/steam steam://rungame/...`). Pass = client log `presence: steam
+   join request from <host id>` (callback 337), connected, same map (mission cells: Evansburgh_B with a hero);
+   screenshots `<cell>-<n>-host.png` / `-client.png`.
+5. What to look at: `mload` (a DTLS failure while the host loads, then a retry that is a new connection on the host:
+   `NotifyAcceptedConnection` per attempt, no 180 s wait), `m2c` (`travel: not kicking`, the client follows), `title`
+   (callback arms the Offline sign-in, joins after it). Then release both locks.
 
 ## Open
 - Two-account check over real Steam P2P (lane 1 native host + lane 2 Flatpak client): mload/m2c with `steam:`.
