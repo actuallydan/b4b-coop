@@ -66,6 +66,27 @@ extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **out) {
 static int enabled = 1;          // ini overlay=0 turns it off
 static int key = VK_OEM_3;       // ini overlay_key (default ~, the key left of 1 on a US layout)
 static float ui_scale = 1.25f;   // ini overlay_scale
+// Sizes and spacing (#44: ImGui's defaults are made for unscaled text and looked crowded): roomier than the defaults
+// and scaled with the text size, so rows and sections keep their air at any overlay_scale. One place for every panel.
+static float style_scale;
+#define LOG_SPACING (2 * ui_scale)   // between the lines of the log under the tabs (rows of controls get ItemSpacing)
+static void apply_style(float s) {
+    ImGuiStyle &st = ImGui::GetStyle();
+    st.FontScaleMain = s;
+    st.WindowPadding = ImVec2(10 * s, 10 * s);
+    st.FramePadding = ImVec2(6 * s, 4 * s);            // ImGui default 4, 3 (unscaled)
+    st.ItemSpacing = ImVec2(8 * s, 6 * s);             // 8, 4: the gap between rows
+    st.ItemInnerSpacing = ImVec2(6 * s, 4 * s);        // 4, 4
+    st.CellPadding = ImVec2(6 * s, 4 * s);             // 4, 2: table rows
+    st.SeparatorTextPadding = ImVec2(20 * s, 6 * s);   // 20, 3: section headings
+    st.IndentSpacing = 21 * s;
+    st.ScrollbarSize = 14 * s;
+    st.GrabMinSize = 12 * s;
+    st.WindowRounding = 6 * s;
+    st.FrameRounding = 3 * s;
+    st.GrabRounding = 3 * s;
+    style_scale = s;
+}
 static volatile LONG open_;      // the window is shown
 static int hooks;                // 0 not yet, 1 installed, -1 failed
 static CRITICAL_SECTION cs;
@@ -156,9 +177,7 @@ static int init_render(IDXGISwapChain3 *sc) {
     io.ConfigErrorRecoveryEnableAssert = false;   // a panel's mistake shows a tooltip instead of stopping the game
     ImGui::StyleColorsDark();
     ImGuiStyle &st = ImGui::GetStyle();
-    st.FontScaleMain = ui_scale;
-    st.WindowRounding = 6.f;
-    st.FrameRounding = 3.f;
+    apply_style(ui_scale);
     st.Colors[ImGuiCol_WindowBg].w = 0.80f;   // translucent
     st.Colors[ImGuiCol_ChildBg].w = 0.f;
     ImGui_ImplDX12_InitInfo ii;
@@ -569,7 +588,11 @@ extern "C" void ov_text_warn(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); ImGui::TextWrappedV(fmt, ap); va_end(ap);
     ImGui::PopStyleColor();
 }
-extern "C" void ov_heading(const char *text) { LOCKED; ImGui::Spacing(); ImGui::SeparatorText(text); }
+extern "C" void ov_heading(const char *text) {   // a section: extra air above it (not at the top of a panel)
+    LOCKED;
+    if (ImGui::GetCursorPosY() > ImGui::GetFontSize()) ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.5f));
+    ImGui::SeparatorText(text);
+}
 extern "C" int ov_button(const char *label) {
     LOCKED;
     int r = ImGui::Button(label);
@@ -894,12 +917,12 @@ static void build_frame(void) {
         io.DeltaTime = dt <= 0 ? 1e-4f : dt > 0.2f ? 0.2f : dt;
         io.DisplaySize = ImVec2(disp_w, disp_h);
         if (mouse_x < 0) { mouse_x = disp_w / 2; mouse_y = disp_h / 2; io.AddMousePosEvent(mouse_x, mouse_y); }
-        ImGui::GetStyle().FontScaleMain = ui_scale;
+        if (style_scale != ui_scale) apply_style(ui_scale);
         ImGui_ImplDX12_NewFrame();
         ImGui::NewFrame();
         float fs = ImGui::GetFontSize();
         ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(fs * 34, fs * 36 < disp_h - 60 ? fs * 36 : disp_h - 60), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(fs * 36, fs * 42 < disp_h - 60 ? fs * 42 : disp_h - 60), ImGuiCond_FirstUseEver);   // roomier rows (#44): taller
         ImGui::SetNextWindowSizeConstraints(ImVec2(fs * 16, fs * 12), ImVec2(disp_w, disp_h));
         char title[80];
         snprintf(title, sizeof title, "b4bcoop  (%s or Esc closes)###b4bcoop", ov_key_name(key));
@@ -916,7 +939,7 @@ static void build_frame(void) {
             show = ImGui::BeginTabItem(panels[i].name, nullptr, sel ? ImGuiTabItemFlags_SetSelected : 0);
             if (show) {
                 snprintf(cur_tab, sizeof cur_tab, "%s", panels[i].name);
-                float log_h = ImGui::GetTextLineHeightWithSpacing() * 6 + ImGui::GetStyle().ItemSpacing.y * 3;
+                float log_h = (ImGui::GetTextLineHeight() + LOG_SPACING) * 6 + ImGui::GetStyle().ItemSpacing.y * 3;
                 ImGui::BeginChild("panel", ImVec2(0, -log_h));
                 ImGui::PushTextWrapPos(0);
             }
@@ -936,8 +959,10 @@ static void build_frame(void) {
     ImGui::EndTabBar();
     ImGui::Separator();
     ImGui::BeginChild("log", ImVec2(0, 0), 0, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, LOG_SPACING));   // log lines stay dense
     for (int i = 0; i < log_n; i++) ImGui::TextUnformatted(log_buf[(log_head + i) % LOG_LINES]);
     if (log_scroll) { ImGui::SetScrollHereY(1.f); log_scroll = 0; }
+    ImGui::PopStyleVar();
     ImGui::EndChild();
     ImGui::End();
     ImGui::Render();
