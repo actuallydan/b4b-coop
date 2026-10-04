@@ -32,6 +32,10 @@ command has a control (checklist below); the chat commands stay.
   window's log). Settings: `ov_setting(key, val, save)` = the module's ini live handler (`cmds_ini_apply`) and, when
   the edit ends, `cmds_ini_set` for that key only (val NULL = default: the line is commented out). Live ini reload
   keeps the window in sync because panels read the modules' current values every frame.
+- Look (#44): `apply_style()` sets padding and spacing above ImGui's defaults (rows 6, frame padding 6x4, table cells
+  6x4, section headings 6, all times `overlay_scale`; re-applied when the text size changes), `ov_heading` adds half a
+  line above a section (not at a panel's top), the log under the tabs keeps dense lines (2 x scale), and the first
+  window is 36 x 42 font heights (clamped to the screen). Panels need nothing of their own for it.
 - The window log shows ov_run replies and every local chat line (`chat.c show_text` -> `overlay_note`).
 - Dev: `overlay open|close|status|log|tab <name>|press <label>|set <label> <value>|locate <label>|mouse <x> <y>|wheel <n>`
   (press/set drive a control by its ImGui label through the same draw code; disabled controls can't be driven).
