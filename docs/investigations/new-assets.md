@@ -447,7 +447,7 @@ screen").
 - **Host refusals**: `/models off` and `addons_policy=none` refuse the row as before. When the host's refusal notice
   arrives after we answered with a remembered outfit, the client stops answering with it (until the host's `/models
   on` or the next session as a host) and re-sends the profile's own look (`ClientInitCustomizationRowForSelectedCharacter`
-  locally), so it is never left without a look (this refusal path is not tested live yet). With `/models off` known,
+  locally), so it is never left without a look (tested live 2026-10-04, see below). With `/models off` known,
   no substitution at all.
 - **Host and campaign run**: a remembered outfit is a foreign row for the campaign-run hook (`foreign()` now treats
   every `b4bcoop.*` row as foreign even when it is a real row of the survivor's table), so the run saves the survivor's
@@ -473,6 +473,12 @@ screen").
 - Client with `addons=0` and the file still naming `hoffman ciri`: `pick: hoffman ciri (add-on not here)`, no rows, the
   profile's look.
 - Screenshots: `~/.local/share/b4b-coop/screen-test/shots/` (not committed).
+- Host refusals (2026-10-04, lane 2, client picked `laracroft` for walker/holly on the screen): host `/models off` ->
+  `refused a look ...: models are off`, client `sent the profile's own look instead`, slot `walker_elite_00`; in the
+  next mission (hero pick) no substitution at all (`host_off` known). `/models on` -> the client re-sends through the
+  profile path and wears `b4bcoop.outfit.laracroft` again (before: only at the next hero pick). `/addons policy none`
+  mid-session, mission start: `refused a look ...: add-on outfit, addons_policy=none`, client back to
+  `walker_elite_00`. Both profiles after the deferred save: no `b4bcoop` string.
 
 ### Limits / open
 - No thumbnail: the game's outfit list has none; a product row with an icon would be needed for the store-style

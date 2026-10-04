@@ -165,6 +165,14 @@ Visual checks by screenshots on both windows (kept out of git), state checks wit
   `... on CustomizationMannequin_BP_3`; client: Vanessa on its 3 stand-ins and its mannequin, the host's Ciri as
   Evangelo's base pieces (no add-on: fallback, not invisible). Screenshots: host sees Ciri on the train roof, the
   client Evangelo at the same moment (`cs2_pair.png`, `~/.local/share/b4b-coop/screen-test/shots/`, not committed).
+- **Act 3's own escape, "T-5" = `MAP_PERS_CDC_D`** (2026-10-04, lane 2, host `/model ciri` or `zoeyl4d`, client
+  `laracroft` or `coach`, add-ons on both; `mission /Game/Maps/Missions/CDC/MAP_PERS_CDC_D Easy`, `callp
+  CutsceneCoordinator StartCutscene`): the real-time part (`MAP_CDC_D_Cinematic`, ~10 s: body pile, helicopter) has 8
+  stand-ins per machine; host and client stand-ins of both players carry `/Game/b4bcoop/outfits/...` on both machines
+  (`mdl standins`), bots their retail outfit. The heroes are only small figures in the helicopter door in that shot.
+  Then the act ending is a **pre-rendered video** (`PreRenderedCinematicScreen`, `CinematicDefs_DT` row `Cinematic3`,
+  WmfMedia): its survivors are baked in and can't show added outfits. The act-end lineup after it shows both added
+  outfits on host and client.
 - Dev: `mdl standins [PlayerStandIn|CustomizationMannequin]` (set + mesh components of every such actor).
 
 ## Limits / open
