@@ -19,7 +19,7 @@ Player page: docs/COMMANDS.md "Add-ons".
   signature check either way.
 - Multiplayer (#22, §6-§7): add-ons stay local (each player sees their own, others see vanilla). Each add-on is
   classified from its files as cosmetic or gameplay-affecting. The host announces its
-  `addons_policy=any|cosmetic|none|match` (default `cosmetic`); since #35 the joiner checks its own add-ons against
+  `addons_policy=any|cosmetic|none|match` (default `any` since #43, before that `cosmetic`); since #35 the joiner checks its own add-ons against
   it and doesn't join if they fail, telling only its own player. Nothing about a player's add-ons is sent. No
   protocol bump (§7).
 
@@ -155,8 +155,8 @@ their PC (no ids, names or counts; Dan: "I don't want other clients to know what
 their own add-ons on everyone, the others see vanilla. Code: `native/src/addons_mp.c`; gate in `admin.c` PreLogin;
 join side in `cmds.c` `cmd_join`, `presence.c` `handle_connect`, `chat.c` `chat_on_join_failed`.
 - **Policy** (host): ini `addons_policy=` / chat `/addons policy <x>` (session only) / `~` Add-ons tab, default =
-  `ADDONS_POLICY_DEFAULT` in addons_mp.c: `cosmetic` = no gameplay add-ons; `none` = no add-ons; `match` = gameplay
-  add-ons exactly the host's (cosmetic free); `any`.
+  `ADDONS_POLICY_DEFAULT` in addons_mp.c (`any` since #43, 0.8.1 and before `cosmetic`): `any` = everyone;
+  `cosmetic` = no gameplay add-ons; `none` = no add-ons; `match` = gameplay add-ons exactly the host's (cosmetic free).
 - **Announce** (host): the rich presence connect string carries ` addons:<policy>`, e.g. `+b4bcoop_join steam:<id64>
   proto:2 ver:0.7.1 addons:cosmetic`. `match` adds the host's own gameplay add-on ids (8 hex digits of the content
   id): `addons:match:23a4441c.ab12cd34` (max 16 = `MATCH_MAX`; the value is 256 chars max). Choosing `match` is the

@@ -382,12 +382,12 @@ def game(rows, a):
         reg = {i: set(S.logs[i].grep(r"models: add-on outfit (\S+) ", since_mark=False)) for i in insts}
         log("add-on outfits registered: " + ", ".join(f"#{i} {len(reg[i])}" for i in insts))
         # each add-on's content class as the game sees it: anything but cosmetic is refused by a host with the
-        # default addons_policy=cosmetic (a joiner with it can't play)
+        # addons_policy=cosmetic (not the default since #43, but a host's choice: a joiner with it couldn't play there)
         cls = dict(re.findall(r"addons: \d+\. (\S+)\.pak .*\n.*addons:    content: (.*)", S.logs[H].text(since_mark=False)))
         for r in worn:
             c = cls.get(r.name, "?")
             if not c.startswith("cosmetic"):
-                r.fail(f"add-on content is '{c[:90]}': a host with the default addons_policy=cosmetic refuses a joiner with it")
+                r.fail(f"add-on content is '{c[:90]}': a host with addons_policy=cosmetic refuses a joiner with it")
         baseline = {norm(l) for i in insts for l in relevant(S.logs[i].text(since_mark=False))}
         for l in sorted(baseline): log(f"  baseline (ignored later): {l[:160]}")
         for r in worn:
