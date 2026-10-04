@@ -379,7 +379,7 @@ def cmd_pack(a):
     for r in reasons[:10]:
         print("gameplay-affecting:", r, file=sys.stderr)
     if gameplay:
-        print("note: hosts refuse gameplay-affecting add-ons by default (addons_policy=cosmetic)", file=sys.stderr)
+        print("note: hosts with addons_policy=cosmetic or none refuse gameplay-affecting add-ons (the default, any, lets them in)", file=sys.stderr)
     items.append((INFO, info_text(info).encode("utf-8")))
     cid = write_pak(out, items)
     print(f"{out}: {len(items) - 1} file(s) + addoninfo, content id {cid}")

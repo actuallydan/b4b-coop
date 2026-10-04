@@ -31,8 +31,8 @@ b4bmod pack mymod -o walker_red.pak [--title T] [--author A] [--version V] [--ca
   the **content id** (changes with every change to the files) and the **content class**:
   - **cosmetic**: only textures, materials, meshes, animations, sounds, UI, effects;
   - **gameplay**: anything else (data tables, blueprints, physics assets, maps, ...).
-  Hosts let players join only with cosmetic add-ons by default (`addons_policy=cosmetic`), so a survivor skin should
-  come out cosmetic. The class is computed from the files by the packer and again by the game; what you write in
+  Hosts that allow cosmetic add-ons only (`addons_policy=cosmetic`; the default is `any`) refuse gameplay ones, so a
+  survivor skin should come out cosmetic. The class is computed from the files by the packer and again by the game; what you write in
   `content=` is ignored.
 
 ## Test

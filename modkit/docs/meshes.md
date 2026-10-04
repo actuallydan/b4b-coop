@@ -318,7 +318,7 @@ b4bmod convert SomeonesJimMod_P.pak --as mycharacter --title "My Character"
 - **Left out on purpose**: the mod's own physics asset (the copy points at the survivor's retail one, and in game the
   wearer keeps their own hitboxes anyway), portraits, ability cards and other UI (they only make sense as
   replacements), and anything that isn't cosmetic (skeletons, blueprints, data tables). So the add-on is always
-  **cosmetic**: hosts with the default `addons_policy` let players with it join.
+  **cosmetic**: hosts with `addons_policy=cosmetic` (or the default `any`) let players with it join.
 - A mod that replaces several outfits gives one outfit each, `<name>_01`, `<name>_02` ... (outfits it replaced with
   the same meshes count once). `--list` shows them without converting, `--only 2` (or `--only 1,3`, or part of the
   mesh path like `--only Elite_02`) converts just those; a single pick gets the plain `<name>`.

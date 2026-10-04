@@ -64,7 +64,7 @@ typedef struct {
     char name[33], code[16], title[64], addon[96], path[NM][200];
     UObject *mesh[NM]; int32_t idx[NM]; int tried[NM];
 } Look;
-#define MAX_LOOKS 64
+#define MAX_LOOKS 512
 static Look looks[MAX_LOOKS];
 static int n_looks = -1;
 static void build_looks(void) {
