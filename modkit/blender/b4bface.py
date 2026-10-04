@@ -645,14 +645,19 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
     if DEBUG: print(f"b4bface: seed scale {s}, seed eye_l {fmt(seed['eye_l'])} chin {fmt(seed['chin'])}")
     t_r = (tl["eye_out_l"] - tl["eye_in_l"]).length / 2
     # eyeball-like islands (eye material, or ball-shaped and eye-sized): confirm eye bones, or give the eyes as a pair
-    balls = []
+    balls, eye_mats = [], []
     for (m, comp, ps, kind) in head_islands:
         if len(ps) < 6 or kind == "mouth": continue
         lo, hi = bbox(ps); c = (lo + hi) / 2; ext = hi - lo
         ball = ext.x >= 0.6 * max(ext.y, ext.z) and min(ext) > 0.4 * max(ext)
         if kind == "eye" and max(ext) < 6.0 * t_r * scale or ball and 0.8 * t_r * scale < max(ext) < 5.0 * t_r * scale:
             balls.append((c, max(ext.y, ext.z) / 2))
+        if kind == "eye" and max(ext) < 6.0 * t_r * scale:
+            eye_mats.append((c, max(ext.y, ext.z) / 2))
     near_ball = lambda p: any((p - c).length < max(1.5 * t_r * scale, r) for c, r in balls)
+    # an eye bone inside an eye-material island is an eye wherever the guess from the head's bounds put the eyes (a
+    # hair bun or big earrings throw that guess off by more than its 5 cm)
+    on_eye_mat = lambda p: any((p - c).length < max(1.5 * t_r * scale, r) for c, r in eye_mats)
     cands = {"l": [], "r": []}
     if src_bones:
         for n, (h, t) in src_bones.items():
@@ -662,7 +667,9 @@ def model_landmarks(tl, tverts, head, head_islands, eyeball_verts, src_bones, F,
                     p = F.loc(h)
                     if DEBUG: print(f"b4bface: eye bone {n} at {fmt(p)}")
                     cands[sd].append((f"bone {n}", p))
-                    if (p - seed[f"eye_{sd}"]).length < 0.05 * scale and sd not in eyes: eyes[sd] = (p, None, f"bone {n}")
+                    if ((p - seed[f"eye_{sd}"]).length < 0.05 * scale or on_eye_mat(p) and (p.y > 0) == (sd == "l")) \
+                            and sd not in eyes:
+                        eyes[sd] = (p, None, f"bone {n}")
     for sd, q in given_eyes({m for (m, i, p, mt, c) in head}, F).items():
         # a point on the eye's surface: the eye turns about a centre behind it (the template's depth, scaled)
         eyes[sd] = (q - Vector((1.1 * t_r * scale, 0.0, 0.0)), t_r * scale, "--face-eyes")
