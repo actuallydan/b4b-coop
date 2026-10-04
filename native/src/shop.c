@@ -571,7 +571,7 @@ static void panel(void) {
         ov_text("Content: %s%s%s%s", it->cls, it->kinds[0] ? " (" : "", it->kinds, it->kinds[0] ? ")" : "");
         if (it->adds[0]) ov_text_dim("Adds: %s. New looks are ready right after Add: wear them in the Models tab.", it->adds);
         if (it->replaces[0]) ov_text_dim("Replaces: %s. Replacements take effect after a restart.", it->replaces);
-        if (!strcmp(it->cls, "gameplay")) ov_text_warn("Gameplay-affecting: hosts with addons_policy=cosmetic (the default) or none refuse players who run it.");
+        if (!strcmp(it->cls, "gameplay")) ov_text_warn("Gameplay-affecting: hosts with addons_policy=cosmetic, none or match (without the same add-on) refuse players who run it.");
         size_str(it->size, sz, sizeof sz);
         upd_hex(it->sha256, 32, hex);
         ov_text_dim("File %s.pak, %s, SHA-256 %.16s...", it->id, sz, hex);

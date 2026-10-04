@@ -354,7 +354,7 @@ add-on says about itself doesn't count):
 - **cosmetic**: textures, materials, character, weapon and prop models (characters on the game's own skeleton),
   animations, cloth, sounds, UI, effects. Changes only what you see and hear.
 - **gameplay**: anything else, e.g. physics assets, data tables, blueprints, skeletons, maps, config files. Could
-  change how the game plays, so hosts refuse these by default.
+  change how the game plays, so a host can refuse these (`addons_policy=cosmetic`).
 
 `/addons` shows the kind of each add-on, `/addons info <#>` the first file that made it "gameplay".
 
@@ -364,8 +364,8 @@ allows (`addons_policy`), and **your game checks your own add-ons** before joini
 
 | `addons_policy=` | Who may join |
 |---|---|
-| `cosmetic` (default) | Everyone with cosmetic add-ons only (no gameplay add-ons) |
-| `any` | Everyone, whatever they run |
+| `any` (default) | Everyone, whatever they run |
+| `cosmetic` | Everyone with cosmetic add-ons only (no gameplay add-ons) |
 | `none` | Only players with no add-ons at all |
 | `match` | Cosmetic add-ons are free; gameplay add-ons must be exactly the host's. The host's own gameplay add-ons' short ids are shown to people joining (that's how they can match them); the other policies reveal nothing about the host's add-ons |
 
