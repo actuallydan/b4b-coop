@@ -322,8 +322,10 @@ copy the backup over `PlayerProfileSettings.sav`. If the backup can't be made, n
 Add-ons change how the game looks (textures, models, UI), Left 4 Dead style: drop a file in a folder, restart (or get
 free ones from the `~` window's **Browse** tab, see [Browse (add-on shop)](#browse-add-on-shop)). Add-ons are **only on your PC**: other players don't need them and don't see them. If you have
 a survivor skin add-on, you see it on every survivor wearing that outfit; players without it see the normal outfit.
-Some add-ons **add** outfits instead of replacing one: `/model list outfits` lists them, `/model <name>` puts one on;
-players with the same add-on see it on you, the others your survivor. A host with `addons_policy=none` refuses them.
+Some add-ons **add** outfits instead of replacing one: they are in the game's customization screen for every survivor
+(kept for that survivor; your profile keeps its previous outfit), and `/model list outfits` lists them, `/model <name>`
+puts one on for the session; players with the same add-on see it on you, the others your survivor. A host with
+`addons_policy=none` refuses them.
 
 **Install:** an add-on is one `.pak` file. Put it in the `b4bcoop-addons` folder in the game folder (next to
 `Back4Blood.exe`; create the folder if it isn't there). An add-on zip already contains that folder: extract it into
@@ -628,6 +630,7 @@ join=steam:7656119XXXXXXXXXX
 | Option | Default | What it does |
 |---|---|---|
 | `steam_p2p` | `1` | `0`: no joins through Steam at all (then only `host_ip=1` joins work) |
+| `outfits_screen` | `1` | `0`: add-on outfits are not offered in the game's customization screen (only `/model`); restart to apply |
 | `presence_addr` | your LAN address | With `host_ip=1`: the address friends' **Join Game** connects to, e.g. `presence_addr=203.0.113.5:7777` (your public IP) |
 | `netguard_eos` | `1` | `0`: don't switch off the Epic Online Services network layer (troubleshooting only) |
 | `netguard_allow` | none | With `netguard=block`: host names to let through anyway, comma-separated, `*.example.com` for a whole domain (troubleshooting only) |
