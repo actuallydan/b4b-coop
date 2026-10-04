@@ -50,7 +50,7 @@ pipeline does this for you (unused slots get an invisible zero-size triangle).
 ## Make a survivor model
 1. **Your model**: one file of a humanoid, as you downloaded it: FBX, glTF/glb, **VRM** (VRoid and other avatar
    files), OBJ, DAE or .blend, with its textures next to it (or embedded in the file). Tested kinds of rigs:
-   Mixamo, UE4 mannequin names, 3ds Max Biped (also Source engine `ValveBiped.Bip01_...`, fingers included), VRoid/VRM
+   Mixamo, UE4 mannequin names, 3ds Max Biped (also Source engine `ValveBiped.Bip01_...`, fingers included, `hlp_` helper bones ignored), VRoid/VRM
    (`J_Bip_...`), Blender **Rigify** (the `DEF-` bones; the
    full rig works too), and rigs with other names that say what each bone is (`upper_arm.L`, `Arm_R`,
    `leg_joint_L_2` ...). Unrigged works too, in an A-pose, T-pose or with the arms hanging down (the weights come
