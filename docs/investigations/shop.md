@@ -165,9 +165,18 @@ is inside netguard's updater scope; no API call, so no 60/hour limit).
 - Test paks (never committed): `~/.local/share/b4b-coop/shop-test/src/` (casual_joe = CC0 test outfit, ak47 = the CC0
   loafbrr AK, holly_green/magenta = the #17 portrait tests).
 
+- #38 (2026-10-04, lane 2): "the Browse tab doesn't reach the shop" with no add-ons and no `b4bcoop-addons` folder.
+  Not reproduced: the **player build** (driven through the headless gamescope's Xwayland with XTest input, frames via
+  `gamescopectl screenshot`; the overlay's cursor follows relative raw input, so moves are relative from a 0,0 clamp)
+  and the dev build both fetch and verify the real list with the folder absent (`netguard: allow tcp
+  185.199.108.133:443 via WINHTTP.dll (updater)`). The list itself is empty: the shop repo has 125 `<id>-v1`
+  releases, but its catalog workflow only lists what `entries.json` names, and that is `[]`. The tab said only
+  "0 add-on(s) in the list", which reads like a failure; it now says "Reached the shop, but its list is empty ...: no
+  add-ons are published there yet", and a failed fetch points to the log's `shop:`/`netguard:` lines.
+
 ## 6. Open
-- Player build not driven live (no command server): the Initialize-only hook path is the same code as the dev build
-  now; a player-build smoke test (Browse → Add with the real catalog) comes with the real shop repo.
+- Player build: fetching the real (empty) list driven live (#38, §5); Add from the real catalog not yet (it has no
+  entries).
 - Native Windows: WinHTTP to raw.githubusercontent.com, renames in the add-ons folder while a pak is mounted (the
   engine keeps pak handles open: Remove/Update never touch a mounted file before the next start).
 - The shop repo is empty: Dan decides what gets published.

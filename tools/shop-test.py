@@ -178,7 +178,7 @@ def run_real(S):
     e2e.agent(1, "overlay", "press", "Get the add-on list")
     s = wait_shop(lambda s: ("phase=ready" in s or "phase=error" in s) and "busy=0" in s, 90)
     msg = re.search(r"msg=(.*)", s).group(1)[:140] if "msg=" in s else s[:140]
-    check(f"real list fetched and verified ({want} add-on(s))", "phase=ready" in s and f"items={want} " in s and f"{want} add-on(s) in the list" in s, msg)
+    check(f"real list fetched and verified ({want} add-on(s))", "phase=ready" in s and f"items={want} " in s and (f"{want} add-on(s) in the list" in s if want else "its list is empty" in s), msg)
     check("netguard scope around the request", bool(S.logs[1].grep(r"netguard: updater scope closed", False)))
     time.sleep(2)
     shot("real-browse.png")
