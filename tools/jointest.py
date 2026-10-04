@@ -23,6 +23,7 @@ Client modes (how and from where the client joins; the target is the host's loop
     camp    client signed in and hosting its own Fort Hope (the default), then steamjoin
     load    client started without a join; steamjoin as soon as its agent answers (startup load)
     fhload  same, steamjoin right after its title Fort Hope loaded (before the sign-in screen is up)
+    p2p     like camp, but the join goes over Steam P2P to the host's SteamID (one account: lossy, see steam-p2p.md)
 A trial passes when, within --timeout s of the trigger, the client is connected to the host, in the host's map
 (with a hero when the host is in a mission), the host lists 2 players, and neither profile was reset.
 
@@ -40,8 +41,8 @@ import testprefix
 import e2e
 
 HOSTS = ["boot", "title", "camp", "mload", "m2c", "lobby", "play"]
-CLIENTS = ["cold", "ini", "title", "camp", "load", "fhload"]
-STEAMJOIN = ("title", "camp", "load", "fhload")
+CLIENTS = ["cold", "ini", "title", "camp", "load", "fhload", "p2p"]
+STEAMJOIN = ("title", "camp", "load", "fhload", "p2p")
 GPUS = []   # --gpus: B4B_GPU per pair
 MAP_B = "Evansburgh_B"
 VER = dict(l.strip().split("=", 1) for l in open(os.path.join(REPO, "VERSION")) if "=" in l and not l.startswith("#"))
@@ -87,6 +88,9 @@ class Trial:
         self.res = dict(cell=f"{host_state}:{client_mode}", rep=rep, ok=False, secs=None, why="", notes=[])
 
     def connect_string(self):
+        if self.cm == "p2p":   # over Steam P2P to the host's (= our own, one account) SteamID: lossy on one account
+            ids = self.hl.grep(r"presence: steam bound, user (\d+)", False)
+            return f"+b4bcoop_join steam:{ids[-1] if ids else 0} proto:{VER['protocol']} ver:{VER['version']} addons:cosmetic"
         return f"+b4bcoop_join addr:127.0.0.1:{self.port} proto:{VER['protocol']} ver:{VER['version']} addons:cosmetic"
 
     def note(self, s):
@@ -124,7 +128,7 @@ class Trial:
     def client_go(self, start):
         cm = self.cm
         ini = {"cold": [], "ini": ["offline=1", f"join=127.0.0.1:{self.port}"], "title": [], "camp": ["offline=1"],
-               "load": [], "fhload": []}[cm]
+               "load": [], "fhload": [], "p2p": ["offline=1"]}[cm]
         write_ini(self.c, ini)
         args = self.connect_string().split() if cm == "cold" else []
         self.cl = e2e.GameLog(self.c, start)

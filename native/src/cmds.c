@@ -572,6 +572,7 @@ static void load_config(void) {
 static int join_fails;           // failed attempts since the last connection
 static int attempt_out;          // an attempt is in flight (open sent, no connection, no failure yet)
 static double attempt_at;        // when it was sent
+static int attempt_answered;     // its DTLS handshake completed: the host is there, the login may just be slow
 static double session_until;     // a session target gives up at
 static double closed_until;      // a failed attempt's `?closed` travel arriving before this is kept away (travel.c)
 
@@ -602,6 +603,9 @@ void cmds_join_failed(const char *why) {
     LOG("auto: join attempt %d failed (%s), next in %.0fs", join_fails, why, auto_next - auto_clock);
 }
 
+// uelog.c: the attempt's DTLS handshake completed (the host answered): don't restart it after 30 s
+void cmds_join_answered(void) { if (attempt_out) attempt_answered = 1; }
+
 // travel.c: SetClientTravel("?closed") right after a failed attempt, while we are still in our own camp: 1 = drop it
 // (stay; the retry comes from here). A connected client that lost its host still goes back to its camp.
 int cmds_join_take_closed(void) {
@@ -620,7 +624,7 @@ static int join_attempt(const char *target) {
     static Out scratch;
     out_reset(&scratch);
     int r = cmd_join(target, &scratch);
-    if (r == 0) { attempt_out = 1; attempt_at = auto_clock; return 0; }
+    if (r == 0) { attempt_out = 1; attempt_at = auto_clock; attempt_answered = 0; return 0; }
     if (r == -1) chat_local("bad join target %s, use /join steam:<id64>", target);
     if (r == -2) chat_local("Steam P2P is not available here (%s)%s", steamnet_last_error(), host_ip ? ", use /join <ip[:port]>" : "");
     if (r == -3) chat_local("%s", coop_ip_join_off_msg());
@@ -756,9 +760,9 @@ static void auto_tick(float dt) {
         cmds_set_session_join(NULL);
         return;
     }
-    if (attempt_out) {                                         // in flight: give it 30 s, then start over
-        if (auto_clock - attempt_at < 30) return;
-        LOG("auto: join attempt got no answer in 30s");
+    if (attempt_out) {   // in flight: 30 s without an answer, then start over (90 s once the host answered)
+        if (auto_clock - attempt_at < (attempt_answered ? 90 : 30)) return;
+        LOG("auto: join attempt got no %s in %ds", attempt_answered ? "welcome" : "answer", attempt_answered ? 90 : 30);
         attempt_out = 0;
         join_fails++;
     }

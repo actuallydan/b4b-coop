@@ -19,6 +19,7 @@ void travel_tick(float dt);
 void travel_on_handshake_failed(void);
 int travel_following(void);            // client: in travel.c's rejoin window after following a server travel
 void cmds_join_failed(const char *why); // uelog.c: our pending join failed (retry soon, from our camp)
+void cmds_join_answered(void);         // uelog.c: our pending join's DTLS handshake completed
 int cmds_join_take_closed(void);       // travel.c: 1 = drop this ?closed travel (failed join, stay in our camp)
 int cards_init(void);
 int rewards_init(void);

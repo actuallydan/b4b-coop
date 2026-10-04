@@ -41,9 +41,18 @@
 // Every P2P datagram starts with an 8-byte header: magic "B4C1" (protocol v1) + the sending process's random tag. A
 // packet with our own tag came back to us: that only happens when two copies share one Steam account (local tests),
 // where Steam may deliver a packet for "our" SteamID to the sender itself. Anything without the magic is dropped.
+// The tag also tells the host which client socket a packet comes from: a client sends g_tag + n for its n-th game
+// socket to the host (every join attempt opens a new one), and the host reports such packets from a source port made
+// from the tag. So each attempt is a new address on the host, like a new UDP source port over IP: a failed attempt's
+// half-open connection there (a DTLS handshake that failed while the host was loading a mission waits 180 s for its
+// timeout) can't swallow the next attempt's packets, which used to arrive from the same fake address (#41). Peers
+// with older b4bcoop send one tag per process: one port, as before.
 #define HDR_LEN         8
 static const uint8_t HDR_MAGIC[4] = {'B', '4', 'C', '1'};
 static uint32_t g_tag;
+static uint32_t g_sock_gen;          // client: game sockets that talked to the joined host so far
+#define OWN_TAG(t) ((uint32_t)((t) - g_tag) < 4096u)   // our own process (any of our sockets)
+static uint16_t tag_port(uint32_t t) { return (uint16_t)(1024 + t % 60000u); }
 static uint32_t g_self_drops, g_bad_drops, g_refused_drops;
 enum { SEND_UNRELIABLE = 0, SEND_RELIABLE = 2 };
 
@@ -119,7 +128,7 @@ static int steamnet_available(void) {
 // ---- peers: SteamID <-> fake address ----
 typedef struct {
     uint64_t id;
-    uint16_t port;          // source port we report for this peer (= the port we last sent to it)
+    uint16_t port;          // source port reported on our client socket (= the port we last sent to it; host side: tag_port)
     uint16_t family;        // AF_INET or AF_INET6 (v4-mapped), as the game's socket uses
     uint32_t rx, tx;
     uint8_t accepted;
@@ -241,13 +250,18 @@ static int WSAAPI h_sendto(SOCKET s, const char *buf, int len, int flags, const 
     int i = peer_of_ip(ip);
     uint64_t id = i >= 0 ? peers[i].id : 0;
     if (i >= 0) { peers[i].port = port; peers[i].family = fam; peers[i].tx++; }
-    if (i >= 0 && id == g_join_id) g_client_sock = s;   // client: this is the game's socket
+    uint32_t tag = g_tag;
+    if (i >= 0 && id == g_join_id) {   // client: this is the game's socket
+        if (g_client_sock != s) g_sock_gen++;
+        g_client_sock = s;
+        tag = g_tag + g_sock_gen;
+    }
     LeaveCriticalSection(&cs);
     void *n = id && g_enabled ? net() : NULL;
     if (!n || len < 0) { WSASetLastError(WSAEHOSTUNREACH); return SOCKET_ERROR; }
     static uint8_t pkt[65536 + HDR_LEN];                 // game thread only (the net driver's socket)
     if (len > 65536) len = 65536;
-    memcpy(pkt, HDR_MAGIC, 4); memcpy(pkt + 4, &g_tag, 4); memcpy(pkt + HDR_LEN, buf, len);
+    memcpy(pkt, HDR_MAGIC, 4); memcpy(pkt + 4, &tag, 4); memcpy(pkt + HDR_LEN, buf, len);
     int type = len + HDR_LEN <= MAX_PACKET ? SEND_UNRELIABLE : SEND_RELIABLE;
     if (type == SEND_RELIABLE && g_big++ < 5) LOG("steamnet: %d-byte packet to %llu sent reliable (over %d)", len, (unsigned long long)id, MAX_PACKET);
     if (!S.send(n, id, pkt, (uint32_t)(len + HDR_LEN), type, P2P_CHANNEL) && g_tx_fail++ < 10)
@@ -267,17 +281,23 @@ static int WSAAPI h_recvfrom(SOCKET s, char *buf, int len, int flags, struct soc
         uint64_t remote = 0;
         if (!S.read(n, pkt, sizeof pkt, &size, &remote, P2P_CHANNEL)) break;
         if (size < HDR_LEN || memcmp(pkt, HDR_MAGIC, 4)) { g_bad_drops++; continue; }
-        if (!memcmp(pkt + 4, &g_tag, 4)) { g_self_drops++; continue; }
+        uint32_t tag;
+        memcpy(&tag, pkt + 4, 4);
+        if (OWN_TAG(tag)) { g_self_drops++; continue; }
         size -= HDR_LEN;
         if (!peer_admitted(remote)) { g_refused_drops++; continue; }   // join policy: not from this SteamID
         EnterCriticalSection(&cs);
         int i = peer_index(remote, 1);
         Peer p = {0};
         if (i >= 0) { peers[i].rx++; if (fam) peers[i].family = fam; p = peers[i]; }
+        int client = s == g_client_sock;
         LeaveCriticalSection(&cs);
         if (i < 0) continue;                                   // peer table full: drop
+        // client socket: from the host's address as we know it (where we send); listen socket: the sender's own
+        // socket as a port (see tag_port)
+        uint16_t port = client ? p.port : tag_port(tag);
         int flen = fromlen ? *fromlen : 0;
-        if (from && !fill_addr(from, fromlen, fake_ip(i), p.port, p.family)) { *fromlen = flen; continue; }
+        if (from && !fill_addr(from, fromlen, fake_ip(i), port, p.family)) { *fromlen = flen; continue; }
         int k = (int)size < len ? (int)size : len;
         memcpy(buf, pkt + HDR_LEN, k);
         if ((int)size > len) { WSASetLastError(WSAEMSGSIZE); return SOCKET_ERROR; }
