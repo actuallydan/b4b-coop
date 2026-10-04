@@ -388,7 +388,7 @@ def norm_name(n):
 
 # generic reader: tokens of a bone name
 _SKIP_RX = re.compile(r"(^|[^a-z])(end|nub|tip|top_?end|twist|roll|helper|ik|pole|target|mch|org|wgt|vis|ctrl|ctl|"
-                      r"tweak|fk|socket|null|dummy|adj|sec|bust|breast|hair|skirt|tail|prop|weapon|attach)([^a-z]|$)"
+                      r"tweak|fk|socket|null|dummy|adj|sec|bust|breast|hair|skirt|tail|prop|weapon|attach|hlp|jiggle)([^a-z]|$)"
                       r"|headtop|_end$|\.end$|end$", re.I)
 _PARTS = [  # (regex on the side-stripped name, part); first match wins, order matters
     (r"thumb", "thumb"), (r"index|pointer|fore_?finger", "index"), (r"middle|mid_?finger", "middle"),
