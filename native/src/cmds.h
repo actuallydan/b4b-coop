@@ -17,6 +17,9 @@ int uelog_init(void);
 void travel_set_host(const char *addr);
 void travel_tick(float dt);
 void travel_on_handshake_failed(void);
+int travel_following(void);            // client: in travel.c's rejoin window after following a server travel
+void cmds_join_failed(const char *why); // uelog.c: our pending join failed (retry soon, from our camp)
+int cmds_join_take_closed(void);       // travel.c: 1 = drop this ?closed travel (failed join, stay in our camp)
 int cards_init(void);
 int rewards_init(void);
 int burncards_init(void);

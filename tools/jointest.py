@@ -8,9 +8,11 @@ chosen states, repeated; a table of pass/fail per cell at the end.
 
 Host states (what the host is doing when the client's join is triggered):
     boot    host launched at the same moment as the client (still loading, then on the title, signing in)
-    title   host on the title screen, not signed in (signed in by the driver 30 s after the trigger)
+    title   host on the title screen, not signed in (signed in by the driver 30 s after the trigger; a pass
+            also needs a mission started afterwards to take both)
     camp    host signed in, in its Fort Hope (advertising)
     mload   host loading a mission (war table start right at the trigger)
+    m2c     host in its camp, starts a mission the moment the client is welcomed (client mid-load of the camp)
     lobby   host in the mission before `ready` (pre-round)
     play    host in the mission after `ready`
 Client modes (how and from where the client joins; the target is the host's loopback address):
@@ -37,7 +39,7 @@ from lane import LANE, ROOT, PORT_BASE, GAME_PORT
 import testprefix
 import e2e
 
-HOSTS = ["boot", "title", "camp", "mload", "lobby", "play"]
+HOSTS = ["boot", "title", "camp", "mload", "m2c", "lobby", "play"]
 CLIENTS = ["cold", "ini", "title", "camp", "load", "fhload"]
 STEAMJOIN = ("title", "camp", "load", "fhload")
 GPUS = []   # --gpus: B4B_GPU per pair
@@ -113,7 +115,8 @@ class Trial:
     def host_sign_in(self):
         for _ in range(60):
             out = e2e.agent(self.h, "signin", timeout=10)
-            if "state=7" in out or ("no sign-in screen" in out and self.hl.grep(r"StartSignIn", False)): return True
+            if "state=7" in out or "signed in: yes" in out or ("no sign-in screen" in out and self.hl.grep(r"StartSignIn", False)):
+                return True
             time.sleep(2)
         return False
 
@@ -147,8 +150,12 @@ class Trial:
     def joined(self):
         sh, sc = status(self.h), status(self.c)
         wh, wc = world(sh), world(sc)
-        if "server_conn=yes" not in sc or not wh or wh != wc or "client_conns=1" not in sh: return False
-        if MAP_B in wh and not e2e.has_hero(self.c): return False
+        if "server_conn=yes" not in sc or not wh or wh != wc or not re.search(r"client_conns=[1-9]", sh): return False
+        if self.hs == "m2c" and MAP_B not in wh: return False   # passes only once both are in the mission
+        if MAP_B in wh and not e2e.has_hero(self.c):
+            if self.hs == "play":   # a hot-join mid-mission spectates its bot ("Press SPACE to take over", retail)
+                for slot in (1, 2, 3): e2e.agent(self.h, "takeover", slot)
+            return False
         return f"{wc}"
 
     def run(self):
@@ -162,12 +169,13 @@ class Trial:
                 self.client_go(start)
                 t0 = time.time()
             else:
-                if self.cm in STEAMJOIN:   # get the client into its state first, in parallel
+                if self.cm in STEAMJOIN:   # get the client into its state first, in parallel (fhload: after the host)
                     cth = threading.Thread(target=lambda: setattr(self, "cok", self.client_go(start)))
-                    cth.start()
+                    if self.cm != "fhload": cth.start()
                 if not self.host_up(start):
                     self.res["why"] = "host never reached its state"; return self.res
                 if self.cm in STEAMJOIN:
+                    if self.cm == "fhload": cth.start()
                     cth.join()
                     if not self.cok: self.res["why"] = "client never reached its state"; return self.res
                     if self.hs == "mload": e2e.agent(self.h, "mission", "Easy")
@@ -179,14 +187,23 @@ class Trial:
                     if self.hs == "mload":   # start the mission when the client is about to join
                         e2e.wait_for(lambda: self.cl.grep(r"signin: answering online/offline popup", False), 180, 1)
                         e2e.agent(self.h, "mission", "Easy")
-            if self.hs == "title":
-                threading.Timer(30, self.host_sign_in).start()
+            if self.hs == "m2c":   # the client is loading the host's camp: the host leaves for a mission now
+                if e2e.wait_for(lambda: self.cl.grep(r"Welcomed by server", False), 180, 0.3): e2e.agent(self.h, "mission", "Easy")
+                else: self.note("never welcomed")
+            if self.hs == "title":   # the host signs in 30 s later; the trial counts from then on
+                time.sleep(max(0, t0 + 30 - time.time()))
+                if not self.host_sign_in(): self.res["why"] = "host sign-in failed"; return self.res
+                time.sleep(10)
             v = e2e.wait_for(lambda: self.joined(), self.timeout, 3)
             self.res["secs"] = round(time.time() - t0)
             self.res["ok"] = bool(v)
             if v:   # stays joined (no drop right after)
                 time.sleep(8)
                 if not self.joined(): self.res["ok"] = False; self.res["why"] = "joined, then dropped"
+            if self.res["ok"] and self.hs == "title":   # joined a host that wasn't signed in yet: does a mission work?
+                e2e.agent(self.h, "mission", "Easy")
+                if not e2e.wait_for(lambda: MAP_B in (self.joined() or ""), 240, 5):
+                    self.res["ok"] = False; self.res["why"] = "joined, but the mission afterwards failed"
             if not self.res["ok"] and not self.res["why"]:
                 sc = status(self.c); sh = status(self.h)
                 self.res["why"] = (f"client world={world(sc) or '?'} conn={'yes' if 'server_conn=yes' in sc else 'no'}; "

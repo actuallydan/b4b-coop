@@ -243,14 +243,13 @@ static void cmd_players(Out *o) {
 //   host=0|1          -> explicitly off / on
 //   steam_p2p=0       -> no Steam P2P (steamnet.c)
 //   host_ip=1         -> advanced: also host and join over plain IP/UDP (port forwarding; see coop_host_ip)
-//   join=steam:<id64> -> whenever we're offline & standalone in Fort Hope, join that host (retry every 20s)
+//   join=steam:<id64> -> whenever we're offline & standalone in Fort Hope, join that host (retried, see auto_tick)
 //   join=1.2.3.4[:p]  -> same over IP (host_ip=1, or 127.0.0.1 for local test copies)
 //                        a comma-separated list is tried in turn (e.g. steam:<id64>,1.2.3.4:7777)
 // A session join target from Steam (presence.c: Join Game, invite, launch command line) overrides both.
 static int auto_host = -1;       // -1: not in the ini (default: host unless join= is set)
 static int own_config;   // config came from B4B_COOP_CONFIG (per-instance), not the shared game-dir ini
 static char session_join[300];   // from Steam, this session only
-static int session_fails;        // join attempts since we were last connected
 // Only the first instance on a machine auto-hosts from the shared ini (a second local copy shares it when testing).
 int cmds_auto_host(void) {
 #ifdef B4B_RELEASE
@@ -559,45 +558,122 @@ static void load_config(void) {
     if (host_ip) LOG("config: host_ip=1 (advanced): game UDP socket open to the network, IP joins allowed");
 }
 
-// Client: the host said "Server full." (no free survivor slot, slotguard.c): retry less often, since each attempt
-// reloads the camp and shows the game's "session is full" popup.
+// ---- joining: one target and one retry loop for every way in (#41) ----
+// Target: a session target (Steam Join Game / invite / launch command line, chat /join, the ~ window's Join), else the
+// ini join= list. One attempt = `open <host>` (cmd_join). The loop (auto_tick, every 0.25 s) starts an attempt as soon
+// as we can (ready_to_join: signed in, in our own Fort Hope, not connected), and after a failure tries again a few
+// seconds later from where we are: the failed attempt leaves us in our own camp (travel.c keeps the `?closed` reload
+// away, cmds_join_take_closed), so a retry costs no map load. Retry delay: 3 s for the first three failures, then
+// 8 s, then 15 s; an attempt that neither connects nor fails is restarted after 30 s. A session target is dropped
+// after 3 minutes without a connection (the window restarts on every connection), the ini target never.
+// The host refusing us: "Server full." / locked / not a friend -> 60 s (cmds_auto_join_backoff); another version,
+// banned, add-ons -> stop (chat.c). Server travels of the host are followed by travel.c (its own rejoin window).
+#define JOIN_WINDOW 180.0
+static int join_fails;           // failed attempts since the last connection
+static int attempt_out;          // an attempt is in flight (open sent, no connection, no failure yet)
+static double attempt_at;        // when it was sent
+static double session_until;     // a session target gives up at
+static double closed_until;      // a failed attempt's `?closed` travel arriving before this is kept away (travel.c)
+
+// Client: the host said "Server full." (no free survivor slot, slotguard.c), is locked or allows only its friends:
+// retry less often, since each attempt shows the game's "session is full" popup.
 void cmds_auto_join_backoff(double seconds) {
-    if (!auto_join[0] || auto_next >= auto_clock + seconds - 1) return;
+    const char *t = session_join[0] ? session_join : auto_join;
+    if (!t[0] || auto_next >= auto_clock + seconds - 1) return;
     auto_next = auto_clock + seconds;
     LOG("auto: the host refused the join, next attempt in %.0fs", seconds);
 }
 
-// ---- join / host / leave entry points (chat commands, Steam invites, future in-game UI) ----
-// coop_join: "ip[:port]" joins over IP, "steam:<id64>" over Steam P2P (steamnet.c). Any thread: off the game
-// thread the request is queued for the next engine tick. Callers on the game thread that need to know whether an
-// attempt started compare g_travel_calls (travel.c) around it (a Steam target without Steam P2P starts nothing).
-void coop_join(const char *target) {
+static int connected_now(void) {
+    UObject *w = ue_world();
+    UObject *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
+    return nd && ue_get_ptr(nd, "ServerConnection");
+}
+
+// uelog.c: our pending join failed (PendingConnectionFailure, ConnectionTimeout, DTLS handshake error). Not during a
+// follow of the host's server travel (travel.c retries that itself).
+void cmds_join_failed(const char *why) {
+    if (!attempt_out || travel_following()) return;
+    attempt_out = 0;
+    join_fails++;
+    double d = join_fails <= 3 ? 3 : join_fails <= 6 ? 8 : 15;
+    if (auto_next < auto_clock + d) auto_next = auto_clock + d;
+    closed_until = auto_clock + 3;
+    LOG("auto: join attempt %d failed (%s), next in %.0fs", join_fails, why, auto_next - auto_clock);
+}
+
+// travel.c: SetClientTravel("?closed") right after a failed attempt, while we are still in our own camp: 1 = drop it
+// (stay; the retry comes from here). A connected client that lost its host still goes back to its camp.
+int cmds_join_take_closed(void) {
+    if (auto_clock >= closed_until) return 0;
+    closed_until = 0;
+    UObject *w = ue_world();
+    char pkg[256];
+    if (!w || connected_now() || !strstr(ue_world_package(w, pkg, sizeof pkg), "FortHope")) return 0;
+    LOG("auto: staying in our camp after the failed join (no reload)");
+    return 1;
+}
+
+// One attempt at one target. 0 = started; otherwise the reason is told to the player (a bad target, no Steam P2P
+// here, IP joins off, our add-ons fail the host's policy: retrying can't help).
+static int join_attempt(const char *target) {
     static Out scratch;
-    while (target && *target == ' ') target++;
-    if (!target || !*target) return;
-    if (off_game_thread()) { pend_lock(1); snprintf(pend_join, sizeof pend_join, "%s", target); pend_lock(0); return; }
     out_reset(&scratch);
     int r = cmd_join(target, &scratch);
+    if (r == 0) { attempt_out = 1; attempt_at = auto_clock; return 0; }
     if (r == -1) chat_local("bad join target %s, use /join steam:<id64>", target);
     if (r == -2) chat_local("Steam P2P is not available here (%s)%s", steamnet_last_error(), host_ip ? ", use /join <ip[:port]>" : "");
     if (r == -3) chat_local("%s", coop_ip_join_off_msg());
     if (r == -4) {   // only a restart can change add-ons: no more automatic attempts
         cmds_auto_join_stop();
-        if (session_join[0]) cmds_set_session_join(NULL);
         char line[440];
         snprintf(line, sizeof line, "Could not join: %s", join_refused_msg);
         if (ue_local_pc() && !signin_on_title()) chat_local("%s", line); else chat_local_later(line);
     }
+    return r;
 }
 
-// The host asked us to check our add-ons and they pass (addons_on_refusal): join the same target again soon, from
-// wherever the failed attempt left us (auto_tick).
-static char retry_target[112];
-static double retry_at, retry_until;
+// One attempt at the next alternative of a comma-separated target list. An alternative that starts no connection
+// (e.g. steam: without the P2P transport) is skipped at once; if none starts, a session target is dropped.
+static void join_next(const char *targets) {
+    static int alt;
+    char list[300], *alts[4];
+    int n = 0;
+    snprintf(list, sizeof list, "%s", targets);
+    for (char *t = list; t && *t && n < 4;) {
+        char *c = strchr(t, ',');
+        if (c) *c++ = 0;
+        while (*t == ' ') t++;
+        if (*t) alts[n++] = t;
+        t = c;
+    }
+    for (int k = 0; k < n; k++) {
+        const char *t = alts[alt++ % n];
+        LOG("auto: joining %s", t);
+        if (!join_attempt(t)) return;
+        LOG("auto: %s started no connection%s", t, k + 1 < n ? ", trying the next target" : "");
+    }
+    if (session_join[0] && !strcmp(targets, session_join)) cmds_set_session_join(NULL);
+}
+
+// ---- join / host / leave entry points (chat commands, Steam invites, the ~ window) ----
+// coop_join: "ip[:port]" joins over IP, "steam:<id64>" over Steam P2P (steamnet.c). It becomes the session target
+// (retried like a Steam Join Game); the first attempt starts right away from wherever we are once signed in. Any
+// thread: off the game thread the request is queued for the next engine tick.
+void coop_join(const char *target) {
+    while (target && *target == ' ') target++;
+    if (!target || !*target) return;
+    if (off_game_thread()) { pend_lock(1); snprintf(pend_join, sizeof pend_join, "%s", target); pend_lock(0); return; }
+    cmds_set_session_join(target);
+    if (ue_local_pc() && !signin_on_title() && !signin_pending()) cmds_join_now();
+}
+
+// The host asked us to check our add-ons and they pass (addons_on_refusal): attempt again soon, same target.
 void cmds_join_retry(const char *target, double delay) {
-    snprintf(retry_target, sizeof retry_target, "%s", target);
-    retry_at = auto_clock + delay;
-    retry_until = auto_clock + delay + 120;
+    if (!session_join[0] && !auto_join[0]) cmds_set_session_join(target);   // a dev `join`: keep it as the target
+    attempt_out = 0;
+    auto_next = auto_clock + delay;
+    closed_until = auto_clock + 3;
     LOG("auto: joining %s again in %.0fs (add-on check passed)", target, delay);
 }
 
@@ -615,104 +691,85 @@ void coop_host(void) {
 // coop_leave (client): drop the connection and go back to our own offline camp; no auto-rejoin afterwards.
 void coop_leave(void) {
     cmds_auto_join_stop();
-    if (session_join[0]) cmds_set_session_join(NULL);   // also drop a Steam Join Game target, or we'd rejoin in ~20s
     travel_set_host("");
     game_exec("disconnect");
 }
 
+// No more automatic attempts this session: the session target and the ini join=.
 void cmds_auto_join_stop(void) {
     if (auto_join[0]) LOG("auto: join %s stopped", auto_join);
     auto_join[0] = 0;
+    if (session_join[0]) cmds_set_session_join(NULL);
+    attempt_out = 0;
 }
 
 void cmds_set_session_join(const char *targets) {
     snprintf(session_join, sizeof session_join, "%s", targets ? targets : "");
-    session_fails = 0;
+    join_fails = 0;
+    attempt_out = 0;
     auto_next = auto_clock;
+    session_until = auto_clock + JOIN_WINDOW;
     LOG("auto: session join target %s", session_join[0] ? session_join : "cleared");
 }
 const char *cmds_session_join(void) { return session_join; }
 
-// One join attempt: the next alternative of a comma-separated target list. An alternative that starts no travel
-// (e.g. steam: without the P2P transport) is skipped at once.
-static void join_next(const char *targets) {
-    static int alt;
-    char list[300], *alts[4];
-    int n = 0;
-    snprintf(list, sizeof list, "%s", targets);
-    for (char *t = list; t && *t && n < 4;) {
-        char *c = strchr(t, ',');
-        if (c) *c++ = 0;
-        while (*t == ' ') t++;
-        if (*t) alts[n++] = t;
-        t = c;
-    }
-    extern int g_travel_calls;
-    for (int k = 0; k < n; k++) {
-        const char *t = alts[alt++ % n];
-        int before = g_travel_calls;
-        LOG("auto: joining %s", t);
-        coop_join(t);
-        if (g_travel_calls != before) return;
-        LOG("auto: %s started no connection, trying the next target", t);
-    }
-}
-
-// Join the session target right away, from wherever we are (a Steam Join Game while hosting or in a session).
+// Join the session target right away, from wherever we are (a Steam Join Game or /join while hosting or in a session).
 void cmds_join_now(void) {
     if (!session_join[0]) return;
-    join_next(session_join);
-    auto_next = auto_clock + 20;
+    char t[300];
+    snprintf(t, sizeof t, "%s", session_join);
+    join_next(t);
+    auto_next = auto_clock + 1;
 }
 
-static int ready_to_join(void);
+// Signed in, in our own offline camp, not loading, not connected; an own listen camp counts only while nobody is in it
+// (a Steam join may leave it: host=1 opens even the title's Fort Hope with ?listen). Any join waits for the sign-in: a
+// join's LoadMap during sign-in re-creates the SignInScreen in Online mode, its profile load then fails "HydraPublicId
+// mismatch" and the game saves a blank profile over the real one (docs/investigations/test-profiles.md).
+static int in_own_camp(void) {
+    UObject *w = ue_world();
+    if (!w || connected_now() || !ue_local_pc()) return 0;
+    char pkg[256];
+    return strstr(ue_world_package(w, pkg, sizeof pkg), "FortHope") != NULL;
+}
+static int ready_to_join(void) {
+    return in_own_camp() && ue_num_clients(ue_world()) == 0 && !signin_pending() && !signin_on_title();
+}
+static int ready_to_host(void) { return in_own_camp() && !ue_get_ptr(ue_world(), "NetDriver"); }   // auto-host
+
 static void auto_tick(float dt) {
     auto_clock += dt;
-    if (retry_target[0] && auto_clock >= retry_at) {
-        if (auto_clock > retry_until) { LOG("auto: gave up joining %s again", retry_target); retry_target[0] = 0; }
-        else if (ready_to_join()) {
-            char t[112];
-            snprintf(t, sizeof t, "%s", retry_target);
-            retry_target[0] = 0;
-            coop_join(t);
-            auto_next = auto_clock + 20;
-            return;
-        } else retry_at = auto_clock + 1;
-    }
     const char *join = session_join[0] ? session_join : auto_join;
     if ((!cmds_auto_host() && !join[0]) || auto_clock < auto_next) return;
-    auto_next = auto_clock + 2;
-    UObject *w = ue_world();
-    UObject *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
-    int connected = nd && ue_get_ptr(nd, "ServerConnection");
-    if (connected) session_fails = 0;
-    // A Steam join may leave our own empty camp (host=1 opened even the title's Fort Hope with ?listen)
-    int empty_host = session_join[0] && nd && !connected && ue_num_clients(w) == 0;
-    if (!w || (nd && !empty_host)) return;                     // already hosting or connected
-    char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
-    if (!strstr(pkg, "FortHope")) return;                      // only act from the offline camp
-    if (!ue_local_pc()) return;                                // still loading
-    // Any join: finish the sign-in first. A join's LoadMap during sign-in re-creates the SignInScreen in Online mode;
-    // its profile load then fails "HydraPublicId mismatch" (Local offline.<id> vs the save's online id) and the game
-    // saves a blank profile over the real one (test clients, docs/investigations/test-profiles.md).
-    if (join[0] && (signin_pending() || signin_on_title())) return;
-    static Out scratch;
-    out_reset(&scratch);
-    if (cmds_auto_host()) { LOG("auto: hosting"); cmd_host(&scratch); auto_next = auto_clock + 30; }
-    else if (session_join[0] && ++session_fails > 6) {         // Steam target: the host is gone; back to the ini
-        LOG("auto: no connection to %s after 6 attempts, giving up", session_join);
-        cmds_set_session_join(NULL);
+    auto_next = auto_clock + 0.25;
+    if (!ue_world()) return;
+    if (connected_now()) {   // in a session: the window and the failure count start over
+        if (attempt_out || join_fails) LOG("auto: connected");
+        attempt_out = 0; join_fails = 0;
+        session_until = auto_clock + JOIN_WINDOW;
+        return;
     }
-    else { join_next(join); auto_next = auto_clock + 20; }
-}
-
-// In our own offline camp (or an empty camp we host), signed in, not connected: a join may start now
-static int ready_to_join(void) {
-    UObject *w = ue_world();
-    UObject *nd = w ? ue_get_ptr(w, "NetDriver") : NULL;
-    if (!w || (nd && (ue_get_ptr(nd, "ServerConnection") || ue_num_clients(w) > 0))) return 0;
-    char pkg[256]; ue_world_package(w, pkg, sizeof pkg);
-    return strstr(pkg, "FortHope") && ue_local_pc() && !signin_pending() && !signin_on_title();
+    if (join[0] && travel_following()) return;                  // travel.c rejoins after the host's server travel
+    if (session_join[0] && auto_clock > session_until) {       // the host never answered: back to the ini
+        LOG("auto: no connection to %s for %.0fs, giving up", session_join, JOIN_WINDOW);
+        chat_local_later("Could not join: no answer from the host for 3 minutes. Is it still hosting?");
+        cmds_set_session_join(NULL);
+        return;
+    }
+    if (attempt_out) {                                         // in flight: give it 30 s, then start over
+        if (auto_clock - attempt_at < 30) return;
+        LOG("auto: join attempt got no answer in 30s");
+        attempt_out = 0;
+        join_fails++;
+    }
+    if (join[0] ? !ready_to_join() : !ready_to_host()) return;
+    if (!join[0]) {
+        static Out scratch;
+        out_reset(&scratch);
+        LOG("auto: hosting");
+        cmd_host(&scratch);
+        auto_next = auto_clock + 30;
+    } else { join_next(join); auto_next = auto_clock + 1; }
 }
 
 void cmds_init(void) { load_config(); }
@@ -785,7 +842,7 @@ void cmds_run(char *line, Out *o) {
         for (char *b = strtok(NULL, " "); b; b = strtok(NULL, " ")) p[n++] = (unsigned char)strtoul(b, NULL, 16);
         out_printf(o, "poked %d byte(s) at %p\n", n, (void *)p);
     }
-    else if (!strcmp(verb, "join") && rest) cmd_join(rest, o);   // same path as coop_join()
+    else if (!strcmp(verb, "join") && rest) { coop_join(rest); out_printf(o, "joining %s (session target)\n", rest); }
     else if (!strcmp(verb, "leave")) { coop_leave(); out_printf(o, "leaving\n"); }
     else if (!strcmp(verb, "exec") && rest) cmd_exec(rest, o);
     else if (!strcmp(verb, "netguard")) netguard_cmd(rest, o);
