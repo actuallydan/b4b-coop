@@ -1111,10 +1111,11 @@ void models_tick(float dt) {
     wlooks_tick(dt);
     screen_rows(dt);
     if (!is_client()) no_subst = 0;
-    if (reinit_due) {   // the host refused our add-on outfit: send the profile's own look instead
+    if (reinit_due) {   // the host refused our add-on outfit (or allows it again): send the look the profile path gives
         UObject *ps = my_ps(), *slot = ps_slot(ps);
         reinit_due = 0;
-        if (!me.on && slot && !reinit_from_profile(ps, slot)) LOG("models: sent the profile's own look instead");
+        if (!me.on && slot && !reinit_from_profile(ps, slot))
+            LOG("models: sent %s", no_subst ? "the profile's own look instead" : "our look again (host allows model swaps)");
     }
     if (!me.on && !others[0].on) {   // cheap path: nothing wished (others[] is compacted on use)
         int any = 0;
@@ -1139,7 +1140,11 @@ void models_host_notice(const char *text) {
         if (strstr(text, "(/models)")) host_off = 1;
     }
     if (!strncmp(text, "[host] model swaps are off", 26)) host_off = 1;
-    if (!strncmp(text, "[host] model swaps are on", 25)) { host_off = 0; refusal[0] = 0; no_subst = 0; }
+    if (!strncmp(text, "[host] model swaps are on", 25)) {
+        // our add-on outfit from the customization screen was held back: put it on again now, not at the next map
+        if (host_off == 1 || no_subst) reinit_due = 1;
+        host_off = 0; refusal[0] = 0; no_subst = 0;
+    }
     wlooks_host_notice(text);
 }
 int models_off(void) { return is_client() ? host_off == 1 : locked; }
