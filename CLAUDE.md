@@ -82,7 +82,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     dumps the slot layout). docs/investigations/five-players.md.
   - `lineup.c` post-round/pre-round/character-select lineup with 5+ heroes (#8): spawns an extra mannequin when the
     hero team has more slots than the lineup level's 4 and places it in the back row; `lineup` dumps it.
-    five-players.md §6.
+    five-players.md §6. Also the mission-start player list (#28): adds PlayerLoadoutsEntry rows to its 4-row box
+    before OnSlotsUpdated (five-players.md §7).
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.

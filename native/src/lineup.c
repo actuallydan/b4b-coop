@@ -187,13 +187,83 @@ static void place(UObject *mgr, int type, int n) {
     LOG("lineup: layout %d, placed %d hero(es) beyond %d target points", type, n - tps->num, tps->num);
 }
 
+// ---- the mission-start player list with 5+ heroes (#28) ----
+// The list at the left of character select / loadout (MissionLoadoutScreen_WBP.PlayerLoadouts, a
+// PlayerLoadouts_WBP_C : UPlayerLoadoutsUserWidget) is a VerticalBox (widget +0x468) with 4 PlayerLoadoutsEntry
+// rows placed in the designer. OnSlotsUpdated (0x141E3D670) gives hero slot i the row i (PlayerSlot +0x2a0) and skips
+// slots without a row, so the 5th player is not listed on any machine. Before it runs, rows of the same class are
+// added to the box (WidgetBlueprintLibrary::Create + PanelWidget::AddChild, the new slot gets the last row's
+// size/padding/alignment), so the game fills them like the others. A 4-hero team never gets here.
+#define ADDR_LOADOUTS_SLOTS VA(0x141E3D670ull)   // void UPlayerLoadoutsUserWidget::OnSlotsUpdated (native body)
+static const uint8_t SIG_LOADOUTS_SLOTS[] = {0x40,0x55,0x53,0x41,0x54,0x48,0x8d,0x6c,0x24,0xb9,0x48,0x81,0xec,0xc0,0x00,0x00,
+                                             0x00,0x48,0x8b,0x05};
+#define LOADOUTS_PANEL 0x468                      // the row box (UPanelWidget*), as OnSlotsUpdated reads it
+typedef void (*LoadoutsSlotsFn)(UObject *w);
+static LoadoutsSlotsFn orig_loadouts;
+static int n_rows_added;
+
+static UObject *create_widget(UObject *ctx, UClass *cls) {
+    UClass *wbl = ue_find_class("WidgetBlueprintLibrary");
+    UObject *cdo = wbl ? UC_CDO(wbl) : NULL;
+    static uint8_t p[128];
+    memset(p, 0, sizeof p);
+    int32_t ow = poff(cdo, "Create", "WorldContextObject"), ot = poff(cdo, "Create", "WidgetType"),
+            op = poff(cdo, "Create", "OwningPlayer"), orv = poff(cdo, "Create", "ReturnValue");
+    if (!cdo || ow < 0 || ot < 0 || op < 0 || orv < 0) return NULL;
+    *(UObject **)(p + ow) = ctx;
+    *(UClass **)(p + ot) = cls;
+    *(UObject **)(p + op) = ue_local_pc();
+    if (call_parms(cdo, "Create", p, sizeof p)) return NULL;
+    return *(UObject **)(p + orv);
+}
+
+// the new row's slot gets the old one's layout through the slot's own setters (they also update the Slate slot)
+static void copy_slot(UObject *from, UObject *to) {
+    static const char *props[][3] = {{"Size", "SetSize", "InSize"}, {"Padding", "SetPadding", "InPadding"},
+        {"HorizontalAlignment", "SetHorizontalAlignment", "InHorizontalAlignment"},
+        {"VerticalAlignment", "SetVerticalAlignment", "InVerticalAlignment"}};
+    for (size_t i = 0; i < sizeof props / sizeof *props; i++) {
+        FField *f = ue_find_prop((UStruct *)U_CLASS(from), props[i][0]);
+        int32_t a = poff(to, props[i][1], props[i][2]);
+        if (!f || a < 0 || FP_ELSIZE(f) > 32) continue;
+        uint8_t p[64] = {0};
+        memcpy(p + a, (char *)from + FP_OFFSET(f), FP_ELSIZE(f));
+        call_parms(to, props[i][1], p, sizeof p);
+    }
+}
+
+static void loadouts_detour(UObject *w) {
+    int n = hero_slots();
+    UObject *panel = *(UObject **)((char *)w + LOADOUTS_PANEL);
+    TArray *slots = panel ? arr(panel, "Slots") : NULL;
+    int32_t oc = -1;
+    while (slots && slots->num > 0 && slots->num < n && n <= 8) {
+        UObject *last_slot = ((UObject **)slots->data)[slots->num - 1];
+        if (oc < 0 && last_slot) oc = ue_prop_offset(last_slot, "Content");
+        UObject *last = last_slot && oc >= 0 ? *(UObject **)((char *)last_slot + oc) : NULL;
+        UObject *row = last ? create_widget(w, U_CLASS(last)) : NULL;
+        uint8_t p[32] = {0};
+        int32_t pc = poff(panel, "AddChild", "Content"), pr = poff(panel, "AddChild", "ReturnValue");
+        if (!row || pc < 0 || pr < 0) { LOG("lineup: could not add a player list row (%d hero slots)", n); break; }
+        *(UObject **)(p + pc) = row;
+        call_parms(panel, "AddChild", p, sizeof p);
+        UObject *s = *(UObject **)(p + pr);
+        if (!s) { LOG("lineup: player list AddChild failed"); break; }
+        copy_slot(last_slot, s);
+        n_rows_added++;
+        char b[128];
+        LOG("lineup: %d hero slots: player list row %d added (%s)", n, slots->num, ue_obj_name(row, b, sizeof b));
+    }
+    orig_loadouts(w);
+}
+
 #ifndef B4B_RELEASE
 // ---- dev command: lineup [off <dx> <dy> | fov <deg> | apply] ----
 static void dump(Out *o) {
     UClass *c = ue_find_class("CharacterLineupLayoutManager");
     UObject *mgr = c ? ue_find_first_of("CharacterLineupLayoutManager") : NULL;
     char b[256];
-    out_printf(o, "lineup: hook=%d off=(%.0f,%.0f) fov=%.0f spawned=%d placed=%d hero_slots=%d\n", orig_setlayout != NULL,
+    out_printf(o, "lineup: hook=%d list_hook=%d list_rows_added=%d off=(%.0f,%.0f) fov=%.0f spawned=%d placed=%d hero_slots=%d\n", orig_setlayout != NULL, orig_loadouts != NULL, n_rows_added,
                off_x, off_y, fov_want, n_spawned, n_placed, hero_slots());
     for (int32_t i = 0, k = ue_num_objects(); c && i < k; i++) {
         UObject *m = ue_object_at(i);
@@ -251,5 +321,8 @@ int lineup_init(void) {
     if (MH_CreateHook((void *)ADDR_SETLAYOUT, (void *)setlayout_detour, (void **)&orig_setlayout) != MH_OK ||
         MH_EnableHook((void *)ADDR_SETLAYOUT) != MH_OK) { LOG("lineup: hook failed"); orig_setlayout = NULL; return -1; }
     LOG("lineup: SetLayoutType hooked");
+    if (memcmp((void *)ADDR_LOADOUTS_SLOTS, SIG_LOADOUTS_SLOTS, sizeof SIG_LOADOUTS_SLOTS)) LOG("lineup: player list signature mismatch");
+    else if (MH_CreateHook((void *)ADDR_LOADOUTS_SLOTS, (void *)loadouts_detour, (void **)&orig_loadouts) != MH_OK ||
+             MH_EnableHook((void *)ADDR_LOADOUTS_SLOTS) != MH_OK) LOG("lineup: player list hook failed");
     return 0;
 }
