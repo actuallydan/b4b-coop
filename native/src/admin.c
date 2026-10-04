@@ -332,12 +332,13 @@ static int version_refused(const TArray *opts, const void *uid, FString *err) {
 // Add-ons (#22, #35): the joiner says it checked its own add-ons against our addons_policy (?b4bcoopaddonsok=,
 // cmds.c); an older b4bcoop sends its summary instead (?b4bcoopaddons=). addons_mp.c decides; nothing is kept.
 static int addons_refused(const TArray *opts, const void *uid, FString *err) {
-    char o[1600], claim[32], summary[512], name[64], msg[320];
+    char o[1600], claim[32], summary[512], name[64], key[80], msg[320];
     options_str(opts, o, sizeof o);
     opt_value(o, "b4bcoopaddonsok", claim, sizeof claim);
     opt_value(o, "b4bcoopaddons", summary, sizeof summary);
     opt_value(o, "Name", name, sizeof name);
-    if (!addons_login_check(claim, summary, name, msg, sizeof msg)) return 0;
+    if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
+    if (!addons_login_check(claim, summary, name, key, msg, sizeof msg)) return 0;
     if (!err || fstring_assign_game(err, msg)) { LOG("admin: could not set the login error, allowing"); return 0; }
     n_refused++;
     return 1;

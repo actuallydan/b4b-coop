@@ -157,6 +157,10 @@ join side in `cmds.c` `cmd_join`, `presence.c` `handle_connect`, `chat.c` `chat_
 - **Policy** (host): ini `addons_policy=` / chat `/addons policy <x>` (session only) / `~` Add-ons tab, default =
   `ADDONS_POLICY_DEFAULT` in addons_mp.c (`any` since #43, 0.8.1 and before `cosmetic`): `any` = everyone;
   `cosmetic` = no gameplay add-ons; `none` = no add-ons; `match` = gameplay add-ons exactly the host's (cosmetic free).
+  A change during a session (chat, `~` tab, live ini) seats the remote players present at that moment (`seated[]`,
+  their `steam:<id64>` keys, until the host quits): their logins pass the gate, so the reconnect of a mission start
+  doesn't drop them back to their own Fort Hope (2026-10-04: `/addons policy none` then `mission Easy` with a client
+  running add-ons: refused 3x and stranded before; now `was in the session when the policy changed, welcome back`).
 - **Announce** (host): the rich presence connect string carries ` addons:<policy>`, e.g. `+b4bcoop_join steam:<id64>
   proto:2 ver:0.7.1 addons:cosmetic`. `match` adds the host's own gameplay add-on ids (8 hex digits of the content
   id): `addons:match:23a4441c.ab12cd34` (max 16 = `MATCH_MAX`; the value is 256 chars max). Choosing `match` is the

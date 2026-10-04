@@ -385,7 +385,8 @@ joining again. The host's own add-ons don't matter under `cosmetic`, `any` and `
 - A player on an older b4bcoop (0.7.0 and before) still sends its add-on list when joining; a newer host checks it
   as before but never shows or logs it. Update to stop sending it.
 
-**`/addons policy <x>`** (host) changes the policy until the host quits; `addons_policy=` in `b4bcoop.ini` keeps it
+**`/addons policy <x>`** (host) changes the policy until the host quits (for new joiners: players already in the
+session keep playing, also after the next map change); `addons_policy=` in `b4bcoop.ini` keeps it
 (the `~` window's Add-ons tab sets both). There is no list of other players' add-ons (`/addons players` is gone).
 
 Messages (in your chat after the game starts):
