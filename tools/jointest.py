@@ -2,7 +2,8 @@
 """Join timing matrix (#41): one host + one client per trial, the join triggered with the host and the client in
 chosen states, repeated; a table of pass/fail per cell at the end.
 
-    tools/jointest.py [--cells camp:cold,lobby:title,...] [--reps N] [--pairs 1|2] [--no-lock] [--out DIR]
+    tools/jointest.py [--cells camp:cold,lobby:title*4,...] [--reps N] [--pairs 1-3] [--gpus 4090,4090,5090]
+                      [--no-lock] [--out DIR]          (h:c*N = N reps of that cell, else --reps)
     tools/jointest.py --list      the host states and client modes
 
 Host states (what the host is doing when the client's join is triggered):
@@ -19,10 +20,12 @@ Client modes (how and from where the client joins; the target is the host's loop
     title   client on its title screen (not signed in), then a simulated Steam Join Game (steamjoin)
     camp    client signed in and hosting its own Fort Hope (the default), then steamjoin
     load    client started without a join; steamjoin as soon as its agent answers (startup load)
+    fhload  same, steamjoin right after its title Fort Hope loaded (before the sign-in screen is up)
 A trial passes when, within --timeout s of the trigger, the client is connected to the host, in the host's map
 (with a hero when the host is in a mission), the host lists 2 players, and neither profile was reset.
 
-Pairs: --pairs 2 runs two independent trials at once (test1+test2 on the lane's game port, test3+test4 on port+10).
+Pairs: --pairs 2|3 runs independent trials at once (pair p: test<2p-1> hosts on the lane's game port + 10(p-1),
+test<2p> joins; pair 3 needs a test6 prefix); --gpus gives each pair its own B4B_GPU.
 Each trial restores both prefixes' golden profiles first and writes their b4bcoop.ini. Holds launch/gamelock.sh
 as "jointest" unless --no-lock. Artifacts (per-trial logs, results.json, table) in /tmp/b4b-jointest-<time>/.
 """
@@ -35,7 +38,9 @@ import testprefix
 import e2e
 
 HOSTS = ["boot", "title", "camp", "mload", "lobby", "play"]
-CLIENTS = ["cold", "ini", "title", "camp", "load"]
+CLIENTS = ["cold", "ini", "title", "camp", "load", "fhload"]
+STEAMJOIN = ("title", "camp", "load", "fhload")
+GPUS = []   # --gpus: B4B_GPU per pair
 MAP_B = "Evansburgh_B"
 VER = dict(l.strip().split("=", 1) for l in open(os.path.join(REPO, "VERSION")) if "=" in l and not l.startswith("#"))
 LOCK = threading.Lock()
@@ -51,8 +56,11 @@ def kill_instance(n):
 
 
 def launch(n, args, out):
+    env = dict(os.environ)
+    pair = (n + 1) // 2
+    if len(GPUS) >= pair and GPUS[pair - 1]: env["B4B_GPU"] = GPUS[pair - 1]
     return subprocess.Popen([os.path.join(REPO, "launch/instance.sh"), str(n)] + args, stdout=open(out, "w"),
-                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=env)
 
 
 def write_ini(n, lines):
@@ -113,7 +121,7 @@ class Trial:
     def client_go(self, start):
         cm = self.cm
         ini = {"cold": [], "ini": ["offline=1", f"join=127.0.0.1:{self.port}"], "title": [], "camp": ["offline=1"],
-               "load": []}[cm]
+               "load": [], "fhload": []}[cm]
         write_ini(self.c, ini)
         args = self.connect_string().split() if cm == "cold" else []
         self.cl = e2e.GameLog(self.c, start)
@@ -123,6 +131,8 @@ class Trial:
         self.cp = launch(self.c, [], os.path.join(e2e.OUT, f"{self.name}-client.out"))
         if cm == "load":
             ok = e2e.wait_for(lambda: "pong" in e2e.agent(self.c, "ping", timeout=5), 180, 1)
+        elif cm == "fhload":   # Fort Hope just loaded, sign-in screen not up yet (signin_arm's window)
+            ok = e2e.wait_for(lambda: self.cl.grep(r"LoadMap Level: MAP_PERS_FortHope_A", False), 180, 0.3)
         elif cm == "title":
             ok = e2e.wait_for(lambda: self.cl.grep(r"Created screen 'SignInScreen'", False), 180, 2) and (time.sleep(5) or True)
         else:   # camp: signed in, hosting its own Fort Hope
@@ -130,7 +140,7 @@ class Trial:
         return ok
 
     def client_trigger(self):
-        if self.cm in ("title", "camp", "load") and self.hs != "boot":
+        if self.cm in STEAMJOIN and self.hs != "boot":
             e2e.agent(self.c, "steamjoin", self.connect_string())
 
     # ---- check ----
@@ -152,12 +162,12 @@ class Trial:
                 self.client_go(start)
                 t0 = time.time()
             else:
-                if self.cm in ("title", "camp", "load"):   # get the client into its state first, in parallel
+                if self.cm in STEAMJOIN:   # get the client into its state first, in parallel
                     cth = threading.Thread(target=lambda: setattr(self, "cok", self.client_go(start)))
                     cth.start()
                 if not self.host_up(start):
                     self.res["why"] = "host never reached its state"; return self.res
-                if self.cm in ("title", "camp", "load"):
+                if self.cm in STEAMJOIN:
                     cth.join()
                     if not self.cok: self.res["why"] = "client never reached its state"; return self.res
                     if self.hs == "mload": e2e.agent(self.h, "mission", "Easy")
@@ -203,14 +213,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cells", default="")
     ap.add_argument("--reps", type=int, default=3)
-    ap.add_argument("--pairs", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--pairs", type=int, default=1, choices=(1, 2, 3))
+    ap.add_argument("--gpus", default="", help="B4B_GPU per pair, e.g. 4090,4090,5090")
     ap.add_argument("--timeout", type=int, default=240)
     ap.add_argument("--no-lock", action="store_true")
     ap.add_argument("--out")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
     if a.list: print(__doc__); return
-    cells = [tuple(c.split(":")) for c in a.cells.split(",") if c] or \
+    GPUS[:] = [g.strip() for g in a.gpus.split(",")] if a.gpus else []
+    reps = {}
+    for c in a.cells.split(","):   # h:c or h:c*N (N reps for that cell)
+        if c: reps[tuple(c.split("*")[0].split(":"))] = int(c.split("*")[1]) if "*" in c else a.reps
+    cells = list(reps) or \
         [(h, c) for h in HOSTS for c in CLIENTS if h != "boot" or c in ("cold", "ini")]
     for h, c in cells:
         if h not in HOSTS or c not in CLIENTS: sys.exit(f"bad cell {h}:{c}")
@@ -218,7 +233,8 @@ def main():
     os.makedirs(e2e.OUT, exist_ok=True)
     lock = os.path.join(REPO, "launch/gamelock.sh")
     if not a.no_lock: subprocess.run([lock, "acquire", "jointest"], check=True)
-    jobs = [(h, c, r) for r in range(1, a.reps + 1) for h, c in cells]
+    jobs = [(h, c, r) for r in range(1, max(reps.get(x, a.reps) for x in cells) + 1) for h, c in cells
+            if r <= reps.get((h, c), a.reps)]
     results = []
     try:
         while jobs:
