@@ -54,12 +54,40 @@ int addons_policy_set(const char *v) {
 }
 const char *addons_policy_name(void) { return POLICY_NAMES[policy]; }
 
+// A policy changed during a session is for new joiners: the players in the session at that moment keep playing.
+// Without this they were refused at the next map change (a mission start reconnects every client) and dropped back
+// to their own Fort Hope. Their keys (steam:<id64>) are kept until the host quits.
+#define SEATED_MAX 32
+static char seated[SEATED_MAX][80];
+static int n_seated;
+static void seat_current_players(void) {
+    UObject **pa; int n = admin_player_array(&pa);
+    UClass *pcc = ue_find_class("PlayerController");
+    for (int i = 0; i < n && pcc; i++) {
+        UObject *pc = ue_get_ptr(pa[i], "Owner");
+        if (!pc || pc == ue_local_pc() || !ue_is_a(pc, pcc)) continue;
+        char key[80];
+        admin_ps_key(pa[i], key, sizeof key);
+        int have = 0;
+        for (int k = 0; k < n_seated; k++) have |= !strcmp(seated[k], key);
+        if (have || n_seated == SEATED_MAX) continue;
+        snprintf(seated[n_seated++], sizeof seated[0], "%s", key);
+        LOG("addons: %s is in the session: keeps playing under the new policy", key);
+    }
+}
+static int is_seated(const char *key) {
+    for (int k = 0; key && k < n_seated; k++) if (!strcmp(seated[k], key)) return 1;
+    return 0;
+}
+
 // b4bcoop.ini addons_policy= changed while the game runs (or set from the ~ window): NULL = back to the default
 int addons_live(const char *key, const char *v) {
     if (strcmp(key, "addons_policy")) return 0;
+    int was = policy;
     if (!v) policy = ADDONS_POLICY_DEFAULT;
     else if (addons_policy_set(v)) LOG("addons: bad addons_policy=%s (any|cosmetic|none|match), keeping %s", v, addons_policy_name());
     LOG("addons: policy %s (b4bcoop.ini)", POLICY_NAMES[policy]);
+    if (policy != was && !admin_is_client()) seat_current_players();
     return 1;
 }
 
@@ -306,9 +334,10 @@ static int summary_fails(const char *v, char *err, size_t en) {
 
 // Returns 1 = refuse (err = the joiner's login error). claim = ?b4bcoopaddonsok= (a b4bcoop that checked itself),
 // summary = ?b4bcoopaddons= (an older b4bcoop). Nothing about the joiner's add-ons is logged or kept.
-int addons_login_check(const char *claim, const char *summary, const char *name, char *err, size_t en) {
+int addons_login_check(const char *claim, const char *summary, const char *name, const char *key, char *err, size_t en) {
     err[0] = 0;
     if (policy == POL_ANY) return 0;
+    if (is_seated(key)) { LOG("addons: login %s: was in the session when the policy changed, welcome back", name); return 0; }
     if (claim && *claim) {
         if (!_stricmp(claim, POLICY_NAMES[policy])) { LOG("addons: login %s: checked its add-ons against addons_policy=%s", name, POLICY_NAMES[policy]); return 0; }
     } else if (summary && *summary) {   // an older b4bcoop sends its list; judged as before, never logged
@@ -340,9 +369,11 @@ int addons_mp_slash(const char *sub, char *arg, Out *o) {
             return 1;
         }
         if (admin_is_client()) { out_printf(o, "/addons policy: host only (you are a client)\n"); return 1; }
+        int was = policy;
         if (addons_policy_set(arg)) { out_printf(o, "usage: /addons policy any|cosmetic|none|match\n"); return 1; }
+        if (policy != was) seat_current_players();
         LOG("addons: policy %s (chat)", POLICY_NAMES[policy]);
-        out_printf(o, "add-ons policy: %s for this session (new joiners; ini addons_policy= keeps it)%s\n", POLICY_NAMES[policy],
+        out_printf(o, "add-ons policy: %s for this session (new joiners; players here now keep playing; ini addons_policy= keeps it)%s\n", POLICY_NAMES[policy],
                    policy == POL_MATCH ? ". match shows joiners the ids of your own gameplay add-ons" : "");
         return 1;
     }

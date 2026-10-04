@@ -140,7 +140,7 @@ TROUBLESHOOTING
   offers the host's version (or the latest). Or everyone downloads the latest release and extracts it again.
 - Play online / with Easy Anti-Cheat without removing the mod: add  -b4bcoop=off  to the launch options
   (Steam > right-click Back 4 Blood > Properties > Launch Options). Remove it again to play co-op.
-- The log: Gobi\Binaries\Win64\b4bcoop-<number>.log (the newest one). Its first lines show the version.
+- The log: Gobi\Binaries\Win64\b4bcoop-<date>-<time>-<number>.log (the newest one). Its first lines show the version.
   No new log after starting the game = the mod didn't load.
 - Windows: this install layout hasn't been tested on a Windows PC yet (it has on Linux / Proton). If the
   mod doesn't load there, please open an issue on GitHub and attach Gobi\Binaries\Win64\b4bcoop-launcher.log

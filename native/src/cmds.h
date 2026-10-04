@@ -207,7 +207,7 @@ void addons_note_host(const char *targets, const char *tok);  // joiner: the hos
 int addons_join_refused(const char *target, char *msg, size_t n);  // joiner: 1 = our add-ons fail the host's policy
 const char *addons_login_option(const char *target);    // "?b4bcoopaddonsok=<policy>" (checked) or "" (cmds.c)
 int addons_on_refusal(const char *error, const char *target, char *msg, size_t n);  // 0 not ours, 1 join again, 2 stop
-int addons_login_check(const char *claim, const char *summary, const char *name, char *err, size_t en);  // host: 1 = refuse
+int addons_login_check(const char *claim, const char *summary, const char *name, const char *key, char *err, size_t en);  // host: 1 = refuse
 int addons_mp_slash(const char *sub, char *arg, Out *o);  // /addons policy (players: gone); 1 if handled
 void addons_mp_panel(void);                  // ~ window: the Add-ons tab's policy section (addons.c draws the tab)
 // models.c: runtime model swaps (#19, docs/investigations/model-swap.md)
