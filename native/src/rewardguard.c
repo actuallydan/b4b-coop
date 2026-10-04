@@ -79,10 +79,14 @@ static UFunction *fn_playburn;
 static int32_t off_playburn = -1;
 
 // ---- per-map state (reset when the world changes) ----
-#define MAX_PLAYED 8
+#define MAX_PLAYED 16
 static UObject *cur_world;
+static char cur_map[96];   // the world's name (MAP_PERS_...), what a burn card play is tied to
 static int sp_total, stp_total, cons_gain, n_unlocks, told;
-static struct { FName card, product; int charged; } played[MAX_PLAYED];
+// Burn cards played and not charged yet. They outlive a world change: a player who drops out of the start saferoom
+// and rejoins the same mission is charged then (the host binds the queued card to the rejoined player, burncards.c);
+// a charge is only accepted on the map the card was played on.
+static struct { FName card, product; int charged; char map[96]; } played[MAX_PLAYED];
 static int n_played;
 static int n_accepted, n_rejected;
 
@@ -90,7 +94,11 @@ static void sync_world(void) {
     UObject *w = ue_world();
     if (w == cur_world) return;
     cur_world = w;
-    sp_total = stp_total = cons_gain = n_unlocks = told = n_played = 0;
+    if (!w || !ue_obj_name(w, cur_map, sizeof cur_map)) cur_map[0] = 0;
+    sp_total = stp_total = cons_gain = n_unlocks = told = 0;
+    int k = 0;
+    for (int i = 0; i < n_played; i++) if (!played[i].charged) played[k++] = played[i];
+    n_played = k;
 }
 
 static int fname_eq(FName a, FName b) { return a.idx == b.idx && a.num == b.num; }
@@ -164,12 +172,12 @@ static void note_play(const RowHandle *card) {
     char a[128], b[128];
     FName product = card->row;
     int mapped = card_product(card->row, &product);
-    if (n_played < MAX_PLAYED) {
-        played[n_played].card = card->row;
-        played[n_played].product = product;
-        played[n_played].charged = 0;
-        n_played++;
-    }
+    if (n_played == MAX_PLAYED) { memmove(played, played + 1, sizeof played[0] * (MAX_PLAYED - 1)); n_played--; }
+    played[n_played].card = card->row;
+    played[n_played].product = product;
+    played[n_played].charged = 0;
+    snprintf(played[n_played].map, sizeof played[n_played].map, "%s", cur_map);
+    n_played++;
     LOG("rewardguard: you played burn card %s (product %s%s); the host may charge it once on this map",
         ue_name(card->row, a, sizeof a), ue_name(product, b, sizeof b), mapped ? "" : ", unmapped");
 }
@@ -212,7 +220,8 @@ static int check(int kind, UObject *ppc, void *cmd) {
         snprintf(d, sizeof d, "%s %+d", ue_name(h->row, a, sizeof a), v);
         if (v == -1) {   // a burn card charge: must be one we played on this map, charged once
             for (int i = 0; i < n_played; i++) {
-                if (played[i].charged || (!fname_eq(played[i].product, h->row) && !fname_eq(played[i].card, h->row))) continue;
+                if (played[i].charged || strcmp(played[i].map, cur_map) ||
+                    (!fname_eq(played[i].product, h->row) && !fname_eq(played[i].card, h->row))) continue;
                 played[i].charged = 1;
                 return 1;
             }
