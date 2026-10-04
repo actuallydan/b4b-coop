@@ -233,8 +233,13 @@ def norm(line):
     return re.sub(r"\d+", "#", re.sub(r"^\[[^\]]*\]\s*", "", line)).strip()
 
 
+# The game logs every synchronous hero-mesh load as an error, retail rows too; with #33 it loads add-on outfits
+# itself (a real customization row), so that line names our paths and is no failure.
+BENIGN = re.compile(r"LogCustomization Error: Forcing load for hero mesh definition")
+
+
 def relevant(text):
-    return [l for l in text.splitlines() if RELEVANT.search(l)]
+    return [l for l in text.splitlines() if RELEVANT.search(l) and not BENIGN.search(l)]
 
 
 def install_addons(rows):

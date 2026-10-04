@@ -148,7 +148,8 @@ Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `
 
 **Add-ons**
 - Drop `.pak` add-ons into `b4bcoop-addons`: textures, custom outfits and weapon looks (up to 512 add-ons and 512
-  outfits). Load order and on/off in the `~` window. Nobody learns which add-ons you have; the host decides whether
+  outfits). Added outfits are also in the game's customization screen, for every survivor. Load order and on/off in
+  the `~` window. Nobody learns which add-ons you have; the host decides whether
   joiners may bring gameplay-changing ones.
 - **Browse** tab: add, remove and update free add-ons from a signed catalog (still empty for now).
 - **Modkit** (separate download, `b4bcoop-modkit-<version>.zip`): turn a downloaded character (FBX, glTF/glb, VRM, OBJ,
