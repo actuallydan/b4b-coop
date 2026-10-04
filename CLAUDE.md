@@ -195,7 +195,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   (reproducible; refuses 64-hex strings). The pak AES key is built into b4bmod.py (public, same for every copy;
   `config aes_key`, `B4B_AES_KEY`, `--aes-key` override); pakx checks it against every pak index SHA1. No native
   Oodle, ever: CUE4Parse's OodleSharp only. Dev-only asset tools stay in `tools/modkit/` (`pakscan.py`,
-  `customversions.py`, `assetcheck/`, `uassetrt/`, `testassets/`). Data: `~/.local/share/b4b-coop/`
+  `customversions.py`, `assetcheck/`, `uassetrt/`, `testassets/`, `source_survivor.py` + `vpk.py`: a Source engine
+  character from a local game install (e.g. the L4D2 survivors, #40, private only) -> glb via SourceIO in headless
+  Blender, for `b4bmod survivor`). Data: `~/.local/share/b4b-coop/`
   (`%LOCALAPPDATA%\b4b-coop` on Windows).
 - `sdk/` — local only (gitignored, kept out of the public repo): reflection dump of all `/Script` classes.
   Regenerate with `tools/sdkdump.py` (see docs/NOTES.md).
