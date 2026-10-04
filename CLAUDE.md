@@ -111,7 +111,12 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     bodies as a made-up row `b4bcoop.npc.<name>` put on by every b4bcoop machine; host `/model <player>`,
     `/models off` (hook on the RPC implementation), campaign-run save keeps own looks; add-on outfits (addoninfo
     `outfit=`, `b4bmod survivor --as`) as made-up row `b4bcoop.outfit.<name>`, 3P + FP arms, others see the
-    survivor (new-assets.md §8). Dev `mdl ...`. `weaponlooks.c`: add-on weapon looks (addoninfo `weapon=`,
+    survivor (new-assets.md §8); made-up rows are applied wherever the game applies a set (hook on the per-slot apply
+    0x141B75B90: heroes, cutscene stand-ins, lineup mannequins, #37). Customization screen (#33, new-assets.md §11):
+    real rows `b4bcoop.outfit.<name>` inserted into every `<Hero>_Customization_DT` on this machine; the profile never
+    stores them (equip hook keeps the previous look, choice in `b4bcoop-outfits.txt`, GetProfileCustomization hook
+    answers with it); ini `outfits_screen=0`. Dev `mdl ...` (`mdl screen`, `mdl cs open|list|equip|close`,
+    `mdl standins`). `weaponlooks.c`: add-on weapon looks (addoninfo `weapon=`,
     `b4bmod weapon --as`), made-up skin row `b4bcoop.weapon.<name>` in the weapon's replicated
     `ItemMeshManagementComponent.CustomizationRow`, meshes swapped by every machine with the add-on, others see the
     default weapon; a dropped weapon keeps its look on the floor (pickup's `3P_<Code>_SM`; the host pairs it by

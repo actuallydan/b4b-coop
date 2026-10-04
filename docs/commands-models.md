@@ -3,7 +3,8 @@
 Change how your survivor looks for this game session, using outfits and characters the game already has (or outfits
 your add-ons add), and put an add-on's model on your weapon.
 Nothing is saved: your profile, your unlocked outfits and your campaign runs stay as they are. Quit the game (or
-`/model reset`) and you look like before.
+`/model reset`) and you look like before. (Add-on outfits picked in the game's customization screen are kept: see
+[below](#add-on-outfits-on-the-games-customization-screen).)
 
 ## Commands
 
@@ -44,6 +45,21 @@ Nothing is saved: your profile, your unlocked outfits and your campaign runs sta
   `/model list weapons` lists them with their weapon, e.g. `/model ak47` = your AR02 shows the AK. It stays on every
   AR02 you get (pickups, new maps) until `/model reset`; your survivor's look is separate.
 
+## Add-on outfits on the game's customization screen
+
+Your add-on outfits are also in the game's own wardrobe (the customization screen in Fort Hope), for every survivor,
+at the end of the outfit list, unlocked, with the add-on's name (no picture). Pick one there like any outfit: unlike
+`/model` it is **kept** for that survivor, also after a restart, in every mission and cutscene, until you pick another
+outfit for them.
+
+- Your Back 4 Blood profile never stores it: the profile keeps that survivor's previous outfit, and b4b-coop remembers
+  the add-on outfit in `b4bcoop-outfits.txt` (next to `b4bcoop.ini`). Without b4b-coop, or without that add-on, the
+  game shows the previous outfit; nothing breaks.
+- Players with the same add-on see it on you; everyone else sees your survivor (their base head, torso and legs).
+- `/model reset` brings back this saved look. A host with `/models off` or `addons_policy=none` refuses it: you then wear
+  your profile's outfit in that game.
+- `outfits_screen=0` in `b4bcoop.ini` keeps add-on outfits out of the customization screen (`/model` still works).
+
 ## The `~` window: Models tab
 
 Everything above without typing: **Your look** (what you wear, your pick, the host's refusal if it said no, **Reset my
@@ -81,8 +97,8 @@ look; everyone is told), their **Reset**, and **Model swaps allowed** (`/models 
   on it: their skin, or their own `/model` look for that weapon (you get yours back when you pick it up again), like
   the game's own skins. Weapons lying in the map that nobody dropped, and the empty magazine a reload drops, stay the
   game's.
-- Your look stays through map changes, chapters, death and respawn, until `/model reset` or the end of the game
-  session. If you change survivor at character select, your `/model` is put on the new survivor.
+- Your look stays through map changes, chapters, death and respawn, cutscenes and the lineups, until `/model reset`
+  or the end of the game session. If you change survivor at character select, your `/model` is put on the new survivor.
 - Bots: only the host can change them (`/model <bot #> <name>`). When a player takes over that bot, the player's own
   look (or their own `/model`) is used.
 
@@ -105,9 +121,8 @@ look; everyone is told), their **Reset**, and **Model swaps allowed** (`/models 
 - Besides add-on outfits, only looks the game ships: survivor outfits (all of them, also ones you haven't unlocked) and NPC bodies that use
   the survivors' skeleton. Ridden and special NPCs (Hag, Sleeper, Titan) use other skeletons and are not offered.
 - NPC bodies have no first-person arms: you keep your survivor's arms.
-- Add-on outfits and weapon looks can't be picked in the customization screens, only with `/model` (or the `~`
-  window). The host's `/models off` also
-  turns them off.
+- Add-on weapon looks can't be picked in the weapon customization screen, only with `/model` (or the `~` window).
+  The host's `/models off` also turns add-on outfits and weapon looks off.
 - `/models off` stops swaps between survivors and NPC looks. It can't tell a player's own outfit change from a
   `/model` of one of their own survivor's outfits, so those stay allowed.
 - Mixing pieces of different survivors (a head from one, legs from another) can show seams.

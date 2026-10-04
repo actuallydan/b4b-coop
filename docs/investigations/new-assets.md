@@ -3,7 +3,7 @@
 Status 2026-09-25, build 14216215. Package side (`b4bmod rename`, §2, §5), added survivor outfits (§8:
 `b4bmod survivor --as`, addoninfo `outfit=`, `/model <outfit>`) and added weapon looks (§9: `b4bmod weapon --as`,
 addoninfo `weapon=`, `/model <look>`) work live, and replacement mods convert into added outfits (§10, `b4bmod
-convert`); the customization screens are not used. Today every add-on replaces game files at their paths: a survivor model *is*
+convert`); since #33 added outfits are also on the game's own customization screen (§11). Today every add-on replaces game files at their paths: a survivor model *is*
 Mom's Elite 04 for whoever has the add-on. Goal: an add-on that brings an **extra** outfit (or weapon look) at its own
 paths, selectable next to the game's, with nothing of the game's replaced.
 
@@ -13,7 +13,7 @@ paths, selectable next to the game's, with nothing of the game's replaced.
 | Packages (mesh, MIs, textures) | template's paths | copies under `/Game/b4bcoop/<addon id>/...` (§2) |
 | References between them | template's own | rewritten to the copies (SKM -> MIs -> textures), shared retail ones kept (skeleton, physics asset, masters, micro-detail textures) |
 | Something that names the outfit | the retail customization row | a row the agent adds at runtime (§3) |
-| Selecting it | customization screen / `/model` | `/model <addon outfit>` (§4); the customization screen later |
+| Selecting it | customization screen / `/model` | `/model <addon outfit>` (§4); the customization screen (§11) |
 | Other players | see it if they have the add-on | same, plus a fallback for those without (§4) |
 
 ## 2. Packages at new paths (`b4bmod rename`, prototyped)
@@ -147,17 +147,8 @@ row) is gameplay content (data tables, blueprints) and out of scope for cosmetic
 - Same name in two different add-ons (or versions) = each player sees their own version.
 - Weapons: §9.
 
-### Customization screen (not built; Dan undecided)
-It would take: a real `CharacterCustomizationRow` (0x320) inserted into `<Hero>_Customization_DT.RowMap` at runtime on
-every machine (copy of the template row, `ThirdPersonMeshDefinition.Mesh`/`FirstPersonMeshDefinition.Mesh` soft
-paths set to the add-on meshes, material overrides emptied, a stable GUID row name derived from the outfit name);
-the unlock/entitlement check (`Products_DT` / owned-items lookup the screen uses to grey out or hide rows) passed or
-hooked; a display name (FText) and thumbnail (the screen shows a render/texture per row; an add-on would need one);
-then the profile: `EquipCharacterCustomizationSetCommand` saves the row into
-`equippedCharacterCustomizationSets`, so a machine that later starts without the add-on must survive an unknown row
-(`GetProfileCustomization` drops locked/invalid sets to the default skin: needs a live check), and remote players
-without the add-on would get a GUID row the game can't find (same fallback as now, but through the game's path
-instead of ours). The campaign-run hook would have to treat these rows like made-up ones.
+### Customization screen
+Built (#33): §11.
 
 ## 9. Added weapon looks (2026-09-25, branch `models-weapon-as`, build 14216215, Proton, lane 1)
 ### Design
@@ -397,3 +388,96 @@ on the gun; client Holly in an Evangelo-template outfit (host view, client FP); 
 bot Heng in the Holly-template one. Hitboxes logged as the wearer's (`3P_Evangelo_PA`, `3P_Holly_PA`,
 `3P_Sharice_PA`, `3P_Karlee_PA`). Client 3 sees the survivors (Evangelo retail, Karlee's base pieces), no outfit
 logged there. No stretching seen in any view.
+
+## 11. Added outfits on the game's customization screen (#33, 2026-10-04, lane 2 / Flatpak Proton, build 14216215)
+Every mounted add-on outfit now shows up in the game's own customization screen (the Fort Hope wardrobe), for every
+survivor, next to the game's outfits. Implemented in `models.c` (section "added outfits on the game's customization
+screen").
+
+### How
+- **Rows**: every 5 s (cheap once done: per table, the number of outfits already checked) each add-on outfit gets a
+  real `CharacterCustomizationRow` named `b4bcoop.outfit.<name>` in every survivor's `<Hero>_Customization_DT`,
+  **on this machine only**. Same name as the made-up row of `/model` (§8), so the replicated set, the host relay, the
+  refusals and the campaign-run hook treat both alike; on a machine with the add-on the game itself now finds the row
+  and applies it (heroes, cutscene stand-ins, mannequins), on a machine without it the row is unknown as before.
+- **The row**: allocated with GMalloc (0x320), built field by field (no shallow copies of the template's TMaps/FTexts):
+  FTableRowBase vtable, `Quality`, `EquipSound` from the survivor's default outfit row; `DisplayName` = the outfit's
+  title in upper case and `Description` = "Add-on outfit (<add-on>). Players without this add-on see your survivor."
+  (`KismetTextLibrary.Conv_StringToText`, whose parameter is `inString`); `Slot` Outfit; `ThirdPersonMeshDefinition`
+  and `FirstPersonMeshDefinition` soft paths = the add-on's meshes (no FP mesh: the survivor's default outfit's arms,
+  never an empty FP mesh); material maps empty, console override and animation overrides empty. A row is only made
+  when the 3P mesh's package is in the pak layer (`paks_file_exists`): the game would otherwise put an empty mesh on.
+- **RowMap insert** (no engine function for it in the shipping build): TMap<FName, uint8*> layout in this build
+  (elements 0x18 {key, value, HashNextId, HashIndex}, allocation bits inline +0x10 / heap +0x20, NumBits +0x28,
+  MaxBits +0x2c, free list +0x30/+0x34, hash inline +0x38 / heap +0x40, HashSize +0x48); FName hash as the set's
+  FindId (0x140BCE720) computes it: `(blk << 21) + blk + (off << 16) + off + (off >> 4) + number` (blk = id >> 18,
+  off = id & 0xFFFF). Before inserting, the formula is checked against every existing element's HashIndex (mismatch,
+  holes in the sparse array, bad hash size: no rows, logged, `/model` only). Elements grow by 16, allocation bits
+  move to the heap past 128 (Dan's ~130 outfits x 12 tables = ~1560 rows).
+- **Unlock check**: the screen locks a row only when a `Products_DT` product unlocks it (0x141C76960 scans the products'
+  `Unlock` handles), so our rows are unlocked. The outfit count on the screen includes them ("7/11").
+- **Name / thumbnail**: the outfit list shows names only (no thumbnails in that list); the selected outfit shows on the
+  screen's mannequin as preview (the mannequin applies the real row).
+- **Hitboxes**: the game applies the row with the template's mesh and its PhysicsAsset; `tick_npc` now takes the
+  wearer's PhysicsAsset from the set's torso piece, or (outfit-only sets, as the screen sends) the survivor's default
+  outfit, and keeps it as the override (log `hitboxes: 3P_<Hero>_PA`).
+- **Pieces**: the screen sends outfit-only sets (head/torso/legs empty). The host completes the pieces of a set whose
+  outfit is one of our rows before it replicates (`selectset_detour`, `complete_pieces`), so players without the
+  add-on see the survivor's base pieces, never an invalid set (a cutscene stand-in would put the default skin on an
+  invalid set, 0x141611AC8).
+
+### The profile: decisions
+- **The profile never holds a `b4bcoop.*` row.** Hook on the profile component's
+  `EquipCharacterCustomizationSet(hero, set)` (0x141BC3C00, logs "applying customization set to %s"; only caller: the
+  customization screen when it closes with a changed look, 0x141CFD280): in a copy of the set every slot naming one of
+  our rows gets the profile's previous handle for that slot (read with the original `GetProfileCustomization`), and
+  `LastEquipSlot` the previous one; the screen's own set (which it sends with `ServerSelectCustomizationSet` right after)
+  is left alone, so the outfit is worn at once. Log: `models: profile keeps <hero>'s look (<row>) instead of add-on
+  outfit <name>`. So the game without b4bcoop, without the add-on or with `outfits_screen=0` loads a profile it knows
+  and shows the survivor's previous look; nothing to clean up after uninstalling.
+- **The choice lives in `b4bcoop-outfits.txt`** next to `b4bcoop.ini` (`<survivor> <outfit>` per line, comment header;
+  not touched by the updater, which keeps unknown files). Equipping a game outfit or piece for that survivor removes
+  the line.
+- **Reading it back**: hook on `FCharacterCustomizationUtils::GetProfileCustomization(pc, hero, out)` (0x141B769C0;
+  callers: `AGobiPlayerState::InitCustomizationSet` at every hero pick -> `ServerSelectCustomizationSet`, the
+  customization screen, the mannequins): for our own controller only, when the survivor has a remembered outfit and its
+  row exists here (add-on mounted), the outfit slot becomes that row with `LastEquipSlot` Outfit and the pieces are
+  completed. Missing add-on: the profile's look, untouched. `/model reset` goes through the same path (your saved
+  look, add-on outfit included).
+- **Host refusals**: `/models off` and `addons_policy=none` refuse the row as before. When the host's refusal notice
+  arrives after we answered with a remembered outfit, the client stops answering with it (until the host's `/models
+  on` or the next session as a host) and re-sends the profile's own look (`ClientInitCustomizationRowForSelectedCharacter`
+  locally), so it is never left without a look (this refusal path is not tested live yet). With `/models off` known,
+  no substitution at all.
+- **Host and campaign run**: a remembered outfit is a foreign row for the campaign-run hook (`foreign()` now treats
+  every `b4bcoop.*` row as foreign even when it is a real row of the survivor's table), so the run saves the survivor's
+  own look; the host notes its profile look as the clean set.
+- `/model` stays: it is session-only, any outfit for any survivor; the catalogue skips our rows.
+- Opt-out: ini `outfits_screen=0` (no rows; `/model` still works). The rows also stay off if one of the two profile
+  hooks fails its signature check, so an equipped row can never reach the profile.
+
+### Live results (`multi.sh 2`, add-ons `batman.pak`, `ciri.pak`, `laracroft.pak` via `addons_dir=`)
+- `mdl screen`: 36 rows (3 outfits x 12 survivors), hash check passed. Screen (`mdl cs open`, the outfit list through the
+  widget's own OutfitButton handler): Hoffman's list = his 8 outfits + `Batman`, `Ciri`, `Lara Croft`, unlocked, count
+  7/11 (`cust5.png`); `mdl cs equip b4bcoop.outfit.ciri` -> Hoffman in Ciri on the screen's mannequin (`cust6.png`).
+- Closing the screen (the widget's `OnBackEvent` twice): client log `hoffman now wears ciri on the customization
+  screen`, `profile keeps hoffman's look (hoffman_elite_00) instead of add-on outfit ciri`, `applying customization set
+  to Hoffman`; host `selects ... outfit=b4bcoop.outfit.ciri`, both `hero slot 1 wears outfit ciri`. Second pick for Jim
+  (Lara Croft): host log `selects head=jim_head_00 torso=jim_torso_00 legs=jim_legs_00 outfit=b4bcoop.outfit.laracroft`
+  (pieces completed), `hitboxes: 3P_Jim_PA`; the host sees the client's Jim as Lara Croft (`host_sees_lara.png`).
+- `/model reset` on the client: `jim wears add-on outfit laracroft (customization screen)` (the profile path answered
+  with the remembered outfit). After a game restart the client got Hoffman at character select: `hoffman wears add-on
+  outfit ciri (customization screen)` (from the file).
+- Profiles after the deferred save (chapter end, campaign run saved by the host): no `b4bcoop` string in either
+  `PlayerProfileSettings.json`.
+- Client with `addons=0` and the file still naming `hoffman ciri`: `pick: hoffman ciri (add-on not here)`, no rows, the
+  profile's look.
+- Screenshots: `~/.local/share/b4b-coop/screen-test/shots/` (not committed).
+
+### Limits / open
+- No thumbnail: the game's outfit list has none; a product row with an icon would be needed for the store-style
+  views. The name is the add-on's title, upper-cased like the game's.
+- Rows are per machine: a player without the add-on never sees it in their screen (same rule as `/model`).
+- The remembered outfit is per survivor and per machine (not per Steam account); a profile restored from elsewhere
+  keeps its own retail look.
+- A runtime-mounted add-on (Browse tab) gets its rows within 5 s.
