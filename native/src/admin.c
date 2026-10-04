@@ -104,6 +104,19 @@ static int bot_name(UObject *ps, char *buf, size_t n) {
     return 1;
 }
 
+// An NPC ally (e.g. Emmett in Evansburgh) has a player state with no name, no bot hero row and a non-hero pawn: its
+// pawn's class without the _BP_C suffix ("Emmett"). Was listed as "- [bot]" on the host and a blank line on clients.
+static int npc_name(UObject *ps, char *buf, size_t n) {
+    UObject *pawn = ps ? ue_get_ptr(ps, "PawnPrivate") : NULL;
+    char c[128];
+    if (!pawn || !ue_obj_name(U_CLASS(pawn), c, sizeof c) || !strncmp(c, "Hero", 4)) return 0;
+    char *s = strstr(c, "_BP_C");
+    if (!s) s = strstr(c, "_C");
+    if (s) *s = 0;
+    snprintf(buf, n, "%s", c);
+    return 1;
+}
+
 // Steam id from a FUniqueNetIdRepl {vtable, TSharedPtr<FUniqueNetId> {object, refcount}, ReplicationBytes}: the
 // Steam net id object holds the 64-bit id after its vtable. Accept it only if it looks like an individual Steam id.
 static int uid_str(const void *repl, char *buf, size_t n) {
@@ -319,12 +332,13 @@ static int version_refused(const TArray *opts, const void *uid, FString *err) {
 // Add-ons (#22, #35): the joiner says it checked its own add-ons against our addons_policy (?b4bcoopaddonsok=,
 // cmds.c); an older b4bcoop sends its summary instead (?b4bcoopaddons=). addons_mp.c decides; nothing is kept.
 static int addons_refused(const TArray *opts, const void *uid, FString *err) {
-    char o[1600], claim[32], summary[512], name[64], msg[320];
+    char o[1600], claim[32], summary[512], name[64], key[80], msg[320];
     options_str(opts, o, sizeof o);
     opt_value(o, "b4bcoopaddonsok", claim, sizeof claim);
     opt_value(o, "b4bcoopaddons", summary, sizeof summary);
     opt_value(o, "Name", name, sizeof name);
-    if (!addons_login_check(claim, summary, name, msg, sizeof msg)) return 0;
+    if (!uid_str(uid, key, sizeof key)) snprintf(key, sizeof key, "name:%s", name);
+    if (!addons_login_check(claim, summary, name, key, msg, sizeof msg)) return 0;
     if (!err || fstring_assign_game(err, msg)) { LOG("admin: could not set the login error, allowing"); return 0; }
     n_refused++;
     return 1;
@@ -366,11 +380,12 @@ static void players(Out *o) {
         ps_name(ps, nm, sizeof nm);
         char bn[64];
         // a client doesn't see other players' controllers: a nameless player state with a bot hero is a bot
-        int is_bot = host ? !is_pc(owner) : (!nm[0] && bot_name(ps, bn, sizeof bn));
+        int npc = !nm[0] && !bot_name(ps, bn, sizeof bn) && npc_name(ps, nm, sizeof nm);
+        int is_bot = !npc && (host ? !is_pc(owner) : (!nm[0] && bot_name(ps, bn, sizeof bn)));
         if (is_bot && !nm[0] && !bot_name(ps, nm, sizeof nm)) snprintf(nm, sizeof nm, "-");
-        out_printf(o, "#%d %s%s%s", i, nm, ps == my_ps ? " (you)" : "", is_bot ? " [bot]" : "");
-        if (host && !is_bot && ps != my_ps) out_printf(o, " %dms", ps_ping_ms(ps));
-        if (host && !is_bot) { ps_key(ps, key, sizeof key); out_printf(o, " %s", key); }
+        out_printf(o, "#%d %s%s%s", i, nm, ps == my_ps ? " (you)" : "", is_bot ? " [bot]" : npc ? " [npc]" : "");
+        if (host && !is_bot && !npc && ps != my_ps) out_printf(o, " %dms", ps_ping_ms(ps));
+        if (host && !is_bot && !npc) { ps_key(ps, key, sizeof key); out_printf(o, " %s", key); }
         out_printf(o, "\n");
     }
 }
@@ -728,12 +743,12 @@ static void players_panel(void) {
             char nm[64], key[80], bn[64];
             UObject *ps = pa[i], *owner = ue_get_ptr(ps, "Owner");
             ps_name(ps, nm, sizeof nm);
-            int is_bot = !client ? !is_pc(owner) : !nm[0];   // a client: a nameless player state is a bot (or an NPC ally)
+            int npc = !nm[0] && !bot_name(ps, bn, sizeof bn) && npc_name(ps, nm, sizeof nm);
+            int is_bot = npc || (!client ? !is_pc(owner) : !nm[0]);   // a client: a nameless player state is a bot
             if (is_bot && !nm[0] && !bot_name(ps, nm, sizeof nm)) snprintf(nm, sizeof nm, "-");
-            (void)bn;
             ov_push_id(i);
             ov_table_next(); ov_text("%d", i);
-            ov_table_next(); ov_text("%s%s%s", nm, ps == my_ps ? " (you)" : "", is_bot ? " [bot]" : "");
+            ov_table_next(); ov_text("%s%s%s", nm, ps == my_ps ? " (you)" : "", npc ? " [npc]" : is_bot ? " [bot]" : "");
             ov_table_next();
             if (!client && !is_bot) {
                 ps_key(ps, key, sizeof key);

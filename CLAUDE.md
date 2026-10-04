@@ -29,7 +29,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
   - `netguard.c` outbound-traffic guard from DllMain (DNS/WinHTTP/TCP allowlist, EOS network off; `netguard`
     command, `netguard=` ini keys); docs/investigations/outbound-traffic.md.
-  - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<winpid>.log` (`b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
+  - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<yyyymmdd>-<hhmmss>-<winpid>.log` (last 20 kept: Wine reuses PIDs; tests `b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
   - `cards.c` host card-ownership override for remote players (interim).
   - `flashlight.c` manual flashlight toggle (`flashlight` command, `flashlight list`, ini hotkey); verified live.
     docs/investigations/flashlight.md.
@@ -423,7 +423,8 @@ Known issues / open:
   other's rich presence.
 - Steam's own relay sockets (in-process steamclient) bind 0.0.0.0. Fine: the promise is peer-to-peer play without
   official game servers (Steam is how friends connect), not an air gap; only the game's own UDP stays on loopback.
-- A client that disconnects before the saferoom-exit charge keeps its burn card. Skull totem points and duffel-bag
+- A client that disconnects before the saferoom-exit charge and doesn't come back keeps its burn card (one that rejoins
+  is charged: burn-cards.md §6). Skull totem points and duffel-bag
   rewards reach the client (verified, client-rewards.md §6b), but a remote player's duffel roll can't see what they
   own, so they may get a product they already have (a no-op).
 

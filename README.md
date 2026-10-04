@@ -115,7 +115,7 @@ Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `
 - **Play online / with Easy Anti-Cheat** without removing the mod: add `-b4bcoop=off` to the launch options (Steam →
   right-click Back 4 Blood → Properties → Launch Options). The game then starts normally. Remove it again to play
   co-op.
-- **The log**: `Gobi\Binaries\Win64\b4bcoop-<number>.log` (the newest one). Its first lines show the version, e.g.
+- **The log**: `Gobi\Binaries\Win64\b4bcoop-<date>-<time>-<number>.log` (the newest one; the last 20 are kept). Its first lines show the version, e.g.
   `b4bcoop 0.3.0 (protocol 1)`. No new log after starting the game = the mod didn't load.
 - **Windows**: this install layout hasn't been tested on a Windows PC yet (it has on Linux and Steam Deck's Proton). If
   the mod doesn't load there, please [open an issue](../../issues) and attach `Gobi\Binaries\Win64\b4bcoop-launcher.log`
