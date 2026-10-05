@@ -18,6 +18,7 @@ void travel_set_host(const char *addr);
 void travel_tick(float dt);
 void travel_on_handshake_failed(void);
 int travel_following(void);            // client: in travel.c's rejoin window after following a server travel
+void travel_end_follow(const char *why);  // client: the host refused the follow with a reason: no more rejoins
 void cmds_join_failed(const char *why); // uelog.c: our pending join failed (retry soon, from our camp)
 void cmds_join_answered(void);         // uelog.c: our pending join's DTLS handshake completed
 int cmds_join_take_closed(void);       // travel.c: 1 = drop this ?closed travel (failed join, stay in our camp)
@@ -68,6 +69,7 @@ int testing_cmd(const char *verb, char *rest, Out *o); // testing.c (dev builds)
 int teamsize_init(void);
 int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled (also chat /teamsize)
 int teamsize_get(void);                                  // teamsize= (0 = the game's)
+int dialogue_init(void);                                 // dialogue.c: one cutscene VO line per cue on clients
 int lineup_init(void);                                   // lineup.c: 5th+ hero in the character lineups (#8)
 int lineup_cmd(const char *verb, char *rest, Out *o);    // dev builds: `lineup [off dx dy | fov deg | apply]`
 void teamsize_tick(float dt);
@@ -101,6 +103,8 @@ void chat_local(const char *fmt, ...);  // local-only chat line(s)
                                          //     agents without a handler and clients without b4bcoop ignore it
 FName chat_notice_type(int kind);        // 0 notice, 1 kick, 2 data
 void chat_local_later(const char *text); // show after the next map load (e.g. why a join was refused)
+void chat_local_soon(const char *text);  // show once no game popup covers the screen (no map change needed)
+void chat_refusal_popup(const char *msg); // put a refused join's reason on the game's popup about it
 void chat_on_join_failed(const char *error);  // uelog.c: PendingConnectionFailure on this client
 void cmds_auto_join_stop(void);        // client: no more ini auto-join attempts this session
 const char *cmds_last_join_target(void); // the target of the last join attempt, as given ("steam:<id64>", "ip[:port]")

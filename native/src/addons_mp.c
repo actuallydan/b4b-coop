@@ -356,6 +356,13 @@ int addons_login_check(const char *claim, const char *summary, const char *name,
 
 // /addons policy [x]; /addons players is gone (#35). Returns 1 if handled.
 int addons_mp_slash(const char *sub, char *arg, Out *o) {
+#ifndef B4B_RELEASE
+    if (!strcmp(sub, "unseat")) {   // dev: forget who was seated, so the next reconnect (mission start) meets the policy
+        out_printf(o, "addons: %d seated player(s) forgotten\n", n_seated);
+        n_seated = 0;
+        return 1;
+    }
+#endif
     if (!strcmp(sub, "players") || !strcmp(sub, "who")) {
         out_printf(o, "/addons players: gone. Which add-ons someone has stays on their PC (joiners check themselves against "
                       "the host's policy). Yours: /addons\n");

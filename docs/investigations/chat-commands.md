@@ -91,8 +91,11 @@ All commands also exist on the agent CLI: `kick ban unban bans lock unlock bots 
   We set both the slot manager's and the game mode's flag right before `InitSlots` (hook shared with `teamsize.c`).
   Verified: `/bots off`, next chapter (seamless travel) had slots 2-3 empty and a 2-hero HUD. Only tried on one
   chapter start; a full mission with 2 heroes was not played through.
-- **Fort Hope popups:** a refused join shows the game's generic "Unable to join the session" popup; our reason is
-  queued and shown as a chat line once the popup is closed.
+- **Fort Hope popups:** a refused join used to show the game's generic "Unable to join the session" popup with our
+  reason only as a chat line after it. Since a failed join stays in the camp (#41) the game shows no popup at all.
+  Since 0.9.3 chat.c shows the host's reason in a popup (title "COULD NOT JOIN"): a game message popup that opens within
+  30 s gets `MessagePopupUserWidget::SetText`, else our own (`UIBlueprintFunctionLibrary.OpenMessagePopup`) once the
+  camp has settled; logged `chat: refusal popup: ...`. The chat line follows (`chat_local_soon`: no map change needed).
 
 ## Testing
 

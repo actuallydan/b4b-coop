@@ -165,6 +165,27 @@ AdjustSupplyPoints (73) to remote player offline.76561198994546085`). Profiles a
 client SP +73 and Burn_RollGunAR.spent +1; host Burn_RollGunHG.spent +1 and its own SP +73; neither got the other's
 card.
 
+## Refusals with a reason (0.9.3)
+Two gaps after the changes above:
+- **Blind rejoins after a refused follow.** When the host refused a reconnect at a mission start (add-ons, version,
+  ban, lock, full), chat.c stopped the join loop, but travel.c's rejoin window kept reopening the same login URL
+  (up to 20 times, every 5 s; without the add-on claim, so an add-on check could never pass that way).
+  Now `travel_end_follow()` closes the window on any refusal with a reason; the `?closed` takes the client back to
+  its own camp and the join loop decides: add-ons failing / another version / banned stop, "Server full." / locked /
+  not a friend try again in 60 s, a passed add-on check rejoins with `?b4bcoopaddonsok=`.
+- **The reason was easy to miss.** A failed join stays in the camp now, so the game shows no popup (its
+  `Queued disconnect error` is never shown, also not on the next map load), only a loading screen, and
+  `chat_local_later` waited for a map change. Now chat.c puts the reason in a popup: a game message popup that opens
+  within 30 s gets `SetText` ("COULD NOT JOIN" + the reason), else our own (`UIBlueprintFunctionLibrary.
+  OpenMessagePopup`, OK) once the camp has settled; the chat line follows (`chat_local_soon`: no map change needed).
+Live (lane 2, dev build, 2026-10-05; host `addons_policy=none`, client with a cosmetic add-on):
+- fresh join: 1 attempt, `auto: join ... stopped`, `chat: refusal popup: opened ours: This host allows no add-ons;
+  turn off Walker checker outfit ...` (screenshot: popup with that text), host `asked to check` once.
+- refused follow (host `/addons policy none`, dev `/addons unseat`, `mission Easy`): `travel: not rejoining ...:
+  refused: add-ons`, own camp, `chat: refusal popup: the game's .../MessagePopup_WBP_C_... now says: ...`, 1 attempt.
+- locked (`/lock`, `/kick 1`, client `join`): `The host locked the session.`, `next attempt in 60s`, our popup
+  "... Trying again in a minute."; after `/unlock` the next attempt (18:46:58, 57 s later) connected.
+
 ## Open
 - Two accounts on one machine connect directly (`relay=0`); the relay path across networks is still unchecked.
 - Not covered by the two-account run: clicking Join Game / an invite in Steam's own UI, and a Join Game with the game

@@ -173,6 +173,27 @@ Visual checks by screenshots on both windows (kept out of git), state checks wit
   Then the act ending is a **pre-rendered video** (`PreRenderedCinematicScreen`, `CinematicDefs_DT` row `Cinematic3`,
   WmfMedia): its survivors are baked in and can't show added outfits. The act-end lineup after it shows both added
   outfits on host and client.
+  The movie (checked 2026-10-05 in the pak indexes and the assets): `Gobi/Content/Movies/Cinematic3.mp4`
+  (pakchunk5), played through the `FileMediaSource` `/Game/UI/Video/Cinematic3_MediaSource` (`FilePath` =
+  `./Movies/Cinematic3.mp4`; `CinematicDefs_DT` row `Cinematic3`) by `/Game/UI/Screens/PreRenderedCinematicScreen_WBP`
+  with the `MediaPlayer` `/Game/UI/Video/MediaPlayer` (texture `MediaPlayer_Video`); its subtitles come from
+  `/Game/UI/Video/Cinematic3_SubtitleTiming_DT` (rows `Dx_PR_301_002`..`011`: Walker, Rogers, Mom, Hoffman,
+  Phillips; `GobiMediaSubtitleHelperSubsystem.RegisterMediaPlayer`). Acts 1/2/4 end the same way (`Cinematic1`/`2`/`4`;
+  TU11/TU15 have their own under `/Game/TU11|TU15/UI/Video/`). A pre-rendered video: **not something an outfit
+  add-on can change** (don't report it as a #37 miss).
+- **Doubled subtitle on clients (ours, fixed 2026-10-05)**: the CDC_D cutscene's radio lines (Rogers) come from
+  `Comms_DialogueSpeaker::PlayClientCinematicVO(ResponseGroup)`, which the level calls on every machine: it picks a
+  line of the group and has the speaker's `GobiDialogueComponent` play it (vtable +0x410 = 0x141620240, which also
+  posts the subtitle). On the machine with authority that play also lands in the component's replicated
+  `DialogueInfo`, so on our listen-server host its pick reached each client through `OnRep_DialogueInfo`
+  (0x140EDBA20) while the client's level had already played its own pick: two lines and two subtitles on clients
+  (different lines, or the same line twice when the group has one), one on the host. Retail never had this (online
+  co-op ran on dedicated servers; offline is solo). Probe: dev `subprobe on` (logs every HUD subtitle with its call
+  stack): host 1 line (stack via PlayClientCinematicVO), client 2 (one via PlayClientCinematicVO, one via
+  ProcessEvent of the RepNotify). Fix `native/src/dialogue.c` (clients, `Comms_DialogueSpeaker` only): the second
+  of the two within 4 s is dropped, whichever comes first; log `dialogue: cutscene line from ...`. After: client 1
+  subtitle per cue (`dialogue: cutscene line from our level skipped: the host's arrived 0.0s ago`). Not compared
+  with a `-b4bcoop=off` solo run (can't reach CDC_D unattended); solo has no second machine to replicate from.
 - Dev: `mdl standins [PlayerStandIn|CustomizationMannequin]` (set + mesh components of every such actor).
 
 ## Limits / open

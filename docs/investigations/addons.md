@@ -181,8 +181,9 @@ join side in `cmds.c` `cmd_join`, `presence.c` `handle_connect`, `chat.c` `chat_
   camp with the claim (`cmds_join_retry`, quietly), fail -> the local message, no retry. The host then only learns
   "asked, didn't come back", like any aborted join. A note from a refusal only feeds the claim, never a local refusal
   (the host may change its policy); presence notes are re-read at every join. Two refusals within 60 s after passing
-  -> stop ("keeps asking"). The refusal costs one round trip and shows the game's "Unable to join" popup, which the
-  successful rejoin replaces.
+  -> stop ("keeps asking"). The refusal costs one round trip (no popup: a failed join stays in the camp, #41). A
+  failing check shows the reason in a popup ("COULD NOT JOIN") and the chat, and also ends the rejoin window of a
+  mission-start reconnect at once (join-timing.md "Refusals with a reason").
 - **Host keeps and shows nothing**: `/addons players` and the Add-ons tab's players table are gone (`/addons players`
   answers that it's gone). Log: only `checked its add-ons against addons_policy=<p>` / `asked to check` / for an older
   client `refused by addons_policy=<p> (an older b4bcoop; its add-on list isn't logged)`. `log_redact_addons` (log.c)

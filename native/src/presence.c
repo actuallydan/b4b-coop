@@ -401,7 +401,7 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
     if (!parse_connect(connect, targets, sizeof targets, proto, ver, addons)) {
         LOG("presence: %s from %llu is not a b4bcoop join, ignored: %s", source, (unsigned long long)friend_id, connect);
         if (strstr(connect, JOIN_TOKEN) && !coop_host_ip())   // an IP-only host (host_ip=1 there, not here)
-            chat_local_later("That host only takes joins by IP address, which are off here (host_ip=0).");
+            chat_local_soon("That host only takes joins by IP address, which are off here (host_ip=0).");
         return;
     }
     LOG("presence: %s from %llu: \"%s\" -> %s (host protocol %s, version %s)", source, (unsigned long long)friend_id,
@@ -415,7 +415,7 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
         updater_note_host(ver, proto);   // the ~ window's Updates tab offers that version
         snprintf(line, sizeof line, "Could not join: %s%s", msg, ver[0] ? updater_hint() : "");
         if (ue_local_pc() && !signin_on_title()) chat_local("%s", line);
-        else chat_local_later(line);   // shown once the player is in Fort Hope
+        else chat_local_soon(line);   // shown once the player is in Fort Hope
         return;
     }
     addons_note_host(targets, addons[0] ? addons : NULL);   // its addons_policy; we check ourselves, nothing is sent
@@ -424,7 +424,7 @@ static void handle_connect(const char *connect, uint64_t friend_id, const char *
         char line[440];
         snprintf(line, sizeof line, "Could not join: %s", amsg);
         if (ue_local_pc() && !signin_on_title()) chat_local("%s", line);
-        else chat_local_later(line);
+        else chat_local_soon(line);
         return;
     }
     cmds_set_session_join(targets);

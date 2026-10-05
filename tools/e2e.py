@@ -111,15 +111,32 @@ def screenshot(n, name):
     sh([os.path.join(REPO, "launch/shot.sh"), str(n), os.path.join(OUT, name)], timeout=30)
 
 
+def log_snapshot(n):
+    """mtime of every existing b4bcoop-test<n>-*.log, taken before a launch (GameLog: written since = this launch's)."""
+    out = {}
+    for p in glob.glob(os.path.join(BIN, f"b4bcoop-test{n}-*.log")):
+        try: out[p] = os.path.getmtime(p)
+        except OSError: pass
+    return out
+
+
 class GameLog:
-    """The agent log of instance n from this launch (b4bcoop-test<n>-<winpid>.log, rewritten per process)."""
-    def __init__(self, n, since):
+    """The agent log of instance n from this launch (b4bcoop-test<n>-<winpid>.log, rewritten per process).
+    Wine hands out the same few Windows PIDs, so the previous session's log can have this session's name, or another
+    name with an mtime just after this launch's start (its game was stopped a moment before). Only a log written after
+    the launch counts: a new file, or one whose mtime moved past its snapshot (the new process truncated it)."""
+    def __init__(self, n, since, before=None):
         self.n, self.since, self.path, self.mark_pos = n, since, None, 0
+        self.before = before if before is not None else log_snapshot(n)
 
     def find(self):
         if not self.path:
-            c = [p for p in glob.glob(os.path.join(BIN, f"b4bcoop-test{self.n}-*.log")) if os.path.getmtime(p) >= self.since]
-            if c: self.path = max(c, key=os.path.getmtime)
+            c = []
+            for p in glob.glob(os.path.join(BIN, f"b4bcoop-test{self.n}-*.log")):
+                try: m = os.path.getmtime(p)
+                except OSError: continue
+                if m >= self.since and (p not in self.before or m > self.before[p]): c.append((m, p))
+            if c: self.path = max(c)[1]
         return self.path
 
     def text(self, since_mark=True):
@@ -305,7 +322,7 @@ class Session:
         """multi.sh n. wait=True: returns multi.sh's success (host sees n players)."""
         self.prepare()
         self.start = time.time() - 2
-        self.logs = {i: GameLog(i, self.start) for i in range(1, self.n + 1)}
+        self.logs = {i: GameLog(i, self.start, log_snapshot(i)) for i in range(1, self.n + 1)}
         env = {"B4B_INI_EXTRA": self.ini_extra, "B4B_TIMEOUT": str(self.timeout)}
         out = os.path.join(OUT, f"{self.name}-multi.out")
         log(f"launch {self.name}: multi.sh {self.n} {('(' + self.ini_extra + ')') if self.ini_extra else ''}")

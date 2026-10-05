@@ -22,6 +22,15 @@ void travel_set_host(const char *addr) { snprintf(host_addr, sizeof host_addr, "
 // Client: within the rejoin window after following the host's server travel (cmds.c leaves rejoins to us then)
 int travel_following(void) { return host_addr[0] && now_s < follow_until && retries_left > 0; }
 
+// Client: the host refused the follow's login with a reason (chat.c: add-ons, version, ban, lock, full): retrying the
+// same URL can't help, so end the rejoin window now; the `?closed` that follows takes us back to our own camp, where
+// the join loop (cmds.c) decides what's next.
+void travel_end_follow(const char *why) {
+    if (!travel_following() && retry_at == 0) return;
+    LOG("travel: not rejoining %s: %s", host_addr, why);
+    follow_until = 0; retries_left = 0; retry_at = 0;
+}
+
 // Client: a follow attempt that reached the host before it finished loading fails the DTLS handshake and
 // then hangs in PendingNetGame; restart the join shortly instead of waiting for the connect timeout.
 void travel_on_handshake_failed(void) {

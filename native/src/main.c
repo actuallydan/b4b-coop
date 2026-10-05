@@ -123,6 +123,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     burncards_init();
     teamsize_init();
     lineup_init();
+    dialogue_init();
     slotguard_init();
     chat_init();
     admin_init();
