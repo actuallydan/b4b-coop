@@ -173,6 +173,14 @@ Visual checks by screenshots on both windows (kept out of git), state checks wit
   Then the act ending is a **pre-rendered video** (`PreRenderedCinematicScreen`, `CinematicDefs_DT` row `Cinematic3`,
   WmfMedia): its survivors are baked in and can't show added outfits. The act-end lineup after it shows both added
   outfits on host and client.
+  The movie (checked 2026-10-05 in the pak indexes and the assets): `Gobi/Content/Movies/Cinematic3.mp4`
+  (pakchunk5), played through the `FileMediaSource` `/Game/UI/Video/Cinematic3_MediaSource` (`FilePath` =
+  `./Movies/Cinematic3.mp4`; `CinematicDefs_DT` row `Cinematic3`) by `/Game/UI/Screens/PreRenderedCinematicScreen_WBP`
+  with the `MediaPlayer` `/Game/UI/Video/MediaPlayer` (texture `MediaPlayer_Video`); its subtitles come from
+  `/Game/UI/Video/Cinematic3_SubtitleTiming_DT` (rows `Dx_PR_301_002`..`011`: Walker, Rogers, Mom, Hoffman,
+  Phillips; `GobiMediaSubtitleHelperSubsystem.RegisterMediaPlayer`). Acts 1/2/4 end the same way (`Cinematic1`/`2`/`4`;
+  TU11/TU15 have their own under `/Game/TU11|TU15/UI/Video/`). A pre-rendered video: **not something an outfit
+  add-on can change** (don't report it as a #37 miss).
 - Dev: `mdl standins [PlayerStandIn|CustomizationMannequin]` (set + mesh components of every such actor).
 
 ## Limits / open
