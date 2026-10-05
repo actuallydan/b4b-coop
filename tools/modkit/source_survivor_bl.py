@@ -17,7 +17,10 @@ What it changes on the way (SourceIO keeps the Source look; glTF and the modkit 
     Eye bones `eye_L` / `eye_R` (none in Source rigs) are added at the eyeball origins with the eyeballs on them.
   - face flexes renamed so the modkit's face rigger finds them: the largest jaw-drop flex (FACS AU27/AU26, "Z"
     variant first) -> `jaw_open`, the upper-eyelid closer (eyelid flex f01, the one that moves the lids down) ->
-    `blink`; all other flexes removed (they would only be dropped by the fit).
+    `blink`; all other flexes removed (they would only be dropped by the fit). A lid closer that travels well past the
+    eye opening (Nick's: 2.1x) is scaled down so the lid stops at the lower lid.
+  - slivers folded inside out (tiny triangles whose corner normals all point away from the face) are merged to a point:
+    the fit stretched one open into a dark pocket on Nick's sleeve.
 """
 import bpy, addon_utils, os, re, sys
 import numpy as np
@@ -194,6 +197,47 @@ for m in list(bpy.data.materials):
         bpy.data.materials.remove(m)
 
 # ---- flexes
+BLINK_OVERSHOOT = 1.25   # a lid closer that travels more than this times the eye opening is scaled down to close it
+BLINK_CLOSE = 1.05       # ... to this: the upper lid edge just meets the lower lid
+
+
+def blink_scale(o, base, d):
+    """Source's upper-lid lowerer frame (f01) is mostly the closed lid, but not always: Nick's (survivor_gambler)
+    travels 1.05 cm across an opening of 0.56 cm, so at full weight the upper lid slid down behind the lower lid and the
+    blink showed the eye socket (a dark, ragged hole). The opening is measured under the lid edge (the vertices the key
+    moves most, eyeballs left out): the nearest skin vertex below each, its rise with the key counts too.
+    Returns (scale, note); 1.0 when the key closes the eye within BLINK_OVERSHOOT."""
+    M = np.array(o.matrix_world)
+    bw = base @ M[:3, :3].T + M[:3, 3]
+    dw = d @ M[:3, :3].T
+    me = o.data
+    eye = np.zeros(len(bw), bool)
+    for p in me.polygons:
+        m = me.materials[p.material_index] if p.material_index < len(me.materials) else None
+        if m is not None and "eye" in m.name.lower():
+            eye[list(p.vertices)] = True
+    L = np.linalg.norm(dw, axis=1)
+    ratios, gaps = [], []
+    for side in (1, -1):
+        sel = np.where((L > 1e-6) & (np.sign(bw[:, 0]) == side) & ~eye & (dw[:, 2] < 0))[0]
+        if len(sel) < 6: continue
+        mx = -dw[sel, 2].min()
+        for v in sel[-dw[sel, 2] > 0.8 * mx]:
+            p = bw[v]
+            c = np.where(~eye & (np.abs(bw[:, 0] - p[0]) < 0.002) & (np.abs(bw[:, 1] - p[1]) < 0.004)
+                         & (bw[:, 2] < p[2] - 0.0005) & (bw[:, 2] > p[2] - 0.03) & (dw[:, 2] > -0.3 * mx))[0]
+            if not len(c): continue
+            q = c[np.argmax(bw[c, 2])]
+            gap = p[2] - bw[q, 2]
+            if gap > 1e-4:                            # the lids close by the upper edge's drop + the lower lid's rise
+                ratios.append((-dw[v, 2] + dw[q, 2]) / gap); gaps.append(gap)
+    if len(ratios) < 4:
+        return 1.0, "eye opening not measured"
+    r = float(np.median(ratios))
+    how = f"the lid edge moves {r:.2f}x the eye opening ({np.median(gaps) * 100:.2f} cm)"
+    return (BLINK_CLOSE / r, how) if r > BLINK_OVERSHOOT else (1.0, how)
+
+
 for o in meshes:
     sk = o.data.shape_keys
     if not sk or KEEP_FLEX:
@@ -218,6 +262,10 @@ for o in meshes:
         log(f"{o.name}: flex {jaw.name} -> jaw_open"); jaw.name = "jaw_open"; keep.add("jaw_open")
     if blink is not None:
         log(f"{o.name}: flex {blink.name} -> blink"); blink.name = "blink"; keep.add("blink")
+        s, how = blink_scale(o, base, move(blink))
+        if s < 1.0:
+            blink.data.foreach_set("co", (base + move(blink) * s).ravel())
+            log(f"{o.name}: blink scaled x{s:.2f}: {how}")
     for k in list(kb):
         if k.name not in keep:
             o.shape_key_remove(k)
@@ -262,6 +310,43 @@ if eye_objs:
                 o.vertex_groups[g.group].remove([v])
             groups[nm].add([v], 1.0, "REPLACE")
         log(f"{o.name}: eye bones {', '.join(n for n, _ in names)}, {len(vs)} eyeball vertices on them")
+
+# ---- slivers folded inside out: a few triangles of under 0.2 cm2 whose every corner normal points away from the face
+# (the surface doubles back on itself there; invisible in Source). The fit moves the joints and stretches such a
+# fold open: on Nick's left elbow 0.03 cm2 became a 3 cm2 dark pocket on the sleeve in first person. Each one's corners
+# are merged into one point (shape keys and weights kept), which closes the fold.
+SLIVER_M2 = 0.2e-4
+
+
+def slivers(o):
+    me = o.data
+    s2 = o.matrix_world.to_scale()[0] ** 2
+    cn = me.corner_normals
+    return [p.index for p in me.polygons if p.area * s2 < SLIVER_M2 and
+            max(cn[li].vector.dot(p.normal) for li in p.loop_indices) < 0]
+
+
+for o in meshes:
+    fold = slivers(o)
+    if not fold:
+        continue
+    bpy.context.view_layer.objects.active = o
+    for x in bpy.context.selected_objects: x.select_set(False)
+    o.select_set(True)
+    n0, merged = len(fold), 0
+    while fold and merged < n0:            # one at a time (SourceIO's meshes don't take bmesh.from_mesh)
+        me = o.data
+        vs = set(me.polygons[fold[0]].vertices)
+        for v in me.vertices: v.select = v.index in vs
+        for e in me.edges: e.select = False
+        for p in me.polygons: p.select = False
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="VERT")
+        bpy.ops.mesh.merge(type="CENTER")
+        bpy.ops.object.mode_set(mode="OBJECT")
+        merged += 1
+        fold = slivers(o)
+    log(f"{o.name}: {merged} sliver(s) folded inside out closed (faces under {SLIVER_M2 * 1e4:.1f} cm2)")
 
 # ---- clean up: attachments and eyeball empties go; one armature + its meshes stay
 for o in list(bpy.data.objects):

@@ -471,7 +471,7 @@ def generic_map(arm, cands):
             fingers.setdefault((part, sd), []).append((k, n))
         elif part in ("clavicle", "upperarm", "lowerarm", "hand", "thigh", "calf", "foot", "ball", "jaw"):
             key = "jaw" if part == "jaw" else f"{part}_{sd}"
-            if key not in out or depth_bone(arm.data.bones[n]) < depth_bone(arm.data.bones[out[key]]):
+            if key not in out or bone_rank(arm.data.bones[n]) < bone_rank(arm.data.bones[out[key]]):
                 out[key] = n            # the segment nearest the root (Rigify: upper_arm.L, not upper_arm.L.001)
     # finger chains: the three bones nearest the hand, by depth (1-based numbering or not)
     # when the finger's bones hold a parent -> child chain of three, that chain: a separate bone of the same finger next
@@ -599,7 +599,7 @@ def build_bonemap(arm, targets, user_map=None, meshes=()):
             best[k] = v
     # one source bone per target: keep the one nearest the root
     seen = {}
-    for sb in sorted(best, key=lambda n: depth_bone(arm.data.bones[n])):
+    for sb in sorted(best, key=lambda n: bone_rank(arm.data.bones[n])):
         t = best[sb]
         if t not in seen: seen[t] = sb
     return {sb: t for t, sb in seen.items()}, kind
@@ -665,6 +665,14 @@ def depth_bone(b):
     d = 0
     while b.parent: b = b.parent; d += 1
     return d
+
+
+def bone_rank(b):
+    """Which of two bones named for the same segment is it: the one nearest the root, then the one the limb goes on
+    from (more bones below it). Source rigs have a helper `Bip01_R_Knee` beside `Bip01_R_Calf`, both under the thigh at
+    the knee: whichever came first in the file was taken, and on Coach and Rochelle that was the helper, so the shin
+    stayed on the thigh (in a crouch the lower leg swung out sideways and the boot flattened)."""
+    return (depth_bone(b), -len(b.children_recursive))
 
 
 # segment end used to aim each template bone (its "tail"): the head of the first of these that is mapped
