@@ -596,6 +596,54 @@ show:
     out_printf(o, "%d probe(s)\n", n_fnp);
 }
 
+// ---- subprobe: log every subtitle line the HUD shows (doubled-subtitle check, model-swap.md #37) ----
+// subprobe [on|off]   hook USubtitleListUserWidget::ShowSubtitle and log each call: widget, text, display time and the
+//                     call stack (static VAs) that asked for it
+#define ADDR_SHOWSUB VA(0x141E6CFE0ull)   // void ShowSubtitle(this, EDialogueAudioResult, const FText&, const FSlateColor&, float)
+static const uint8_t SIG_SHOWSUB[] = {0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x48,0x89,0x7c,0x24,0x18,0x55,
+                                      0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24};
+typedef void (*ShowSubFn)(UObject *w, uint8_t res, const void *text, const void *color, float t);
+static ShowSubFn orig_showsub;
+static unsigned n_showsub;
+static void showsub_text(const void *ftext, char *buf, size_t n) {
+    buf[0] = 0;
+    UClass *k = ue_find_class("KismetTextLibrary");
+    UObject *cdo = k ? UC_CDO(k) : NULL;
+    UFunction *f = cdo ? ue_find_function(U_CLASS(cdo), "Conv_TextToString") : NULL;
+    FField *in = f ? ue_find_prop((UStruct *)f, "InText") : NULL, *rv = f ? ue_find_prop((UStruct *)f, "ReturnValue") : NULL;
+    if (!in || !rv || UFN_PARMSSIZE(f) > 64) return;
+    uint8_t p[64] = {0};
+    memcpy(p + FP_OFFSET(in), ftext, 0x18);
+    ue_process_event(cdo, f, p);
+    FString *s = (FString *)(p + FP_OFFSET(rv));
+    size_t j = 0;
+    for (int i = 0; s->data && i < s->num && s->data[i] && j + 1 < n; i++) buf[j++] = s->data[i] < 128 ? (char)s->data[i] : '?';
+    buf[j] = 0;
+}
+static void showsub_det(UObject *w, uint8_t res, const void *text, const void *color, float t) {
+    char s[200], path[200], stack[200];
+    void *bt[8];
+    USHORT nb = RtlCaptureStackBackTrace(1, 8, bt, NULL);
+    size_t k = 0;
+    for (USHORT i = 0; i < nb && k < sizeof stack - 20; i++)
+        k += (size_t)snprintf(stack + k, sizeof stack - k, " %llx", (unsigned long long)((uintptr_t)bt[i] - g_base_delta));
+    stack[k] = 0;
+    showsub_text(text, s, sizeof s);
+    LOG("subprobe: #%u %s res=%u t=%.1f \"%s\" stack%s", ++n_showsub, w ? ue_full_path(w, path, sizeof path) : "-", res, t, s, stack);
+    orig_showsub(w, res, text, color, t);
+}
+static void cmd_subprobe(char *rest, Out *o) {
+    static int hooked;
+    int off = rest && !strncmp(rest, "off", 3);
+    if (!hooked && !off) {
+        if (memcmp((void *)ADDR_SHOWSUB, SIG_SHOWSUB, sizeof SIG_SHOWSUB)) { out_printf(o, "subprobe: signature mismatch\n"); return; }
+        if (MH_CreateHook((void *)ADDR_SHOWSUB, (void *)showsub_det, (void **)&orig_showsub) != MH_OK) { out_printf(o, "subprobe: hook failed\n"); return; }
+        hooked = 1;
+    }
+    if (hooked) { if (off) MH_DisableHook((void *)ADDR_SHOWSUB); else MH_EnableHook((void *)ADDR_SHOWSUB); }
+    out_printf(o, "subprobe %s, %u subtitle(s) logged\n", off ? "off" : "on", n_showsub);
+}
+
 // ---- faces (model mods #23: custom heads on the survivors' face bones; docs/investigations/mesh-mods.md §12) ----
 // face                          list heroes (index, mesh)
 // face <hero#> [bone...]        each face bone's current rotation/offset from the mesh's reference pose (parent space)
@@ -789,6 +837,7 @@ static void cmd_face(char *rest, Out *o) {
 int testing_cmd(const char *verb, char *rest, Out *o) {
     if (!strcmp(verb, "face")) { cmd_face(rest, o); return 1; }
     if (!strcmp(verb, "fnprobe")) { cmd_fnprobe(rest, o); return 1; }
+    if (!strcmp(verb, "subprobe")) { cmd_subprobe(rest, o); return 1; }
     if (!strcmp(verb, "stp")) { cmd_stp(rest, o); return 1; }
     if (!strcmp(verb, "items")) { nth_pickup(-1, rest && *rest ? rest : NULL, o); return 1; }
     if (!strcmp(verb, "giveitem")) { cmd_giveitem(rest, o); return 1; }
