@@ -120,7 +120,7 @@ answered (`cmds_join_answered`).
 which fail the default cosmetic policy, so the client stops joining (correct behaviour, but it fails e2e's join).
 Since #43 the default policy is `any`, so this no longer applies.
 
-## Two-account check (to run; needs Dan's account free)
+## Two-account check
 Steam's friends-list **Join Game** is `steam://rungame/924970/<friend id64>/<url-encoded connect string>` in the
 Steam client (steamui `JoinGame` → `steam://rungame/<app>/<id>/<connect>`); with the game running Steam posts
 `GameRichPresenceJoinRequested_t` (337) to it, so opening that URL in the client's Steam is the real Join Game path
@@ -129,7 +129,7 @@ Steam client (steamui `JoinGame` → `steam://rungame/<app>/<id>/<connect>`); wi
 2. Native Steam signed in to Hergmgurk, `native-steam-in-use` absent; then `launch/flatpak-steam.sh start` (the native
    client first, so each owns its own service port; run.sh passes the right `Steam3Master` either way).
 3. Install the build in both lanes: `launch/install.sh` and `B4B_STEAM=flatpak launch/install.sh`.
-4. `tools/jointest2acct.py /tmp/b4b-2acct camp*3 title*2 mload*3 m2c*2`: host = lane 1 test1 (`-Port=7787`), client
+4. `tools/jointest2acct.py /tmp/b4b-2acct camp*3 mload*3 mpre*3 m2c*2 lobby*3 play*3 invite*2 session*2`: host = lane 1 test1 (`-Port=7787`), client
    = lane 2 test1; the client reads the host's connect from its own Steam (`friends`), its Steam opens the rungame
    URL (`flatpak enter <instance> .../ubuntu12_32/steam steam://rungame/...`). Pass = client log `presence: steam
    join request from <host id>` (callback 337), connected, same map (mission cells: Evansburgh_B with a hero);
@@ -138,8 +138,37 @@ Steam client (steamui `JoinGame` → `steam://rungame/<app>/<id>/<connect>`); wi
    `NotifyAcceptedConnection` per attempt, no 180 s wait), `m2c` (`travel: not kicking`, the client follows), `title`
    (callback arms the Offline sign-in, joins after it). Then release both locks.
 
+### Result (2026-10-05, 0.9.2 dev build, one machine: native Steam Hergmgurk hosts, Flatpak Steam dreamsofants joins)
+Every join went through Steam's real Join Game path (rungame URL in the client's Steam → callback 337 in the running
+game) over Steam P2P between the two accounts (`steamnet`: peer `active=1 relay=0 policy=allowed`, 1 session request).
+Artifacts `/tmp/b4b-2acct/{matrix,mpre,session}/`.
+
+| cell | pass | s (click → in) | notes |
+|---|---|---|---|
+| camp | 3/3 | 6 | one attempt |
+| mload (host starts the mission at the click) | 3/3 | 10-11 | one attempt: the P2P session setup (~5 s) outlasts the host's load, the handshake completes in the mission |
+| mpre (host starts the mission 2-4 s after the click, mid-handshake) | 3/3 | 14-17 | reps 1-2: DTLS failure → retry 3 s later as a **new connection on the host** (2 × `NotifyAcceptedConnection`, the second completes at once, no 180 s wait); rep 3: in before the travel, then followed |
+| m2c | 2/2 | 17-18 | `travel: not kicking`; the host's travel went out while the client still loaded the camp (no PlayerController yet), so the client got "Host closed the connection" when the host's driver closed, and the join loop got it in 3 s later. Same timing as on loopback (18 s) |
+| lobby | 3/3 | 7 | |
+| play | 3/3 | 10-11 | hot-join, bot handed over (`takeover`) |
+| invite (host `invite <id>` → InviteUserToGame `sent`; accepted with the invite's connect string) | 2/2 | 6 | accepting is the same rungame URL the invite's Join button opens; Steam's own invite UI was not clicked |
+| session (below) | 2/2 | | |
+
+So the per-socket P2P address change is not broken: over two real accounts the retry after a failed handshake is a
+fresh connection and lands in seconds; the one-account p2p failures (above) were the one-account packet loss.
+
+`session` = join in camp (6 s), host `mission Easy` → client follows (10 s, 2 human slots), client plays
+Burn_RollGunAR and host Burn_RollGunHG, client `leave`s and comes back through Join Game mid-mission (4-6 s, bot taken
+over), `ready` + saferoom charge (`charging b4bcoop.burn.0 -> remote player's profile (rejoined since the card was
+played)`, client `[CLIENT RPC] adjusting consumable Burn_RollGunAR by -1`), `endmission 1` (`forwarding
+AdjustSupplyPoints (73) to remote player offline.76561198994546085`). Profiles after the deferred save, both reps:
+client SP +73 and Burn_RollGunAR.spent +1; host Burn_RollGunHG.spent +1 and its own SP +73; neither got the other's
+card.
+
 ## Open
-- Two-account check over real Steam P2P (lane 1 native host + lane 2 Flatpak client): mload/m2c with `steam:`.
+- Two accounts on one machine connect directly (`relay=0`); the relay path across networks is still unchecked.
+- Not covered by the two-account run: clicking Join Game / an invite in Steam's own UI, and a Join Game with the game
+  closed (Steam-initiated launch); the client's title-screen cell (`title`) was not rerun.
 - One host crash in the after run (lobby:cold rep 2): the host alone, during its camp → mission LoadMap, in garbage
   collection (minidump: execute fault at a heap address, stack in GC/LoadMap); no client was connected and none of
   the changed code runs there. Earlier lanes have other sporadic crashes in map loads.

@@ -421,11 +421,12 @@ Known issues / open:
 - Not yet run on native Windows: netguard (WinHTTP path), rewards/burn cards/slot guard/5 players across machines,
   and the no-script launch (root `xinput1_3.dll` redirect + `X3DAudio1_7.dll`; test script in
   docs/investigations/launch.md §6). On Proton the `X3DAudio1_7.dll` agent is verified with a plain Steam launch.
-- All local test copies share one Steam id; two-account behavior is only covered by the one real session.
-- Steam Join Game/invites (`presence.c`), now the players' main join path: rich presence, launch-command-line join and
-  simulated join requests verified on one account; the real callback, the Join Game menu and Steam-initiated launch
-  need the two-account plan in docs/investigations/steam-invites.md (#10). Local copies on one account overwrite each
-  other's rich presence.
+- All local test copies share one Steam id; two accounts: native + Flatpak Steam on one machine (`tools/jointest2acct.py`).
+- Steam Join Game/invites (`presence.c`), now the players' main join path: the real callback 337 between two accounts
+  (rungame URL in the client's Steam, `tools/jointest2acct.py`) passed in every host state, incl. a retry after a
+  failed handshake, a mid-mission rejoin, burn-card charge and rewards (join-timing.md "Two-account check", 2026-10-05);
+  the Join Game menu click itself and a Steam-initiated launch are still unchecked (#10). Local copies on one account
+  overwrite each other's rich presence.
 - Steam's own relay sockets (in-process steamclient) bind 0.0.0.0. Fine: the promise is peer-to-peer play without
   official game servers (Steam is how friends connect), not an air gap; only the game's own UDP stays on loopback.
 - A client that disconnects before the saferoom-exit charge and doesn't come back keeps its burn card (one that rejoins
@@ -434,6 +435,6 @@ Known issues / open:
   own, so they may get a product they already have (a no-op).
 
 Next:
-1. Two-account test of Steam's own Join Game click / invite (#10; plan in docs/investigations/steam-invites.md).
+1. Steam's Join Game / invite clicked in Steam's own UI, and Join Game with the game closed (#10; steam-invites.md).
 2. Real multi-machine session on the new build (Windows client, launch.md §6): netguard, rewards, burn cards, 5
    players, and whether Windows shows any Firewall prompt.
