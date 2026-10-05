@@ -632,7 +632,7 @@ static int join_attempt(const char *target) {
         cmds_auto_join_stop();
         char line[440];
         snprintf(line, sizeof line, "Could not join: %s", join_refused_msg);
-        if (ue_local_pc() && !signin_on_title()) chat_local("%s", line); else chat_local_later(line);
+        if (ue_local_pc() && !signin_on_title()) chat_local("%s", line); else chat_local_soon(line);
     }
     return r;
 }
@@ -756,7 +756,7 @@ static void auto_tick(float dt) {
     if (join[0] && travel_following()) return;                  // travel.c rejoins after the host's server travel
     if (session_join[0] && auto_clock > session_until) {       // the host never answered: back to the ini
         LOG("auto: no connection to %s for %.0fs, giving up", session_join, JOIN_WINDOW);
-        chat_local_later("Could not join: no answer from the host for 3 minutes. Is it still hosting?");
+        chat_local_soon("Could not join: no answer from the host for 3 minutes. Is it still hosting?");
         cmds_set_session_join(NULL);
         return;
     }

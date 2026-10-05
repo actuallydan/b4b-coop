@@ -211,20 +211,30 @@ static UObject *next_open_popup(UObject *after) {
 }
 
 // ---- notices that must survive a map change (kick, refused join): shown once the next map has a local player,
-// no game popup is covering the screen, and a chat box takes the line ----
-static char later[256];
+// no game popup is covering the screen, and a chat box takes the line. chat_local_soon: no map change needed (a
+// refused join leaves us in our camp now, #41), only a world that has stayed the same for a few seconds ----
+static char later[440];
 static UObject *later_world;
 static float later_wait;
-static int later_tries;
+static int later_tries, later_any_world;
 void chat_local_later(const char *text) {
     snprintf(later, sizeof later, "%s", text);
     later_world = ue_world();
     later_wait = 4;
     later_tries = 0;
+    later_any_world = 0;
+}
+void chat_local_soon(const char *text) {
+    chat_local_later(text);
+    later_any_world = 1;
+    later_wait = 1;
 }
 
 static void later_tick(float dt) {
-    if (!later[0] || ue_world() == later_world || !ue_local_pc()) return;
+    if (!later[0]) return;
+    UObject *w = ue_world();
+    if (later_any_world && w != later_world) { later_world = w; later_wait = 3; return; }   // loading: wait until it settles
+    if ((!later_any_world && w == later_world) || !ue_local_pc()) return;
     if ((later_wait -= dt) > 0) return;
     later_wait = 2;
     if (++later_tries > 150) { LOG("chat: dropped notice: %s", later); later[0] = 0; return; }
@@ -233,8 +243,106 @@ static void later_tick(float dt) {
     later[0] = 0;
 }
 
-// A join attempt failed with an error from the host. Ours: banned or another b4bcoop version -> stop auto-join
-// (retrying can't help); locked / not a friend -> retry less often.
+// ---- a refused join's reason in a popup ----
+// The host's reason for a refusal (ours: add-ons, version, ban, lock, full, not a friend) used to reach only the chat,
+// after the game's own "unable to join" popup was closed; since a failed join stays in our camp (#41) the game shows
+// no popup at all, just a loading screen, and the chat line was easy to miss. Now the reason is a popup: a game
+// MessagePopupUserWidget that opens within 30 s of the refusal gets SetText(Title, Message) (the popups open at the
+// refusal are left alone, e.g. a "joining" throbber); if none opens, ours (UIBlueprintFunctionLibrary.OpenMessagePopup,
+// OK button) once the camp has settled: local player, chat box, no popup up, world unchanged for 2 s. The chat line
+// follows as before (chat_local_soon).
+static char pop_msg[440];
+static float pop_left, pop_settle;
+static UObject *pop_seen[8], *pop_world;   // popups open at the refusal or already rewritten; the world we wait in
+static int n_pop_seen;
+
+static int text_from(const char *s, void *ftext) {   // FText (0x18) from ASCII: KismetTextLibrary.Conv_StringToText
+    static UFunction *f; static UObject *cdo; static int32_t pi = -1, pr = -1;
+    if (!f) {
+        UClass *k = ue_find_class("KismetTextLibrary");
+        cdo = k ? UC_CDO(k) : NULL;
+        f = cdo ? ue_find_function(U_CLASS(cdo), "Conv_StringToText") : NULL;
+        FField *a = f ? ue_find_prop((UStruct *)f, "inString") : NULL, *r = f ? ue_find_prop((UStruct *)f, "ReturnValue") : NULL;   // sic
+        if (!a || !r || UFN_PARMSSIZE(f) > 64) { f = NULL; return -1; }
+        pi = FP_OFFSET(a); pr = FP_OFFSET(r);
+    }
+    static wchar_t w[512];
+    uint8_t p[64] = {0};
+    fstring_set((FString *)(p + pi), s, w, 512);
+    ue_process_event(cdo, f, p);
+    memcpy(ftext, p + pr, 0x18);   // the new text's reference is handed on (a few bytes leak per refusal)
+    return *(void **)ftext ? 0 : -1;
+}
+
+static int pop_was_seen(UObject *p) {
+    for (int i = 0; i < n_pop_seen; i++) if (pop_seen[i] == p) return 1;
+    return 0;
+}
+
+void chat_refusal_popup(const char *msg) {
+    snprintf(pop_msg, sizeof pop_msg, "%s", msg);
+    pop_left = 30;
+    pop_settle = 3;
+    pop_world = ue_world();
+    n_pop_seen = 0;
+    for (UObject *p = next_open_popup(NULL); p && n_pop_seen < 8; p = next_open_popup(p)) pop_seen[n_pop_seen++] = p;
+}
+
+static int open_own_popup(void) {   // 1 = opened
+    static UFunction *f; static UObject *cdo;
+    static FField *pc_, *ti, *me, *bc, *df;
+    if (!f) {
+        UClass *k = ue_find_class("UIBlueprintFunctionLibrary");
+        cdo = k ? UC_CDO(k) : NULL;
+        f = cdo ? ue_find_function(U_CLASS(cdo), "OpenMessagePopup") : NULL;
+        pc_ = f ? ue_find_prop((UStruct *)f, "PlayerController") : NULL; ti = f ? ue_find_prop((UStruct *)f, "Title") : NULL;
+        me = f ? ue_find_prop((UStruct *)f, "Message") : NULL; bc = f ? ue_find_prop((UStruct *)f, "ButtonCombo") : NULL;
+        df = f ? ue_find_prop((UStruct *)f, "bDeferredOpen") : NULL;
+        if (!pc_ || !ti || !me || !bc || UFN_PARMSSIZE(f) > 128) { f = NULL; return 0; }
+    }
+    uint8_t p[128] = {0};
+    *(UObject **)(p + FP_OFFSET(pc_)) = ue_local_pc();
+    if (text_from("COULD NOT JOIN", p + FP_OFFSET(ti)) || text_from(pop_msg, p + FP_OFFSET(me))) return 0;
+    p[FP_OFFSET(bc)] = 2;   // EPopupButtonCombo::Ok
+    if (df) p[FP_OFFSET(df)] = 0;
+    ue_process_event(cdo, f, p);
+    return 1;
+}
+
+static void popup_tick(float dt) {
+    if (!pop_msg[0]) return;
+    if ((pop_left -= dt) <= 0) { LOG("chat: refusal popup: gave up (no settled camp in 30 s)"); pop_msg[0] = 0; return; }
+    static UClass *mc, *tc;
+    if (!mc) { mc = ue_find_class("MessagePopupUserWidget"); tc = ue_find_class("MessageThrobberPopupUserWidget"); }
+    int open = 0;
+    for (UObject *p = next_open_popup(NULL); mc && p; p = next_open_popup(p)) {
+        open = 1;
+        if (pop_was_seen(p) || !ue_is_a(p, mc) || (tc && ue_is_a(p, tc))) continue;
+        if (n_pop_seen < 8) pop_seen[n_pop_seen++] = p;
+        UFunction *f = ue_find_function(U_CLASS(p), "SetText");
+        FField *ft = f ? ue_find_prop((UStruct *)f, "Title") : NULL, *fm = f ? ue_find_prop((UStruct *)f, "Message") : NULL;
+        uint8_t args[64] = {0};
+        if (!ft || !fm || UFN_PARMSSIZE(f) > 64 || text_from("COULD NOT JOIN", args + FP_OFFSET(ft)) ||
+            text_from(pop_msg, args + FP_OFFSET(fm))) { LOG("chat: refusal popup: no SetText"); continue; }
+        ue_process_event(p, f, args);
+        char path[256];
+        LOG("chat: refusal popup: the game's %s now says: %s", ue_full_path(p, path, sizeof path), pop_msg);
+        pop_msg[0] = 0;
+        return;
+    }
+    UObject *w = ue_world();
+    if (w != pop_world) { pop_world = w; pop_settle = 2; return; }   // a map load: wait until it settles
+    if (open || !ue_local_pc() || !live_chatbox()) { pop_settle = 2; return; }   // loading screen up, or another popup
+    if ((pop_settle -= dt) > 0) return;
+    if (open_own_popup()) LOG("chat: refusal popup: opened ours: %s", pop_msg);
+    else LOG("chat: refusal popup: could not open one");
+    pop_msg[0] = 0;
+}
+
+// A join attempt failed with an error from the host. A refusal with a reason (ours: add-ons, another b4bcoop version,
+// banned, locked, "Server full.", not a friend) ends travel.c's blind rejoins of a followed server travel at once and
+// is told twice: on the game's popup (chat_refusal_popup) and as a chat line once it is closed. Add-ons (failing),
+// version, ban: no more attempts (retrying can't help); full / locked / not a friend: the join loop tries again in 60 s.
 void chat_on_join_failed(const char *error) {
     const char *e = strstr(error, "Error: '");
     char msg[440];
@@ -242,12 +350,16 @@ void chat_on_join_failed(const char *error) {
     // again at once, quietly; fail -> say why, to us only, and stop (only a restart changes add-ons)
     char amsg[400];
     switch (addons_on_refusal(error, cmds_last_join_target(), amsg, sizeof amsg)) {
-    case 1: cmds_join_retry(cmds_last_join_target(), 1); return;
+    case 1:
+        travel_end_follow("the host asked for an add-on check");   // rejoin with the claim, not the old login URL
+        cmds_join_retry(cmds_last_join_target(), 1);
+        return;
     case 2:
+        travel_end_follow("refused: add-ons");
         cmds_auto_join_stop();
-        if (cmds_session_join()[0]) cmds_set_session_join(NULL);
         snprintf(msg, sizeof msg, "Could not join: %s", amsg);
-        chat_local_later(msg);
+        chat_refusal_popup(amsg);
+        chat_local_soon(msg);
         return;
     }
     snprintf(msg, sizeof msg, "Could not join: %.*s", e ? (int)strcspn(e + 8, "'") : 40, e ? e + 8 : "connection failed");
@@ -259,15 +371,17 @@ void chat_on_join_failed(const char *error) {
             snprintf(msg + strlen(msg), sizeof msg - strlen(msg), "%s", updater_hint());
         }
     }
-    if (strstr(error, "same version") || strstr(error, " add-ons")) {   // another version, or add-ons (restart needed)
-        cmds_auto_join_stop();
-        if (cmds_session_join()[0]) cmds_set_session_join(NULL);
-    } else if (strstr(error, "banned")) {
-        cmds_auto_join_stop();
-        if (cmds_session_join()[0]) cmds_set_session_join(NULL);
-    }
-    else if (strstr(error, "locked") || strstr(error, "Steam friends")) cmds_auto_join_backoff(60);
-    chat_local_later(msg);
+    // stop: another version, banned, an older client's add-on refusal; later: full, locked, not a friend
+    int stop = strstr(error, "same version") || strstr(error, " add-ons") || strstr(error, "banned");
+    int retry_later = strstr(error, "Server full.") || strstr(error, "locked") || strstr(error, "Steam friends");
+    if (!stop && !retry_later) { chat_local_soon(msg); return; }   // no reason we know: travel.c / the join loop retry as before
+    travel_end_follow(stop ? "refused" : "refused for now");
+    if (stop) cmds_auto_join_stop();
+    else cmds_auto_join_backoff(60);
+    char pm[460];
+    snprintf(pm, sizeof pm, "%s%s", msg + 16, stop ? "" : " Trying again in a minute.");
+    chat_refusal_popup(pm);
+    chat_local_soon(msg);
 }
 
 #ifndef B4B_RELEASE
@@ -316,6 +430,7 @@ void chat_tick(float dt) {
     type_tick(dt);
 #endif
     later_tick(dt);
+    popup_tick(dt);
     if (leave_pending) { leave_pending = 0; coop_leave(); }
     while (q_head != q_tail) {
         static char line[320];

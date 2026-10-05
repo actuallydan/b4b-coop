@@ -407,7 +407,7 @@ static void fail_run(void *self, void *param) {
 void steamnet_tick(float dt) {
     (void)dt;
     if (!g_join_failed || !InterlockedExchange(&g_join_failed, 0)) return;
-    chat_local_later("Could not reach the host over Steam. Is it still hosting? Hosts only accept their Steam "
+    chat_local_soon("Could not reach the host over Steam. Is it still hosting? Hosts only accept their Steam "
                      "friends by default (b4bcoop.ini allow_joins / allow_steamids on the host).");
 }
 static int req_size(void *self) { (void)self; return 8; }

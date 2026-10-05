@@ -671,8 +671,9 @@ The logs contain your Steam name and Steam ID and those of the players you playe
 
 ### Messages you may see
 
-When a join fails, the game first shows its own popup (e.g. "Unable to join the session"); the reason appears in
-your chat as `Could not join: ...` once the popup is closed.
+When the host refuses a join, the game's popup says why (title "COULD NOT JOIN" with the message below), and the
+same reason appears in your chat as `Could not join: ...` once the popup is closed. A refusal that retrying can't fix
+(another version, add-ons, a ban) stops the join; "Server full." and a locked session are tried again after a minute.
 
 | Message | Meaning | What to do |
 |---|---|---|
