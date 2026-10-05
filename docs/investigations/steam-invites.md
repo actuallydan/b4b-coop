@@ -119,6 +119,13 @@ Steam P2P; a Steam join overrides the joiner's ini). Steps 6 and 11 below predat
 | 10 | A quits. B, still connected, drops to its own camp. | B retries A for 3 minutes, then `auto: … giving up`; the ini (host=1) applies again. A's rich presence disappears with A's process. | High |
 | 11 | After the P2P merge: repeat 3/4 without `presence_addr`. | `auto: joining steam:<A>` starts a travel, and the address isn't needed. | Depends on the P2P branch |
 
+## Two-account result (2026-10-05)
+Steps 4/5/7/9 with the real callback: the client's Steam (dreamsofants, Flatpak) opened the friends-list Join Game
+URL (`steam://rungame/924970/<host id>/<connect>`) and the running game got `GameRichPresenceJoinRequested_t` from
+the host (Hergmgurk, native) every time: 21/21 joins (host in camp, loading a mission, in the lobby, mid-mission,
+and the session runs' rejoins) and 2/2 after the host's `invite <id>` (`sent`). Details and timings: join-timing.md "Two-account check". Not clicked in
+Steam's UI (the URL is what the click opens); a Join Game with the game closed (step 3) is still unchecked.
+
 ## Limits / follow-ups
 - Clients don't advertise. A friend of B (not of A) can't Join via B. Possible later: B mirrors A's `connect`.
 - Join from **Online** mode isn't handled specially. The auto sign-in only acts on the title screen, so a player who
