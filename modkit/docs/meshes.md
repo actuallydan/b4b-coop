@@ -417,6 +417,7 @@ What the survivor pipeline prints, and what to do about it.
 | No eyes or teeth, the face doesn't blink (rigs with eyeballs and teeth parented to a bone, e.g. Rigify, Maya) | fixed: such pieces are skinned to their bone (`meshes parented to a bone, skinned to it: ...`) |
 | Hair, head-tails or eyes stay with the chest when the head turns (Rigify rigs with extra bones under the `head` control) | fixed: bones under a control named like a body part (`head`, `neck`, `hips`) move with that part |
 | First-person hands stretched into blades, fingers bending in the palm (rigs with an extra bone per finger on the hand, e.g. `Indexfar_l` next to `IndexFinger1_L`) | fixed: each finger takes its own chain of three bones (`proportions ... hands` near x1, not x0.3) |
+| Crouching kicks one lower leg out sideways with a flattened shoe (rigs with a helper bone beside the shin at the knee, e.g. Source `Bip01_R_Knee` next to `Bip01_R_Calf`) | fixed: of two bones named for the same joint, the one the limb continues from (the foot below it) is taken |
 | `face: no face at the front of the head (... a helmet or mask covers it?)` | the head is covered by gear (a helmet): no talking or blinking, the head moves as one piece. A face under a visor that should talk: `--face-eyes` |
 
 ## Make a weapon model
