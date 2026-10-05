@@ -14,7 +14,7 @@ export B4B_COOP_PORT=$(( ${B4B_PORT_BASE:-$lane_port_base} + n - 1 ))
 export B4B_COOP_TAG="test$n"
 if [[ -n ${B4B_GPU:-} ]]; then   # render on another GPU (lane.sh): a GPU with no display can't present to the desktop,
   # so the game runs in a headless gamescope that composites on that GPU; vkd3d/DXVK pick it by name
-  id=$(nvidia-smi --query-gpu=name,pci.device_id --format=csv,noheader | awk -F', ' -v g="$B4B_GPU" 'index($1, g) {print $2; exit}')
+  id=$(nvidia-smi --query-gpu=name,pci.device_id --format=csv,noheader | awk -F', ' -v g="$B4B_GPU" '!f && index($1, g) {print $2; f = 1}')   # no early exit: SIGPIPE + pipefail ended the script silently for the first GPU
   [[ -n $id ]] || { echo "B4B_GPU=$B4B_GPU: no such GPU (nvidia-smi)" >&2; exit 1; }
   id=${id,,}   # 0x<device><vendor>, e.g. 0x268410de
   export VKD3D_FILTER_DEVICE_NAME="$B4B_GPU" DXVK_FILTER_DEVICE_NAME="$B4B_GPU"

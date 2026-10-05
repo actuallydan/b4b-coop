@@ -235,10 +235,19 @@ delegate when it changes (`0x141B2B62D`). All online party / matchmaking UI, unu
 regardless of the local `teamsize` anyway (log `teamsize: hero team has 5 slots, local Config.TeamSize 4 -> 5`,
 client `slots` then `Config TeamSize=5`), so the doc statement holds.
 
-**Character-select list (all machines, host included, not #24):** the player list at the left of the mission-start
-character select has 4 rows (hero-team slots 0-3); the player in slot 4 is not listed, also not on its own screen.
-It is a Blueprint widget (`CharacterSelectScreen`) like the lineup name plates; the 5th player still gets a hero
-and their mannequin (lineup.c, layout 1). Cosmetic, left alone.
+**Character-select list (all machines, host included, not #24; fixed in #28):** the player list at the left of the
+mission-start character select / loadout screen had 4 rows (hero-team slots 0-3); the player in slot 4 was not
+listed, also not on its own screen. It is `MissionLoadoutScreen_WBP.PlayerLoadouts` (`PlayerLoadouts_WBP_C :
+UPlayerLoadoutsUserWidget`): a VerticalBox (`+0x468`) with 4 designer-placed `PlayerLoadoutsEntry_WBP_C` rows.
+`OnSlotsUpdated` (body `0x141E3D670`, thunk `0x142238DA0`) gives hero slot i (PlayerSlot `+0x2a0`) row i and skips a
+slot without a row (the matchmaking party list `MatchmakingPlayerList_WBP`, `0x141DF7900`, works the same way; it is
+not shown offline). Fix (lineup.c): before it runs, when the hero team has more slots than rows, rows of the same class
+are added (`WidgetBlueprintLibrary::Create`, `PanelWidget::AddChild`, the new slot gets the last row's size, padding
+and alignment through the slot's setters); the game fills them like the others. Verified 2026-10-04 (lane 1,
+`B4B_INI_EXTRA="teamsize=5" launch/multi.sh 5`, `mission Easy`): host and instance 5 show 5 rows ("Hergmgurk /
+PICKING CHARACTER", the local player's row in red), log `lineup: 5 hero slots: player list row 5 added
+(PlayerLoadoutsEntry_WBP_C_...)`; `five-players/charselect-list-5.jpg`. The voice overlay (`VoipOverlay_WBP`) already
+has 5 entries.
 
 **Reverse** (`B4B_INI_EXTRA2/3="teamsize=5" launch/multi.sh 3`, host without): 4 slots everywhere (2 humans + a
 bot on the host's side, clients' `Config TeamSize=4`, `net.MaxPlayersOverride=7` locally, unused on a client), HUD 3

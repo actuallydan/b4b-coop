@@ -28,10 +28,12 @@ static void logf_detour(const char *file, int line, const FName *cat, uint8_t ve
     ue_name(*cat, cname, sizeof cname);
     if (strstr(buf, "b4bcoopaddons=")) log_redact_addons(buf);   // login URLs of older clients: their add-ons (#35)
     LOG("UE %s %s: %s", cname, VERB[(verb & 0xF) < 8 ? verb & 0xF : 0], buf);
-    if ((verb & 0xF) == 2 /*Error*/ && !strcmp(cname, "LogDTLSHandler")) travel_on_handshake_failed();
+    if ((verb & 0xF) == 2 /*Error*/ && !strcmp(cname, "LogDTLSHandler")) { travel_on_handshake_failed(); cmds_join_failed("DTLS handshake"); }
+    if (!strcmp(cname, "LogDTLSHandler") && strstr(buf, "Handshaking completed")) cmds_join_answered();
     steamnet_on_log(cname, buf);
     if (!strcmp(cname, "LogNet") && strstr(buf, "NetworkFailure: PendingConnectionFailure") && strstr(buf, "Server full."))
         cmds_auto_join_backoff(60);
+    if (!strcmp(cname, "LogNet") && !strncmp(buf, "NetworkFailure: ", 16)) cmds_join_failed(buf + 16);   // before chat.c's stop/backoff
     if (!strcmp(cname, "LogNet") && strstr(buf, "NetworkFailure: PendingConnectionFailure")) chat_on_join_failed(buf);
     orig_logf(file, line, cat, verb, L"%s", wbuf);
 }

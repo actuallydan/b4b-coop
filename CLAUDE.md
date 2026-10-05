@@ -26,7 +26,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `main.c` Tick hook; logs `b4bcoop <version> (protocol N)` at load; `-b4bcoop=off` on the command line = the agent
     starts nothing. Dev builds: game-thread command queue + TCP command server (127.0.0.1:47112, first free of
     +0..7; `B4B_COOP_PORT` pins it).
-  - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen`; client follow/rejoin.
+  - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen` (and no HostStartedSoloGame kick
+    while hosting); client follow/rejoin; drops a failed join's `?closed` (no own-camp reload). join-timing.md.
   - `netguard.c` outbound-traffic guard from DllMain (DNS/WinHTTP/TCP allowlist, EOS network off; `netguard`
     command, `netguard=` ini keys); docs/investigations/outbound-traffic.md.
   - `uelog.c` captures UE_LOG into `Gobi/Binaries/Win64/b4bcoop-<yyyymmdd>-<hhmmss>-<winpid>.log` (last 20 kept: Wine reuses PIDs; tests `b4bcoop-<B4B_COOP_TAG>-<winpid>.log`).
@@ -81,7 +82,8 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     dumps the slot layout). docs/investigations/five-players.md.
   - `lineup.c` post-round/pre-round/character-select lineup with 5+ heroes (#8): spawns an extra mannequin when the
     hero team has more slots than the lineup level's 4 and places it in the back row; `lineup` dumps it.
-    five-players.md §6.
+    five-players.md §6. Also the mission-start player list (#28): adds PlayerLoadoutsEntry rows to its 4-row box
+    before OnSlotsUpdated (five-players.md §7).
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.
@@ -176,6 +178,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     b4bcoop_protocol_override`). `coop_join(target)` = join entry point (`steam:<id64>`; `ip[:port]` only 127.x unless
     `host_ip=1`, else refused with `coop_ip_join_off_msg()`; appends `?b4bcoop=<proto>?b4bcoopver=<ver>`; any thread);
     `join=` may list alternatives (`steam:<id>,1.2.3.4:7777`); `coop_host`, `coop_leave`; `coop_version/protocol`.
+    Every join (Steam, `/join`, `~` window, `join=`) is one target in one loop (`auto_tick`): attempt once signed in
+    and in our own camp, retry 3/8/15 s after a failure, a session target gives up after 3 min (#41,
+    docs/investigations/join-timing.md; matrix `tools/jointest.py`).
 - `launch/` — `install.sh [--release] [--legacy]` (build+copy DLLs, dev by default, `--legacy` = dev-only dwmapi.dll;
   rm before cp — never overwrite a mapped DLL in place), `package.sh` (player zip `dist/b4bcoop-<version>.zip`
   mirroring the game folder, its `b4bcoop-README.txt` (CRLF, mirrors README's player section: keep in sync) +
@@ -183,7 +188,7 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   `steam_appid.txt`), `multi.sh`/`multi-stop.sh`/`instance.sh`/`shot.sh` (N local test instances, below), `gamelock.sh`,
   `lane.sh`/`lane-restore.sh`/`flatpak-steam.sh` (live-test lanes, below),
   `winpy.sh`, `probed.sh`, `uninstall.sh` (the README's Remove list).
-- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `e2e.py` / `charsuite.py` (regression suites), `pe.py` static analysis, `memprobe.py` +
+- `tools/` — `b4b.py` agent CLI (`B4B_AGENT=n-1` = instance n), `appinfo.py` (Steam appinfo.vdf dump), `testprefix.py` (test prefixes), `e2e.py` / `charsuite.py` (regression suites), `jointest.py` (join timing matrix), `pe.py` static analysis, `memprobe.py` +
   `probed.py`/`probe.py` live memory (Windows Python inside the prefix), `sdkdump.py`, `winpoke.py`, `fetch-deps.sh`.
 - `modkit/` — the mod maker's kit (#21), a separate deliverable (players never need it; nothing of it is in the player
   zip or the agent): `b4bmod.py` (one command: setup/status/config, find/extract (offline, `dotnet/pakx` = CUE4Parse

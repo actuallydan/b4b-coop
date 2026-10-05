@@ -56,20 +56,33 @@ static UObject *popup_for(UObject *task) {
 enum { SIS_NotSignedIn = 0, SIS_SignedIn = 7 };
 static int signin_done;
 
+// The game's own answer: the local player controller's IsSignedIn() (Fort Hope's SocialSpacePlayerController and
+// the main menu's MainMenuPlayerController have one; true on a connected client too). 1/0, -1 = no such controller
+// yet (Legal screen, loading). Unlike "no SignInScreen", this doesn't depend on when the screen is created or
+// destroyed (it appears a second or more after Fort Hope loads, and goes away with every map change).
+static int signed_in(void) {
+    UObject *pc = ue_local_pc();
+    UFunction *f = pc ? ue_find_function(U_CLASS(pc), "IsSignedIn") : NULL;
+    if (!f) return -1;
+    uint8_t p[16] = {0};
+    ue_process_event(pc, f, p);
+    return p[0] != 0;
+}
+
 // One step of the sign-in flow. Returns 1 when it acted.
 int signin_step(Out *o) {
     static UClass *task_c, *screen_c;
-    static int seen_screen;
     if (!task_c) task_c = ue_find_class("SignInTask_OnlineOfflinePopup");
     if (!screen_c) screen_c = ue_find_class("SignInScreen");
     if (!task_c || !screen_c) { if (o) out_printf(o, "sign-in classes not loaded\n"); return 0; }
+    int si = signed_in();
     UObject *s = find_live(screen_c, NULL);
+    if (o) out_printf(o, "signed in: %s\n", si < 0 ? "?" : si ? "yes" : "no");
+    if (si == 1) { signin_done = 1; return 0; }
     if (!s) {
-        if (seen_screen) signin_done = 1;   // screen gone after we saw it: signed in
         if (o) out_printf(o, "no sign-in screen\n");
         return 0;
     }
-    seen_screen = 1;
     int st = SCREEN_STATE(s);
     if (o) out_printf(o, "sign-in screen %p state=%d\n", (void *)s, st);
     if (st == SIS_SignedIn) { signin_done = 1; return 0; }
@@ -101,13 +114,7 @@ static double signin_clock, signin_deadline = 600;
 // A join target from Steam (presence.c): sign in Offline for a real player too, for the next 10 minutes.
 void signin_arm(void) {
     if (signin_done) return;
-    UClass *sc = ue_find_class("SignInScreen");
-    UObject *w = ue_world();
-    char pkg[256];
-    if (w && ue_local_pc() && strstr(ue_world_package(w, pkg, sizeof pkg), "FortHope") && sc && !find_live(sc, NULL)) {
-        signin_done = 1;   // already in the camp, past the title screen
-        return;
-    }
+    if (signed_in() == 1) { signin_done = 1; return; }   // already past the title screen
     if (!g_auto_offline) LOG("signin: auto sign-in (Offline) armed for a Steam join");
     g_auto_offline = 1;
     signin_deadline = signin_clock + 600;
@@ -117,6 +124,7 @@ void signin_arm(void) {
 int signin_on_title(void) {
     static UClass *sc;
     if (!sc) sc = ue_find_class("SignInScreen");
+    if (signed_in() == 1) return 0;   // first: cheap, and the screen lookup walks the object array
     UObject *s = sc ? find_live(sc, NULL) : NULL;
     return s && SCREEN_STATE(s) != SIS_SignedIn;
 }
@@ -128,7 +136,7 @@ void signin_tick(float dt) {
     double clock = signin_clock += dt;
     if (!g_auto_offline || signin_done || clock < next) return;
     if (clock > signin_deadline) { signin_done = 1; LOG("signin: no sign-in after 10 min, auto sign-in off"); return; }
-    next = clock + 2;
+    next = clock + 0.5;
     if (!ue_world()) return;
     signin_step(NULL);
     if (signin_done) LOG("signin: signed in, auto sign-in off");

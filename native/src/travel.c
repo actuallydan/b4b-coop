@@ -19,6 +19,8 @@ static double retry_at;
 static double now_s;
 
 void travel_set_host(const char *addr) { snprintf(host_addr, sizeof host_addr, "%s", addr); }
+// Client: within the rejoin window after following the host's server travel (cmds.c leaves rejoins to us then)
+int travel_following(void) { return host_addr[0] && now_s < follow_until && retries_left > 0; }
 
 // Client: a follow attempt that reached the host before it finished loading fails the DTLS handshake and
 // then hangs in PendingNetGame; restart the join shortly instead of waiting for the connect timeout.
@@ -82,6 +84,8 @@ static void travel_detour(void *engine, UObject *world, const wchar_t *url, uint
     if (type == TRAVEL_Relative && !listen && host_addr[0] && is_session_map(u)) {
         follow_until = now_s + 300; retries_left = 20;
     }
+    // client: a join attempt from our own camp failed -> stay there, cmds.c tries again (no reload of the camp)
+    if (strstr(u, "closed") && !travel_following() && cmds_join_take_closed()) return;
     // client: the follow failed (host still loading, etc.) -> retry instead of dropping to our own camp
     if (!listen && host_addr[0] && strstr(u, "closed") && now_s < follow_until && retries_left > 0) {
         retries_left--;
@@ -92,9 +96,31 @@ static void travel_detour(void *engine, UObject *world, const wchar_t *url, uint
     orig_travel(engine, world, url, type);
 }
 
+// Host: the offline mission start first "kicks" every remote player (UMatchmaking, log "Kicking remote clients with
+// EDisconnectError::HostStartedSoloGame": a ClientQueueDisconnectError RPC to each remote PlayerController), then
+// travels; the redirect above turns that travel into a server travel the clients follow. A client that was still
+// loading our camp got the kick instead and dropped back to its own camp ("Host closed the connection."), and a
+// connected one raced it against the follow (#41). While we host a co-op session nobody is kicked: they all follow.
+#define ADDR_KICKREMOTE VA(0x141AEE600ull)   // void UMatchmaking::KickRemoteClients(this, EDisconnectError)
+static const uint8_t SIG_KICKREMOTE[] = {0x40,0x55,0x53,0x41,0x56,0x48,0x8b,0xec,0x48,0x83,0xec,0x60,0x48,0x8b,0x01,0x33,
+                                         0xdb,0x44,0x0f,0xb6,0xf2,0x48,0x8d,0x15};
+typedef void (*KickFn)(UObject *mm, uint8_t err);
+static KickFn orig_kick;
+static void kick_detour(UObject *mm, uint8_t err) {
+    UObject *w = ue_world();
+    if (w && ue_is_listen_server(w) && ue_num_clients(w) > 0) {
+        LOG("travel: not kicking %d remote client(s) (EDisconnectError %u): they follow the server travel", ue_num_clients(w), err);
+        return;
+    }
+    orig_kick(mm, err);
+}
+
 int travel_init(void) {
     if (MH_CreateHook((void *)ADDR_SETCLIENTTRAVEL, (void *)travel_detour, (void **)&orig_travel) != MH_OK ||
         MH_EnableHook((void *)ADDR_SETCLIENTTRAVEL) != MH_OK) { LOG("travel: hook failed"); return -1; }
     LOG("travel: SetClientTravel hooked");
+    if (memcmp((void *)ADDR_KICKREMOTE, SIG_KICKREMOTE, sizeof SIG_KICKREMOTE)) LOG("travel: KickRemoteClients signature mismatch");
+    else if (MH_CreateHook((void *)ADDR_KICKREMOTE, (void *)kick_detour, (void **)&orig_kick) != MH_OK ||
+             MH_EnableHook((void *)ADDR_KICKREMOTE) != MH_OK) LOG("travel: KickRemoteClients hook failed");
     return 0;
 }
