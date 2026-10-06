@@ -51,7 +51,9 @@ static int enabled_cfg = 1, shop_cfg = 1, list_dirty;
 static char unavailable[80];
 static wchar_t dirw[MAX_PATH];
 static char dir8[MAX_PATH * 3];
-typedef struct { int loser, winner, nfiles, mixed; char example[160], mixed_example[160]; } Conflict;
+// same: identical content (same pak index SHA1, e.g. one add-on under two file names); names: outfits/weapon looks
+// both declare ("outfit batman, weapon look ak47"), only the later one's is used
+typedef struct { int loser, winner, nfiles, mixed, same; char example[160], mixed_example[160], names[120]; } Conflict;
 static Conflict C[MAX_CONFLICTS];
 static int nC;
 static CRITICAL_SECTION cs;       // addonlist.txt writes (chat thread) vs. nothing else after startup; cheap anyway
@@ -347,6 +349,31 @@ static size_t stem_len(const char *k) {   // "x/y.uexp" -> length of "x/y" for p
     return strlen(k);
 }
 
+// Two add-ons on at start that are the same add-on (same content id) or declare the same outfit / weapon look name.
+static void name_dup(int a, int b, const char *what, const char *name) {
+    if (a == b) return;
+    Conflict *c = conflict(a < b ? a : b, a < b ? b : a);
+    if (!c) return;
+    char add[64]; snprintf(add, sizeof add, "%s %s", what, name);
+    size_t l = strlen(c->names);
+    if (strstr(c->names, add)) return;
+    if (l + strlen(add) + 3 < sizeof c->names) snprintf(c->names + l, sizeof c->names - l, "%s%s", l ? ", " : "", add);
+}
+static int dup_ok(const Addon *a) { return a->present && a->valid && a->on_at_start; }
+static void find_duplicates(void) {
+    for (int i = 0; i < nA; i++)
+        for (int j = i + 1; j < nA; j++)
+            if (dup_ok(&A[i]) && dup_ok(&A[j]) && A[i].hash[0] && !strcmp(A[i].hash, A[j].hash)) { Conflict *c = conflict(i, j); if (c) c->same = 1; }
+    for (int i = 0; i < nOF; i++)
+        for (int j = i + 1; j < nOF; j++)
+            if (OF[i].addon != OF[j].addon && dup_ok(OF[i].addon) && dup_ok(OF[j].addon) && !strcmp(OF[i].name, OF[j].name))
+                name_dup((int)(OF[i].addon - A), (int)(OF[j].addon - A), "outfit", OF[i].name);
+    for (int i = 0; i < nWP; i++)
+        for (int j = i + 1; j < nWP; j++)
+            if (WP[i].addon != WP[j].addon && dup_ok(WP[i].addon) && dup_ok(WP[j].addon) && !strcmp(WP[i].name, WP[j].name))
+                name_dup((int)(WP[i].addon - A), (int)(WP[j].addon - A), "weapon look", WP[i].name);
+}
+
 static void find_conflicts(void) {
     size_t total = 0, cap = 16;
     for (int i = 0; i < nA; i++) if (A[i].valid && A[i].on_at_start) total += A[i].nfiles;
@@ -586,9 +613,16 @@ int addons_scan(void) {
         }
     }
     find_conflicts();
+    find_duplicates();
     for (int i = 0; i < nC; i++) {
         Conflict *c = &C[i];
-        if (c->nfiles)
+        if (c->same)
+            LOG("addons: duplicate: %s and %s are the same add-on (content id %.8s): switch one off (%s is used)",
+                A[c->loser].name, A[c->winner].name, A[c->winner].hash, A[c->winner].name);
+        else if (c->names[0])
+            LOG("addons: duplicate: %s and %s both add %s: %s's is used (later in " LIST_NAME "); switch one off",
+                A[c->loser].name, A[c->winner].name, c->names, A[c->winner].name);
+        if (c->nfiles && !c->same)
             LOG("addons: conflict: %s and %s both change %d file(s) (e.g. %s): %s wins (later in " LIST_NAME ")",
                 A[c->loser].name, A[c->winner].name, c->nfiles, c->example, A[c->winner].name);
         if (c->mixed)
@@ -615,6 +649,37 @@ int addons_active(AddonRef *out, int max) {
 
 const char *addons_title_of(const char *id8) {
     for (int i = 0; i < nA; i++) if (A[i].present && A[i].hash[0] && !_strnicmp(A[i].hash, id8, 8)) return A[i].title;
+    return NULL;
+}
+
+// The Browse tab (shop.c): an add-on in the folder other than `skip` (the shop's own <id>.pak) that is the same add-on
+// (content id = pak index SHA1) or adds one of the outfits / weapon looks a catalog entry lists in `adds`
+// ("outfit batman (mom); weapon look ak47 (AR02)"). Returns its file name, why = "same content" / "outfit batman".
+const char *addons_installed_like(const char *skip, const char *content_id, const char *adds, char *why, size_t wn) {
+    why[0] = 0;
+    for (int i = 0; i < nA; i++) {
+        const Addon *a = &A[i];
+        if (a->present && a->hash[0] && content_id && content_id[0] && _stricmp(a->name, skip) && !_stricmp(a->hash, content_id)) {
+            snprintf(why, wn, "same content");
+            return a->name;
+        }
+    }
+    for (const char *p = adds; p && *p; ) {
+        while (*p == ' ' || *p == ';') p++;
+        int weapon = !strncmp(p, "weapon look ", 12), outfit = !strncmp(p, "outfit ", 7);
+        const char *n = p + (weapon ? 12 : outfit ? 7 : 0);
+        size_t nl = strcspn(n, " ;(");
+        p = n + strcspn(n, ";");
+        if ((!weapon && !outfit) || !nl || nl > 32) continue;
+        int cnt = weapon ? nWP : nOF;
+        for (int k = 0; k < cnt; k++) {
+            const Addon *a = weapon ? WP[k].addon : OF[k].addon;
+            const char *nm = weapon ? WP[k].name : OF[k].name;
+            if (!a->present || !_stricmp(a->name, skip) || strlen(nm) != nl || strncmp(nm, n, nl)) continue;
+            snprintf(why, wn, "%s %.*s", weapon ? "weapon look" : "outfit", (int)nl, n);
+            return a->name;
+        }
+    }
     return NULL;
 }
 
@@ -732,12 +797,21 @@ void addons_init(void) {
         if (A[i].mounted < 0) failed++;
     }
     char msg[300] = "";
-    const Conflict *mix = NULL;
+    const Conflict *mix = NULL, *dup = NULL;
     for (int i = 0; i < nC && !mix; i++) if (C[i].mixed) mix = &C[i];
+    for (int i = 0; i < nC && !dup; i++) if (C[i].same || C[i].names[0]) dup = &C[i];
+    char more[40] = "";
+    if (nC > 1) snprintf(more, sizeof more, " (%d more conflict%s)", nC - 1, nC == 2 ? "" : "s");
     if (unavailable[0] && n_mount) snprintf(msg, sizeof msg, "Add-ons are off: %s. /addons", unavailable);
     else if (mix)   // the one that can crash the game first
-        snprintf(msg, sizeof msg, "Add-ons \"%s\" and \"%s\" mix parts of one asset (may crash): switch one off. /addons",
-                 A[mix->loser].title, A[mix->winner].title);
+        snprintf(msg, sizeof msg, "Add-ons \"%s\" and \"%s\" mix parts of one asset (may crash): switch one off.%s /addons",
+                 A[mix->loser].title, A[mix->winner].title, more);
+    else if (dup && dup->same)
+        snprintf(msg, sizeof msg, "Add-on \"%s\" is installed twice (%s and %s): switch one off.%s /addons",
+                 A[dup->winner].title, A[dup->loser].name, A[dup->winner].name, more);
+    else if (dup)
+        snprintf(msg, sizeof msg, "Add-ons %s and %s both add %s: %s's is used. Switch one off.%s /addons",
+                 A[dup->loser].name, A[dup->winner].name, dup->names, A[dup->winner].name, more);
     else if (nC == 1)
         snprintf(msg, sizeof msg, "Add-on conflict: \"%s\" overrides \"%s\". /addons", A[C[0].winner].title, A[C[0].loser].title);
     else if (nC) snprintf(msg, sizeof msg, "%d add-on conflicts. /addons for details", nC);
@@ -809,7 +883,9 @@ void addons_slash(const char *verb, char *rest, Out *o) {
         }
         if (order_changed()) out_printf(o, "load order changed in " LIST_NAME ": applies after restart\n");
         for (int i = 0; i < nC; i++) {
-            if (C[i].nfiles) out_printf(o, "conflict: %s overrides %s (%d file(s))\n", A[C[i].winner].name, A[C[i].loser].name, C[i].nfiles);
+            if (C[i].same) out_printf(o, "duplicate: %s and %s are the same add-on: switch one off\n", A[C[i].loser].name, A[C[i].winner].name);
+            else if (C[i].names[0]) out_printf(o, "duplicate: %s and %s both add %s (%s's is used): switch one off\n", A[C[i].loser].name, A[C[i].winner].name, C[i].names, A[C[i].winner].name);
+            if (C[i].nfiles && !C[i].same) out_printf(o, "conflict: %s overrides %s (%d file(s))\n", A[C[i].winner].name, A[C[i].loser].name, C[i].nfiles);
             if (C[i].mixed) out_printf(o, "conflict: %s and %s mix parts of one asset: may crash, switch one off\n", A[C[i].loser].name, A[C[i].winner].name);
         }
         out_printf(o, "/addons on|off <#>  /addons info <#>  /addons policy\n");
@@ -887,7 +963,9 @@ static void panel_details(Addon *a) {
         const Conflict *c = &C[i];
         const Addon *other = &A[c->loser] == a ? &A[c->winner] : &A[c->winner] == a ? &A[c->loser] : NULL;
         if (!other) continue;
-        if (c->nfiles) ov_text_dim("%s \"%s\" (%d file(s), e.g. %s)", &A[c->winner] == a ? "Overrides" : "Overridden by",
+        if (c->same) ov_text_warn("Installed twice: %s is the same add-on. Switch one off.", other->name);
+        else if (c->names[0]) ov_text_warn("%s also adds %s (%s's is used). Switch one off.", other->name, c->names, A[c->winner].name);
+        if (c->nfiles && !c->same) ov_text_dim("%s \"%s\" (%d file(s), e.g. %s)", &A[c->winner] == a ? "Overrides" : "Overridden by",
                                    other->title, c->nfiles, c->example);
         if (c->mixed) ov_text_warn("Mixes parts of one asset with \"%s\" (e.g. %s): may crash, switch one off.", other->title, c->mixed_example);
     }
@@ -957,7 +1035,9 @@ static void addons_panel(void) {
         for (int i = 0; i < nC; i++) {
             const Conflict *c = &C[i];
             if (!shown++) ov_heading("Conflicts (as loaded now)");
-            if (c->nfiles) ov_text("\"%s\" overrides \"%s\" (%d file(s))", A[c->winner].title, A[c->loser].title, c->nfiles);
+            if (c->same) ov_text_warn("\"%s\" is installed twice (%s and %s): switch one off.", A[c->winner].title, A[c->loser].name, A[c->winner].name);
+            else if (c->names[0]) ov_text_warn("%s and %s both add %s (%s's is used): switch one off.", A[c->loser].name, A[c->winner].name, c->names, A[c->winner].name);
+            if (c->nfiles && !c->same) ov_text("\"%s\" overrides \"%s\" (%d file(s))", A[c->winner].title, A[c->loser].title, c->nfiles);
             if (c->mixed) ov_text_warn("\"%s\" and \"%s\" mix parts of one asset: may crash, switch one off.", A[c->loser].title, A[c->winner].title);
         }
         if (sel >= 0 && sel < nA && A[sel].present) panel_details(&A[sel]);

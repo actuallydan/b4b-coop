@@ -198,6 +198,9 @@ typedef struct { int on, on_at_start, mounted, valid, gameplay; char hash[41], s
 int addons_state(const char *file, AddonState *st);   // 1 = present in the folder (st filled)
 int addons_set_on(const char *file, int on);          // addonlist.txt on/off (next start); 1 = saved
 int addons_add_runtime(const char *file, char *msg, size_t mn);   // 2 mounted now, 1 next start, 0 not added
+// another add-on in the folder (not `skip`) with this content id or one of the outfits/weapon looks in a catalog
+// entry's adds list; returns its file name, why = what matched
+const char *addons_installed_like(const char *skip, const char *content_id, const char *adds, char *why, size_t wn);
 void models_outfits_refresh(void);            // models.c: add outfits of add-ons mounted at runtime
 void wlooks_refresh(void);                    // weaponlooks.c: same for weapon looks
 // shop.c: the Browse tab (#36, docs/investigations/shop.md)

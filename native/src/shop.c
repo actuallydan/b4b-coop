@@ -100,6 +100,8 @@ typedef struct {
     char local_sha[65];             // SHA-256 of the file in the folder (worker, after the list arrived), "" unknown
     int pending;                    // 1 remove, 2 update (this session's clicks; .shop\pending.txt)
     int staged;                     // D_VERIFIED: 1 = <id>.pak in place (Add), 2 = .shop\<id>.pak.new (update)
+    int like_checked;               // like/like_why computed (game thread; reset when the folder's add-ons change)
+    char like[64], like_why[48];    // the same add-on already in the folder under another file name (e.g. batman.pak)
 } ItemRt;
 static CRITICAL_SECTION cs;
 static int cs_ready;
@@ -361,6 +363,7 @@ void shop_tick(float dt) {
         return;
     }
     int r = addons_add_runtime(file, m, sizeof m);
+    for (int k = 0; k < cat.n; k++) rt[k].like_checked = 0;   // a new add-on in the folder: "installed as" may change
     if (r == 2) {
         item_msg(i, D_DONE, "Added and ready now.");
         overlay_note("[browse] add-on added and ready");
@@ -377,6 +380,20 @@ static int installed(int i) {   // the file is in the add-ons folder
     wchar_t p[MAX_PATH * 2];
     live_path(p, cat.items[i].id);
     return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
+}
+// The same add-on already in the folder under another file name (a player's own batman.pak for the shop's
+// batman-any): same content id, or it adds an outfit / weapon look of the same name. NULL = none.
+static const char *like_of(int i, const char **why) {
+    if (!rt[i].like_checked) {
+        char file[48], w[48];
+        snprintf(file, sizeof file, "%s.pak", cat.items[i].id);
+        const char *f = addons_installed_like(file, cat.items[i].content_id, cat.items[i].adds, w, sizeof w);
+        snprintf(rt[i].like, sizeof rt[i].like, "%s", f ? f : "");
+        snprintf(rt[i].like_why, sizeof rt[i].like_why, "%s", f ? w : "");
+        rt[i].like_checked = 1;
+    }
+    if (why) *why = rt[i].like_why;
+    return rt[i].like[0] ? rt[i].like : NULL;
 }
 static const char *too_old(const ShopItem *it) {
     static char b[80];
@@ -400,6 +417,9 @@ static const char *add(int i) {
     if (old) return old;
     if (rt[i].pending) return "it has a change waiting for the next start";
     int upd = installed(i);
+    static char as[120];
+    const char *like = upd ? NULL : like_of(i, NULL);
+    if (like) { snprintf(as, sizeof as, "already installed as %s", like); return as; }
     if (upd && !rt[i].local_sha[0]) return "already in your add-ons folder";
     if (upd) {
         char hex[65]; upd_hex(cat.items[i].sha256, 32, hex);
@@ -451,13 +471,13 @@ static void size_str(uint64_t b, char *out, size_t n) {
     else snprintf(out, n, "%llu KB", (unsigned long long)(b + 1023) / 1024);
 }
 // what the row says and offers: 0 Add, 1 installed (Remove), 2 removal pending (Undo), 3 update pending (Undo),
-// 4 newer version (Update + Remove), 5 downloading/busy
+// 4 newer version (Update + Remove), 5 downloading/busy, 6 installed under another file name (*why = that file)
 static int row_state(int i, const char **why) {
     *why = NULL;
     if (rt[i].dl == D_DOWNLOADING) return 5;
     if (rt[i].pending == 1) return 2;
     if (rt[i].pending == 2) return 3;
-    if (!installed(i)) return 0;
+    if (!installed(i)) return (*why = like_of(i, NULL)) ? 6 : 0;
     char hex[65]; upd_hex(cat.items[i].sha256, 32, hex);
     if (rt[i].local_sha[0] && strcmp(hex, rt[i].local_sha)) return 4;
     return 1;
@@ -505,7 +525,7 @@ static void panel(void) {
             int rs = row_state(i, &why);
             if (filter == 1 && (!it->adds[0] || it->replaces[0])) continue;
             if (filter == 2 && !it->replaces[0]) continue;
-            if (filter == 3 && !installed(i)) continue;
+            if (filter == 3 && !installed(i) && rs != 6) continue;
             ov_push_id(i);
             ov_table_next();
             EnterCriticalSection(&cs);
@@ -523,6 +543,15 @@ static void panel(void) {
             ov_text_dim("%s%s%slicense %s, %s, %s", it->author[0] ? "by " : "", it->author, it->author[0] ? ", " : "", it->license, it->cls, sz);
             if (it->adds[0]) ov_text_dim("Adds: %s", it->adds);
             if (it->replaces[0]) ov_text_dim("Replaces: %s", it->replaces);
+            if (rs == 6) {   // already in the folder under another file name: said here (the last column is narrow)
+                const char *lw; like_of(i, &lw);
+                int same = !strcmp(lw, "same content");
+                ov_text("Installed (as %s)", why);
+                ov_tooltip("Already in your add-ons folder under another file name, so the Browse tab doesn't add it twice. "
+                           "The Add-ons tab switches it on/off.");
+                if (same) ov_text_dim("the same add-on");
+                else ov_text_dim("%s adds the same %s", why, lw);
+            }
             ov_table_next();
             const char *old = too_old(it);
             if (rs == 5) {
@@ -533,6 +562,9 @@ static void panel(void) {
                 snprintf(lab, sizeof lab, "Add##%s", it->id);
                 if (ov_button(lab)) { const char *e = add(i); if (e) overlay_note(e); }
                 ov_end_disabled();
+            } else if (rs == 6) {
+                AddonState as;   // that add-on's state, short like an installed row's ("on", "off", ...)
+                ov_text("%s", addons_state(why, &as) ? as.state : "in the folder");
             } else if (rs == 2 || rs == 3) {
                 ov_text_warn(rs == 2 ? "removed after restart" : "updated after restart");
                 snprintf(lab, sizeof lab, "Undo##%s", it->id);
@@ -636,9 +668,12 @@ int shop_cmd(const char *verb, char *rest, Out *o) {
         const char *why;
         int rs = row_state(i, &why);
         Thumb *t = cat.items[i].thumb[0] ? thumb_of(cat.items[i].thumb_sha256) : NULL;
-        static const char *R[] = {"add", "installed", "remove-pending", "update-pending", "update-available", "downloading"};
-        out_printf(o, "  %s [%s] dl=%s pending=%d thumb=%s local=%.8s msg=%s\n", cat.items[i].id, R[rs], D[rt[i].dl], rt[i].pending,
-                   !t ? "-" : t->tex > 0 ? "uploaded" : t->rgba ? "decoded" : "failed", rt[i].local_sha, rt[i].msg);
+        static const char *R[] = {"add", "installed", "remove-pending", "update-pending", "update-available", "downloading", "installed-as"};
+        const char *lw = "";
+        if (rs == 6) like_of(i, &lw);
+        out_printf(o, "  %s [%s] dl=%s pending=%d thumb=%s local=%.8s msg=%s%s%s%s%s\n", cat.items[i].id, R[rs], D[rt[i].dl], rt[i].pending,
+                   !t ? "-" : t->tex > 0 ? "uploaded" : t->rgba ? "decoded" : "failed", rt[i].local_sha, rt[i].msg,
+                   rs == 6 ? "installed as " : "", rs == 6 ? why : "", rs == 6 ? ": " : "", lw);
     }
     LeaveCriticalSection(&cs);
     return 1;

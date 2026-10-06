@@ -393,6 +393,10 @@ session keep playing, also after the next map change); `addons_policy=` in `b4bc
 Messages (in your chat after the game starts):
 - `Add-on conflict: "B" overrides "A". /addons`: both change the same files; B wins (it is further down the list).
   Fine if that's what you want; otherwise switch one off or reorder `addonlist.txt`.
+- `Add-on "A" is installed twice (a.pak and a-any.pak): switch one off.`: the same add-on under two file names (e.g.
+  your own copy and the one from the Browse tab). Switch one off or delete one of the files.
+- `Add-ons a.pak and b.pak both add outfit x: b.pak's is used. Switch one off.`: two add-ons bring an outfit (or a
+  weapon look) of the same name; `/model x` wears the one further down the list.
 - `Add-ons "A" and "B" mix parts of one asset (may crash): switch one off.`: each add-on replaces a different part of
   the same asset, which can crash the game. Switch one off.
 - `N add-on(s) could not be loaded`: `/addons info <#>` says why: `damaged ... download it again`, `not a Back 4
@@ -425,6 +429,9 @@ you have.
    **Undo** takes that back until then.
 4. **Update** appears when the list has a newer file than yours: it is downloaded now and replaces the old one at the
    next start (**Undo** cancels).
+5. **Installed (as batman.pak)** instead of **Add**: you already have that add-on under another file name (the same
+   content, or an add-on that adds the same outfit or weapon look), so it isn't added twice. The **Add-ons** tab
+   switches it on/off.
 
 Added add-ons are ordinary add-ons: the **Add-ons** tab switches them on/off and sets the load order, and the host's
 `addons_policy` treats them like any other. A row shows "needs b4bcoop X or newer" when the add-on needs a newer
