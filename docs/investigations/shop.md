@@ -143,7 +143,8 @@ is inside netguard's updater scope; no API call, so no 60/hour limit).
 - The same add-on under another file name (2026-10-05; players had `batman.pak` before the shop listed `batman-any`):
   no `<id>.pak`, but another present add-on has the entry's `content_id` (= the agent's pak index SHA1, the same value
   `tools/shop-catalog.py` writes) or adds an outfit/weapon look the entry's `adds` names (`outfit batman (any)`) →
-  the row says **Installed (as batman.pak)** ("the same add-on" / "it also adds outfit batman"), no Add; `shop add`
+  the row says **Installed (as batman.pak)** ("the same add-on" / "batman.pak adds the same outfit batman"), the
+  last column that add-on's state, no Add; `shop add`
   refuses with "already installed as batman.pak"; dev `shop status` row `[installed-as] ... msg=installed as
   batman.pak: outfit batman` (`addons_installed_like()`, re-checked after each Add). If both are present anyway, the
   Add-ons tab reports them as a duplicate (addons.md "Duplicates").
@@ -181,9 +182,22 @@ is inside netguard's updater scope; no API call, so no 60/hour limit).
   "0 add-on(s) in the list", which reads like a failure; it now says "Reached the shop, but its list is empty ...: no
   add-ons are published there yet", and a failed fetch points to the log's `shop:`/`netguard:` lines.
 
+- Real shop, 127 add-ons (2026-10-05, lane 2, Flatpak Proton, own empty `addons_dir=` + a copy of Dan's `batman.pak`):
+  - **Player build**, driven with real input (XTest into the headless gamescope's Xwayland `:2`; frames from
+    `gamescopectl screenshot`, `XDG_RUNTIME_DIR=<rt>/b4b-lane2 WAYLAND_DISPLAY=gamescope-0`; the overlay cursor
+    follows relative motion 1:1 from a 0,0 clamp): Sign in → Play Offline → `~` → Browse → Get the add-on list: "127
+    add-on(s) in the list", thumbnails; search box typed: `batman` → Batman (any cleaner) "Installed (as batman.pak)
+    / the same add-on" (Dan's batman.pak has the shop pak's content id), `coach` → Add → `shop: coach verified (size,
+    SHA-256 ...)`, `coach.pak -> mounted (read order 1001, at runtime)`, chat `/model coach` → `hero slot 0 wears
+    outfit coach`; Remove twice → "removed after restart"; restart → `shop: removed coach.pak`, gone from
+    addonlist.txt.
+  - Dev build (`shop status`): 127 items, 127 rows `thumb=uploaded` (126 textures: two entries share a picture),
+    search `coach` shows Add##coach and hides Add##bill; `batman-any [installed-as] ... same content`; a different
+    `coach.pak` build saved as `old_coach.pak` → coach `installed as old_coach.pak: outfit coach`; with the shop's
+    coach.pak next to it → `addons: duplicate: old_coach.pak and coach.pak both add outfit coach: coach.pak's is used`
+    + the notice; batman.pak + a copy → "installed twice". `tools/shop-test.py` 37/37 (+5: step 8).
+
 ## 6. Open
-- Player build: fetching the real (empty) list driven live (#38, §5); Add from the real catalog not yet (it has no
-  entries).
 - Native Windows: WinHTTP to raw.githubusercontent.com, renames in the add-ons folder while a pak is mounted (the
   engine keeps pak handles open: Remove/Update never touch a mounted file before the next start).
 - The shop repo is empty: Dan decides what gets published.

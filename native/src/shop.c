@@ -543,6 +543,15 @@ static void panel(void) {
             ov_text_dim("%s%s%slicense %s, %s, %s", it->author[0] ? "by " : "", it->author, it->author[0] ? ", " : "", it->license, it->cls, sz);
             if (it->adds[0]) ov_text_dim("Adds: %s", it->adds);
             if (it->replaces[0]) ov_text_dim("Replaces: %s", it->replaces);
+            if (rs == 6) {   // already in the folder under another file name: said here (the last column is narrow)
+                const char *lw; like_of(i, &lw);
+                int same = !strcmp(lw, "same content");
+                ov_text("Installed (as %s)", why);
+                ov_tooltip("Already in your add-ons folder under another file name, so the Browse tab doesn't add it twice. "
+                           "The Add-ons tab switches it on/off.");
+                if (same) ov_text_dim("the same add-on");
+                else ov_text_dim("%s adds the same %s", why, lw);
+            }
             ov_table_next();
             const char *old = too_old(it);
             if (rs == 5) {
@@ -554,13 +563,8 @@ static void panel(void) {
                 if (ov_button(lab)) { const char *e = add(i); if (e) overlay_note(e); }
                 ov_end_disabled();
             } else if (rs == 6) {
-                const char *lw; like_of(i, &lw);
-                AddonState as;
-                ov_text("Installed (as %s)", why);
-                ov_text_dim("%s%s%s", strcmp(lw, "same content") ? "it also adds " : "the same add-on",
-                            strcmp(lw, "same content") ? lw : "", addons_state(why, &as) ? (as.on ? "" : "; switched off") : "");
-                ov_tooltip("Already in your add-ons folder under another file name, so the Browse tab doesn't add it twice. "
-                           "The Add-ons tab switches it on/off.");
+                AddonState as;   // that add-on's state, short like an installed row's ("on", "off", ...)
+                ov_text("%s", addons_state(why, &as) ? as.state : "in the folder");
             } else if (rs == 2 || rs == 3) {
                 ov_text_warn(rs == 2 ? "removed after restart" : "updated after restart");
                 snprintf(lab, sizeof lab, "Undo##%s", it->id);
