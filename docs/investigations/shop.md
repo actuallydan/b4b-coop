@@ -140,6 +140,13 @@ is inside netguard's updater scope; no API call, so no 60/hour limit).
   accepted. Undo before the restart rewrites `pending.txt` (and switches the add-on back on).
 - Installed state: the file `<id>.pak` in the folder; its SHA-256 (computed after the list arrives) against the list
   tells "installed" from "update available". The row shows the Add-ons tab's state (`on`, `on after restart`, ...).
+- The same add-on under another file name (2026-10-05; players had `batman.pak` before the shop listed `batman-any`):
+  no `<id>.pak`, but another present add-on has the entry's `content_id` (= the agent's pak index SHA1, the same value
+  `tools/shop-catalog.py` writes) or adds an outfit/weapon look the entry's `adds` names (`outfit batman (any)`) →
+  the row says **Installed (as batman.pak)** ("the same add-on" / "it also adds outfit batman"), no Add; `shop add`
+  refuses with "already installed as batman.pak"; dev `shop status` row `[installed-as] ... msg=installed as
+  batman.pak: outfit batman` (`addons_installed_like()`, re-checked after each Add). If both are present anyway, the
+  Add-ons tab reports them as a duplicate (addons.md "Duplicates").
 
 ## 5. Tests
 - Unit (`native/test/run.sh`): 84 checks (+17; 88 with the shop key checks): streaming SHA-256 against one-shot, catalog parse (skipped entries,

@@ -15,6 +15,8 @@ folder (addons_dir= in the test prefix). Steps:
   5. in a mission: Add ak47: mounted at once, weapon look usable; Remove ak47: switched off, removed after restart
   6. restart: ak47 deleted and gone from addonlist.txt, holly_green and casual_joe mounted at start
   7. a newer holly_green in the list: Update -> .new staged -> restart -> the new file is in place
+  8. casual_joe renamed to my_joe.pak + a copy: logged and noticed as the same add-on twice; the Browse tab shows
+     casual_joe "installed as my_joe.pak" and refuses to add it again
 --real instead: no shop_catalog=/shop_pubkey= (the build's own URL and shop key): the real shop repo's list is
 fetched from GitHub, verified and shown with as many add-ons as it has; screenshot. Adds nothing.
 Needs the build under test installed (launch/install.sh) and the lane's lock (taken here unless --no-lock).
@@ -309,6 +311,25 @@ def run(a, S):
     g = S.logs[1]
     want = sha(os.path.join(a.src, "paks", "holly_magenta.pak"))
     check("restart: the updated file is in place", sha(os.path.join(ADDONS, "holly_green.pak")) == want and bool(g.grep(r"shop: updated holly_green\.pak", False)))
+
+    # 8. the same add-on under other file names (a player's own copy, e.g. batman.pak for the shop's batman-any)
+    S.stop()
+    time.sleep(3)
+    os.rename(os.path.join(ADDONS, "casual_joe.pak"), os.path.join(ADDONS, "my_joe.pak"))
+    shutil.copy(os.path.join(ADDONS, "my_joe.pak"), os.path.join(ADDONS, "my_joe_copy.pak"))
+    if not start(S, extra): return
+    g = S.logs[1]
+    check("same add-on twice: logged as a duplicate", bool(g.grep(r"addons: duplicate: my_joe\.pak and my_joe_copy\.pak are the same add-on", False)))
+    check("same add-on twice: player notice", bool(g.grep(r"addons: notice: Add-on .* is installed twice \(my_joe\.pak and my_joe_copy\.pak\)", False)))
+    e2e.agent(1, "shop", "fetch")
+    s = wait_shop(lambda s: "phase=ready" in s and "busy=0" in s and "items=4" in s, 90)
+    rw = row(s, "casual_joe") or ("?",) * 6
+    check("Browse: casual_joe shown as installed (as my_joe.pak)", rw[0] == "installed-as" and "installed as my_joe.pak: same content" in rw[5], f"{rw[0]} / {rw[5][:100]}")
+    r = e2e.agent(1, "shop", "add", "casual_joe")
+    check("Browse: no second copy added", "already installed as my_joe.pak" in r and not os.path.exists(os.path.join(ADDONS, "casual_joe.pak")), r.splitlines()[0] if r else "")
+    e2e.agent(1, "overlay", "open"); e2e.agent(1, "overlay", "tab", "Browse")
+    time.sleep(2)
+    shot("8-browse-installed-as.png")
     srv.shutdown()
 
 

@@ -77,7 +77,14 @@ Hope, `/model holly_elite_00` showed the replacement model in third person (scre
 - Conflicts: a hash map file path (lower case, `../` stripped) -> last add-on; every overwrite by another add-on
   counts for that (loser, winner) pair. Then package stems (path minus `.uasset/.uexp/.ubulk/.uptnl/.umap`) -> owner;
   two owners for one stem = "mixed". Logged as `addons: conflict: ...`; `addons_init()` (init_thread) queues one
-  `chat_local_later` notice (mixed first, then a single conflict by title, else a count, else unloadable add-ons).
+  `chat_local_later` notice (mixed first, then a duplicate, then a single conflict by title, else a count, else
+  unloadable add-ons).
+- Duplicates (2026-10-05): two add-ons on at start with the same content id (one add-on under two file names, e.g. a
+  player's `batman.pak` and the shop's `batman-any.pak`) or declaring the same outfit/weapon look name (only the later
+  one's is worn). Logged `addons: duplicate: a.pak and b.pak are the same add-on ...` / `... both add outfit x: b.pak's
+  is used`; notice `Add-on "X" is installed twice (a.pak and b.pak): switch one off.` / `Add-ons a.pak and b.pak both
+  add outfit x ...`; `/addons` and the Add-ons tab say the same instead of "overrides" (identical paks also share every
+  file path, which alone read as a plain conflict).
 - `addons_mount()` from the `FPakPlatformFile::Initialize` hook, right after the retail paks:
   `paks_mount_unsigned(path, order)` (bSigned cleared for that Mount only, path recorded for the other two
   exemptions).
