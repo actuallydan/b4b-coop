@@ -79,7 +79,8 @@ netguard=block        # block (default) | log (record "WOULD-BLOCK" but allow) |
 netguard_eos=1        # 0 = leave EOS network status alone (DNS blocking still applies)
 netguard_allow=my.ddns.example,*.example.org,203.0.113.7   # repeatable
 ```
-Retail online play needs `netguard=off`.
+Retail online play is never done with the agent loaded: the launcher moves it out of the game's folders before an
+online start, and with the agent loaded the sign-in is always Offline (online-mode.md, #47).
 
 ### Agent command
 `b4b.py netguard` lists the mode, EOS state, allowlist, and every blocked/allowed destination with count,

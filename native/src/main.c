@@ -137,6 +137,7 @@ static DWORD WINAPI init_thread(LPVOID _) {
     addons_init();
     updater_init();
     shop_init();
+    online_init();
 #ifndef B4B_RELEASE
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
 #endif
@@ -168,11 +169,10 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID _) {
         DisableThreadLibraryCalls(inst);
         if (agent_is_elsewhere(inst)) return TRUE;
         log_init(inst);
-        // -b4bcoop=off in the Steam launch options: a normal game (the proxy still forwards to the real DLL). On
-        // Windows the root xinput1_3.dll then also leaves Easy Anti-Cheat in place (native/launcher/redirect.c).
-        const wchar_t *cl = GetCommandLineW();
-        for (const wchar_t *p = cl; p && *p; p++)
-            if (!_wcsnicmp(p, L"-b4bcoop=off", 12)) { LOG("b4bcoop %s: off (-b4bcoop=off on the command line), not starting", B4B_VERSION); return TRUE; }
+        // -b4bcoop=off/online: the launcher (native/launcher/redirect.c) moves this DLL out of the way before an
+        // online start; finding ourselves loaded anyway closes the game before it runs (online.c). On Wine it also
+        // turns the launcher on for the next start.
+        if (online_early(inst)) return TRUE;
 #ifdef B4B_RELEASE
         LOG("b4bcoop loaded (player build) as %ls", b4b_proxy_name);
 #else

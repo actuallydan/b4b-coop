@@ -78,7 +78,7 @@ command has a control (checklist below); the chat commands stay.
 | `/model <name>`, `/model reset` (anyone) | Models: click a name (runs `/model <name>`), Use per weapon look, Reset my look; beyond the chat: Reset per weapon type (`wlooks_reset_code`) |
 | `/model <player> <name>\|reset` (host) | Models: "Change the look of" combo (then click a look), Everyone's look table: Change / Reset per row (greyed on a client) |
 | `/models [on\|off]` (host) | Models: "Model swaps allowed" checkbox (client: greyed, shows the host's last announced state), `/models` button, add-on policy line |
-| ini keys | Settings: text size, overlay/flashlight/third-person keys; Camera: `thirdperson*`; Flashlight: sticky; Session: `presence`, `allow_joins`, `allow_steamids` |
+| ini keys | Settings: text size, overlay/flashlight/third-person keys, `launch` ("Game start", online.c, #47); Camera: `thirdperson*`; Flashlight: sticky; Session: `presence`, `allow_joins`, `allow_steamids` |
 
 Beyond the chat: Steam friends list with Invite (was dev-only `invite`), SteamID Copy.
 

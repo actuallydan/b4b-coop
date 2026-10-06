@@ -12,7 +12,7 @@ retail, so client-hosted listen servers are a shipped code path. Steam, IP, and 
 - `launch/run.sh` runs `Gobi/Binaries/Win64/Back4Blood.exe` directly under Proton (no EAC bootstrapper).
   Or a plain Steam launch: the agent is `X3DAudio1_7.dll` (Wine's builtin is prefer-native, so the copy in the game
   dir loads without overrides). Dev-only legacy `dwmapi.dll` (`launch/install.sh --legacy`, not shipped): launch
-  options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`. `-b4bcoop=off` on the command line: the agent starts nothing.
+  options `WINEDLLOVERRIDES="dwmapi=n,b" %command%`. `-b4bcoop=off` = Online: the launcher moves the agent out of the game's folders first (online-mode.md).
   Launch chain, EAC and the Windows redirect: docs/investigations/launch.md.
 - A game started by Wine is reparented to systemd, so `/proc/<pid>/mem` is unreadable under yama ptrace_scope=1.
   Use `launch/probed.sh` (Windows Python in the same prefix, ReadProcessMemory) + `tools/probe.py '<code>'`.
@@ -62,7 +62,9 @@ Transport: PacketRelayNetDriver (IpNetDriver subclass) on UDP 7777 with DTLSHand
   no cvar is registered under those names, so they do nothing.
 - Sign-in screen (`SignInScreen`, state byte +0x568 = ESignInScreenState, set by 0x141D37600): `StartSignIn()` =
   pressing Sign in. `SignInTask_OnlineOfflinePopup` (+0x30 task state, 1 = Running) binds its `OnPopupClosed` to
-  the popup; `PopupUserWidget::Close("Offline")` → OnlineModeSubsystem SetOnlineMode(Offline) (0x141B43CA0).
+  the popup; `PopupUserWidget::Close("Offline")` → `SignInTask_OnlineOfflinePopup::OnPopupClosed(task, popup, FName)`
+  (0x141B43CA0, exec thunk 0x14229B280): "Offline" → OnlineModeSubsystem SetOnlineMode(Offline) (0x141B39F90), any other
+  answer leaves the sign-in Online. online.c turns every answer into Offline while the agent runs (#47).
 - War table start → `Matchmaking::JoinRun` 0x141AE9240 (Map, RunId, OwnerId, Difficulty, Pool, …): offline it logs
   `set local campaign run id`, builds `?Difficulty=?PoolConfig=?game=…?RunOwner=1` and calls SetClientTravel.
   `Matchmaking.Dev_JoinPool` (BlueprintCallable, Coop, not private/quickplay) calls it with run id 0 = new run.

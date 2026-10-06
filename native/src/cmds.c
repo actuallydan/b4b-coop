@@ -331,7 +331,7 @@ static int ini_stat(FILETIME *mt, DWORD *sz) {
 static int ini_apply_live(const char *key, const char *val) {
     return thirdperson_live(key, val) || flashlight_live(key, val) || joinpolicy_live(key, val) ||
            presence_live(key, val) || teamsize_live(key, val) || overlay_live(key, val) || addons_live(key, val) ||
-           updater_live(key, val) || shop_live(key, val);
+           updater_live(key, val) || shop_live(key, val) || online_live(key, val);
 }
 const char *cmds_ini_value(const char *key) {
     const IniKV *e = ini_last.n >= 0 ? ini_find(&ini_last, key) : NULL;

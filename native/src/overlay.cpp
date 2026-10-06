@@ -859,6 +859,7 @@ static void panel_settings(void) {
     ov_text_dim("Changes here apply at once and are saved to b4bcoop.ini (only the settings you change). Editing "
                 "b4bcoop.ini while the game runs updates this window too.");
     ov_text_dim("File: %s", cmds_config_path());
+    online_settings_panel();
 }
 static void panel_help(void) {
     ov_text("b4bcoop %s (protocol %d)", coop_version(), coop_protocol());

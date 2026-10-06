@@ -1,0 +1,3 @@
+// The launcher's prompt uses comctl32 v6 (task dialog, themed controls): redirect.c activates this manifest itself
+// (CreateActCtx on resource 3, ISOLATIONAWARE_NOSTATICIMPORT_MANIFEST_RESOURCE_ID), so loading the DLL changes nothing.
+3 24 "launcher.manifest"

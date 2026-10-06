@@ -14,8 +14,14 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
 ## Layout
 - `native/` — agent DLL (C, zig cc + MinHook), built as a proxy of `X3DAudio1_7.dll` (loads from the game dir on Proton
   and Windows with no launch options) and of `dwmapi.dll` (legacy, dev only: `launch/install.sh --legacy`, not shipped). Proxies are generated into `native/proxy/` by
-  `tools/gen-proxy.py`. `native/launcher/redirect.c` → `xinput1_3.dll` for the game root: on Windows the Steam
-  launcher stub loads it and it starts the game instead of the EAC bootstrapper. docs/investigations/launch.md.
+  `tools/gen-proxy.py`. `native/launcher/redirect.c` → `xinput1_3.dll` for the game root: the Steam launcher stub
+  loads it (Windows by itself; Proton through the `AppDefaults\Back4Blood.exe` DllOverride online.c sets) and it asks
+  **b4bcoop co-op / Online** (#47; task dialog, `launcher.rc` manifest; remembered as ini `launch=`; Shift or
+  `-b4bcoop=ask` asks anyway; `+b4bcoop_join` = co-op): co-op starts the game instead of the EAC bootstrapper,
+  Online moves the agent DLLs to `<game>\b4bcoop-online\` first and lets the stub start EAC unchanged; the next co-op
+  pick moves them back. Dev: env `B4B_LAUNCHER_ANSWER=coop|online[+remember]|cancel`, `-b4bcoop_test_suspend` (EAC's
+  launcher created suspended), `rundll32 xinput1_3.dll,b4bcoop_prompt_test`; `B4B_STUB=1 launch/run.sh` runs the
+  stub. docs/investigations/launch.md, online-mode.md.
   `native/build.sh` → `native/out/` (dev build); `native/build.sh --release` → `native/out/release/` (player build,
   defines `B4B_RELEASE`: no TCP command server, no dev/test commands, no `offline=1` automation; what
   `launch/package.sh` ships); both produce all three DLLs and generate `native/out/gen/b4bcoop_version.h` from
@@ -23,9 +29,13 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   `testing.c`, the command server, every CLI-only `*_cmd` handler). Player builds are verified from their log
   (`b4bcoop loaded (player build) as X3DAudio1_7.dll`), not with `tools/b4b.py`.
   - `ue.c/h` reflection layer for B4B's modified UE 4.25 (XOR'd GUObjectArray, shuffled FField, UObject +8).
-  - `main.c` Tick hook; logs `b4bcoop <version> (protocol N)` at load; `-b4bcoop=off` on the command line = the agent
-    starts nothing. Dev builds: game-thread command queue + TCP command server (127.0.0.1:47112, first free of
-    +0..7; `B4B_COOP_PORT` pins it).
+  - `main.c` Tick hook; logs `b4bcoop <version> (protocol N)` at load; `-b4bcoop=off` on the command line = the launcher
+    kept the agent out; finding itself loaded anyway it closes the game (online.c). Dev builds: game-thread command
+    queue + TCP command server (127.0.0.1:47112, first free of +0..7; `B4B_COOP_PORT` pins it).
+  - `online.c` (#47) the agent's side of the launch choice: on Wine sets the launcher's DllOverride (DllMain);
+    `-b4bcoop=off/online` with the agent loaded closes the game before it runs; the game's sign-in popup answer
+    Online becomes Offline (hook on SignInTask_OnlineOfflinePopup::OnPopupClosed 0x141B43CA0); `~` Settings "Game
+    start" (ini `launch`). Dev `signin online` (refused unless that hook is on). docs/investigations/online-mode.md.
   - `travel.c` SetClientTravel hook: host's absolute travel → `servertravel ...?listen` (and no HostStartedSoloGame kick
     while hosting); client follow/rejoin; drops a failed join's `?closed` (no own-camp reload). join-timing.md.
   - `netguard.c` outbound-traffic guard from DllMain (DNS/WinHTTP/TCP allowlist, EOS network off; `netguard`
@@ -355,6 +365,12 @@ own `addons_dir=`; bad signature, damaged/truncated downloads refused, Add outfi
 mission mounted at once and worn, replacement after restart, Remove and Update at the next start; 32 checks;
 `B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/shop-test.py [--no-lock]`; test paks in
 `~/.local/share/b4b-coop/shop-test/src/`, never committed).
+**Launch choice co-op / Online (#47): `tools/online-test.py`** (live, test instance 1 on its own prefix and ini, never
+online: EAC's launcher is only ever created suspended, then killed): the agent's Wine DllOverride for the launcher,
+the sign-in popup's Online answered Offline, the stub's prompt (co-op: no EAC, agent loaded; Online + remember: agent
+moved to `b4bcoop-online`, ini `launch=online`, nothing of ours mapped in EAC's launcher, no game process), remembered
+choice, Steam join = co-op (agent moved back), `-b4bcoop=ask` + cancel, `-b4bcoop=off` with the agent loaded closed;
+`B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/online-test.py [--no-lock]`.
 **Model mods (`models` branch): `tools/charsuite.py`**, the character suite (mesh-mods.md §17): builds every test
 character of a local manifest (models can't be committed: `~/.local/share/b4b-coop/characters/suite.json`, format +
 CC0 example `tools/charsuite-example.json`) with `b4bmod survivor --as` one at a time in its own extract folder

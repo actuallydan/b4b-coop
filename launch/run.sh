@@ -2,6 +2,8 @@
 # Launch B4B under Proton directly (no EAC bootstrapper). The agent (X3DAudio1_7.dll) needs no DLL override;
 # dwmapi=n,b is for the legacy dwmapi.dll agent.
 # Steam must be running. Extra args are passed to the game.
+# B4B_STUB=1: run the game folder's root Back4Blood.exe (Steam's launch stub) instead, so the b4bcoop launcher
+# (root xinput1_3.dll, once its Wine DllOverride is set: native/src/online.c) asks co-op or online (tests, #47).
 # B4B_STEAM=flatpak (launch/lane.sh; lane 2, test prefixes only): Proton and the game run inside the Flatpak Steam's
 # own sandbox (flatpak enter), sharing its PID and SysV IPC namespaces and /dev/shm, so the game's Steam
 # API reaches the Flatpak client (account dreamsofants) and never the native one; Steam3Master = that client's
@@ -49,6 +51,8 @@ cd "$game/Gobi/Binaries/Win64"
 echo 924970 > steam_appid.txt
 export SteamAppId=924970 SteamGameId=924970
 export WINEDLLOVERRIDES="dwmapi=n,b${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
+rundir=Gobi/Binaries/Win64
+[[ ${B4B_STUB:-} == 1 ]] && { rundir=.; cd "$game"; }
 
 if [[ $B4B_STEAM == flatpak ]]; then
   # Inside the Flatpak Steam's own sandbox (`flatpak enter`: same PID/IPC/mount namespaces and /dev/shm as its
@@ -69,7 +73,7 @@ if [[ $B4B_STEAM == flatpak ]]; then
     '^(B4B_|VKD3D_|DXVK_|PROTON_|WINE|GAMESCOPE_LIMITER_FILE=|ENABLE_GAMESCOPE_WSI=|STEAM_GAME_DISPLAY_|SteamAppId=|SteamGameId=)')
   mapfile -d '' -t senv < <(grep -zv '^WAYLAND_DISPLAY=' "/proc/$parent/environ")   # no desktop Wayland for the game
   exec "${flatpak[@]}" enter "$instance" env -i "${senv[@]}" "${envs[@]}" sh -c 'cd "$1" && shift && exec "$@"' sh \
-    "$sgame/Gobi/Binaries/Win64" "${B4B_FLATPAK_PROTON:-$ssteam/steamapps/common/Proton - Experimental/proton}" \
+    "$sgame/$rundir" "${B4B_FLATPAK_PROTON:-$ssteam/steamapps/common/Proton - Experimental/proton}" \
     run ./Back4Blood.exe -log "$@"
 fi
 

@@ -69,8 +69,9 @@ static int signed_in(void) {
     return p[0] != 0;
 }
 
-// One step of the sign-in flow. Returns 1 when it acted.
-int signin_step(Out *o) {
+// One step of the sign-in flow, answering the Online/Offline popup with `answer` (dev `signin online` tests online.c's
+// guard with "Online"). Returns 1 when it acted.
+int signin_step_as(Out *o, const wchar_t *answer) {
     static UClass *task_c, *screen_c;
     if (!task_c) task_c = ue_find_class("SignInTask_OnlineOfflinePopup");
     if (!screen_c) screen_c = ue_find_class("SignInScreen");
@@ -101,13 +102,15 @@ int signin_step(Out *o) {
         if (o) out_printf(o, "online/offline task running, popup=%p\n", (void *)p);
         if (!p) return 0;
         UFunction *close = ue_find_function(U_CLASS(p), "Close");
-        struct { FName cmd; } args = { make_name(L"Offline") };
-        LOG("signin: answering online/offline popup with Offline");
+        struct { FName cmd; } args = { make_name(answer) };
+        LOG("signin: answering online/offline popup with %ls", answer);
         ue_process_event(p, close, &args);
         return 1;
     }
     return 0;
 }
+
+int signin_step(Out *o) { return signin_step_as(o, L"Offline"); }
 
 static double signin_clock, signin_deadline = 600;
 

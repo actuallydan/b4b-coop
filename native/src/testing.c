@@ -845,7 +845,14 @@ int testing_cmd(const char *verb, char *rest, Out *o) {
     if (!strcmp(verb, "tp")) { cmd_tp(rest, o); return 1; }
     if (!strcmp(verb, "takeover")) { cmd_takeover(rest, o); return 1; }
     (void)rest;
-    if (!strcmp(verb, "signin")) { signin_step(o); return 1; }
+    if (!strcmp(verb, "signin")) {
+        // `signin online`: press Online like a player would; only while online.c turns it into Offline (#47)
+        if (rest && !strcmp(rest, "online")) {
+            if (!online_hook_active()) out_printf(o, "refused: the sign-in popup guard (online.c) is not hooked\n");
+            else signin_step_as(o, L"Online");
+        } else signin_step(o);
+        return 1;
+    }
     if (!strcmp(verb, "mission")) { cmd_mission(rest, o); return 1; }
     if (!strcmp(verb, "ready")) { admin_ready(rest, o); return 1; }
     if (!strcmp(verb, "burncard")) { cmd_burncard(rest, o); return 1; }

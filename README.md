@@ -44,10 +44,12 @@ version.**
 
 ## Play
 1. Press **Play** in Steam. Steam itself must be online: joins go through Steam.
-2. At the Back 4 Blood title screen, sign in and choose **Offline**.
-3. In Fort Hope you are **hosting automatically**: your Steam friends see **Join Game** on you in their Steam friends
+2. b4bcoop asks how you want to play: pick **b4bcoop co-op**. (**Online** is the official online game, see
+   [Play online](#play-online). On Linux/Steam Deck the question appears from the second start on.)
+3. At the Back 4 Blood title screen, sign in and choose **Offline**.
+4. In Fort Hope you are **hosting automatically**: your Steam friends see **Join Game** on you in their Steam friends
    list.
-4. Start missions from the war table as usual. Everyone in your game follows you in.
+5. Start missions from the war table as usual. Everyone in your game follows you in.
 
 **Join a friend:** in the Steam friends list, right-click your friend while they are in Back 4 Blood → **Join Game**,
 or accept their Steam invite. It works with your game closed or running: the game starts if needed, signs in
@@ -56,6 +58,20 @@ Offline and joins them.
 Only the host's **Steam friends** can join. Press **`~`** in game for the b4bcoop window: players (kick, ban, lock),
 join/leave, camera, flashlight, keys, cheats, updates. The same things work as chat commands (`/help` in the game's chat).
 
+## Play online
+Keep the mod installed and play the official online game: press **Play**, pick **Online**. b4bcoop then moves its
+game file (`X3DAudio1_7.dll`) into a `b4bcoop-online` folder next to `Back4Blood.exe` before Easy Anti-Cheat starts
+the game, so the online game runs without any b4bcoop code. The next time you pick **b4bcoop co-op**, the file moves
+back. Before each online start your offline save is copied to
+`PlayerProfileSettings-b4bcoop-before-online-<date>-<time>.sav` next to it (the 5 newest are kept), in case the
+online sign-in touches it.
+- **Remember my choice** skips the question from then on. To get it back: hold **Shift** while the game starts, or
+  `~` window → **Settings** → "Game start" (in co-op), or set `launch=ask` in `b4bcoop.ini`.
+- Controller (Steam Deck): **A** co-op, **Y** online, **X** remember.
+- Steam **Join Game** on a b4bcoop friend always starts co-op.
+- If you pick Online at the game's own Online/Offline sign-in question while b4bcoop runs, you are signed in Offline
+  instead (b4bcoop never goes online); quit and pick Online when the game starts.
+
 ## Options
 All optional. Open `Gobi\Binaries\Win64\b4bcoop.ini` in a text editor and remove the `;` in front of a line to turn
 it on. Saved changes apply within a couple of seconds, also while you play (`host`, `join`, `host_ip` and the network
@@ -63,6 +79,8 @@ options need a game restart). Every option, with defaults and examples:
 [docs/COMMANDS.md](docs/COMMANDS.md#b4bcoopini-options).
 - `host=0`: don't host; your offline game stays private.
 - `teamsize=5`: (host) 5 survivors instead of 4.
+- `launch=coop` or `launch=online`: no question at the game start (what "Remember my choice" writes); `launch=ask`
+  asks again.
 - `flashlight_key=L`: the key for the manual flashlight toggle (`off` turns it off).
 - `allow_joins=anyone`: (host) let in people who aren't your Steam friends; or `allow_steamids=<17-digit Steam ID>`
   for one person.
@@ -94,6 +112,7 @@ Delete these files from the game folder (Steam → right-click Back 4 Blood → 
     - `b4bcoop-LICENSE.txt`
     - the `b4bcoop-addons` folder (only there if you installed add-ons).
     - the `b4bcoop-update` folder (only there if you updated from the game).
+    - the `b4bcoop-online` folder (only there while b4bcoop is switched off for online play).
 2. In `Gobi\Binaries\Win64`:
     - `X3DAudio1_7.dll`
     - `b4bcoop.ini`
@@ -112,9 +131,11 @@ Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `
 ## Troubleshooting
 - **"Everyone needs the same version"**: someone has another b4bcoop version. Press `~`, tab **Updates**: it offers
   the host's version (or the latest). Or everyone downloads the latest release and extracts it again (Install).
-- **Play online / with Easy Anti-Cheat** without removing the mod: add `-b4bcoop=off` to the launch options (Steam →
-  right-click Back 4 Blood → Properties → Launch Options). The game then starts normally. Remove it again to play
-  co-op.
+- **Play online / with Easy Anti-Cheat** without removing the mod: pick **Online** when the game starts (see
+  [Play online](#play-online)). The launch option `-b4bcoop=off` does the same without asking.
+- **b4bcoop is gone after playing online**: pick **b4bcoop co-op** at the next start (hold Shift if you made Online
+  your remembered choice). By hand: move the `Gobi` folder from `b4bcoop-online` back into the game folder, or extract
+  the zip again.
 - **The log**: `Gobi\Binaries\Win64\b4bcoop-<date>-<time>-<number>.log` (the newest one; the last 20 are kept). Its first lines show the version, e.g.
   `b4bcoop 0.3.0 (protocol 1)`. No new log after starting the game = the mod didn't load.
 - **Windows**: this install layout hasn't been tested on a Windows PC yet (it has on Linux and Steam Deck's Proton). If
@@ -170,9 +191,9 @@ Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `
 - **Unofficial.** Not made, endorsed or supported by Turtle Rock Studios or Warner Bros. Games.
 - **Offline mode only.** It uses the game's offline mode and, while it runs, blocks the game's online services
   (Epic/WB/Turtle Rock). Your offline progress is saved on your PC as usual.
-- **Don't use it for online play.** For online play, add `-b4bcoop=off` to the launch options (Windows: Steam's Play
-  then goes through Easy Anti-Cheat again) or remove the mod's files. Playing online with a modified game or without
-  anti-cheat can break the game's terms.
+- **Never in the online game.** Online play goes through Easy Anti-Cheat with b4bcoop's game file moved out of the
+  game's folders first ([Play online](#play-online)); a game that has b4bcoop loaded signs in Offline only. Playing
+  online with a modified game or without anti-cheat can break the game's terms.
 - **Nothing exposed.** By default the mod opens nothing to the network (no Windows Firewall prompt): players connect
   through Steam's peer-to-peer networking, and the game's own network port only listens on your PC itself. Only
   people you allow (Steam friends by default) can join your game.
@@ -190,8 +211,10 @@ Making your own add-ons: see the modkit ([modkit/README.md](modkit/README.md), `
   source.
 - **How it loads.** The game looks for `X3DAudio1_7.dll` (DirectX audio) in its own folder first, on Windows and under
   Proton; ours forwards to the real one. On Windows, Steam's Play button starts a small launcher that would start Easy
-  Anti-Cheat, which keeps mods out; `xinput1_3.dll` is loaded by that launcher and makes it start the game directly
-  instead (only while the mod is installed and `-b4bcoop=off` isn't set). Details: `docs/investigations/launch.md`.
+  Anti-Cheat, which keeps mods out; `xinput1_3.dll` is loaded by that launcher, asks co-op or online, and for co-op
+  starts the game directly instead (on Linux/Steam Deck the mod sets a Wine setting for `Back4Blood.exe` in the game's
+  Proton prefix so that this file loads there too). Details: `docs/investigations/launch.md`,
+  `docs/investigations/online-mode.md`.
 - **Your save.** The mod checks every reward a host sends before it touches your save, and ignores anything outside
   normal mission limits.
 - **No warranty.** MIT licensed ([LICENSE](LICENSE)), provided as is. Back up
