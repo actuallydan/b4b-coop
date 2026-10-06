@@ -87,6 +87,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   - `dialogue.c` client: one cutscene radio line per cue (the host's replicated pick and the client's own level pick
     of `PlayClientCinematicVO` doubled lines/subtitles; the second within 4 s is dropped). Dev `subprobe` (testing.c)
     logs every HUD subtitle with its call stack. model-swap.md #37 "Doubled subtitle".
+  - `fxsig.c` (#46) both roles: a particle component still in the significance manager but no longer active (a client
+    gets the listen host's replicated `bIsActive=0` without the deactivation broadcast) is unregistered before
+    `ResetParticles`; before that, GC freed it and the next significance ParallelFor crashed the client (Titan Tunnels
+    finale). Dev `fxsig [fix|list|guard on|off|kill|gc]`. docs/investigations/particle-significance.md.
   - `slotguard.c` host: a joiner with no free survivor slot gets "Server full." at login (bots' slots count as free),
     a slotless player is kicked instead of spawned (was a host crash, #7); `slotguard` command.
     docs/investigations/slot-guard.md.

@@ -70,6 +70,8 @@ int teamsize_init(void);
 int teamsize_cmd(const char *verb, char *rest, Out *o);  // game thread; 1 if handled (also chat /teamsize)
 int teamsize_get(void);                                  // teamsize= (0 = the game's)
 int dialogue_init(void);                                 // dialogue.c: one cutscene VO line per cue on clients
+int fxsig_init(void);                                    // fxsig.c: inactive particles leave the significance manager (#46)
+int fxsig_cmd(const char *verb, char *rest, Out *o);     // dev builds: `fxsig [fix | guard on|off]`
 int lineup_init(void);                                   // lineup.c: 5th+ hero in the character lineups (#8)
 int lineup_cmd(const char *verb, char *rest, Out *o);    // dev builds: `lineup [off dx dy | fov deg | apply]`
 void teamsize_tick(float dt);
