@@ -1,8 +1,9 @@
 // Auto sign-in Offline: get from the title screen to offline Fort Hope with no clicks.
-//   Press "Sign in" on the title screen, then answer the Online/Offline popup with Offline, exactly like a click
-//   (PopupUserWidget::Close("Offline") -> SignInTask_OnlineOfflinePopup).
-//   Armed for players by a Steam "Join Game" / invite (presence.c -> signin_arm), for up to 10 minutes.
-//   Dev builds also arm it from the ini (offline=1, unattended tests: launch/multi.sh); the `signin` command
+//   Press "Sign in" on the title screen; the Online/Offline question is answered Offline before it is shown (online.c
+//   hooks the task's start); if it shows anyway, it is answered like a click (PopupUserWidget::Close("Offline")).
+//   On by default: a game with b4bcoop loaded is always a co-op start (#47: Online starts never load it). ini
+//   auto_signin=0 shows the game's own sign-in; then a Steam "Join Game" / invite still arms it (presence.c ->
+//   signin_arm) for up to 10 minutes. Dev: offline=0|1 is the same key (launch/multi.sh); the `signin` command
 //   (testing.c) runs one step by hand.
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,8 +70,9 @@ static int signed_in(void) {
     return p[0] != 0;
 }
 
-// One step of the sign-in flow. Returns 1 when it acted.
-int signin_step(Out *o) {
+// One step of the sign-in flow, answering the Online/Offline popup with `answer` (dev `signin online` tests online.c's
+// guard with "Online"). Returns 1 when it acted.
+int signin_step_as(Out *o, const wchar_t *answer) {
     static UClass *task_c, *screen_c;
     if (!task_c) task_c = ue_find_class("SignInTask_OnlineOfflinePopup");
     if (!screen_c) screen_c = ue_find_class("SignInScreen");
@@ -101,21 +103,24 @@ int signin_step(Out *o) {
         if (o) out_printf(o, "online/offline task running, popup=%p\n", (void *)p);
         if (!p) return 0;
         UFunction *close = ue_find_function(U_CLASS(p), "Close");
-        struct { FName cmd; } args = { make_name(L"Offline") };
-        LOG("signin: answering online/offline popup with Offline");
+        struct { FName cmd; } args = { make_name(answer) };
+        LOG("signin: answering online/offline popup with %ls", answer);
         ue_process_event(p, close, &args);
         return 1;
     }
     return 0;
 }
 
-static double signin_clock, signin_deadline = 600;
+int signin_step(Out *o) { return signin_step_as(o, L"Offline"); }
+
+static double signin_clock, signin_deadline = 1e30;   // armed by a Steam join only: 10 minutes
 
 // A join target from Steam (presence.c): sign in Offline for a real player too, for the next 10 minutes.
 void signin_arm(void) {
     if (signin_done) return;
     if (signed_in() == 1) { signin_done = 1; return; }   // already past the title screen
-    if (!g_auto_offline) LOG("signin: auto sign-in (Offline) armed for a Steam join");
+    if (g_auto_offline) return;   // on anyway (the default)
+    LOG("signin: auto sign-in (Offline) armed for a Steam join");
     g_auto_offline = 1;
     signin_deadline = signin_clock + 600;
 }
@@ -136,7 +141,7 @@ void signin_tick(float dt) {
     double clock = signin_clock += dt;
     if (!g_auto_offline || signin_done || clock < next) return;
     if (clock > signin_deadline) { signin_done = 1; LOG("signin: no sign-in after 10 min, auto sign-in off"); return; }
-    next = clock + 0.5;
+    next = clock + 0.25;
     if (!ue_world()) return;
     signin_step(NULL);
     if (signin_done) LOG("signin: signed in, auto sign-in off");

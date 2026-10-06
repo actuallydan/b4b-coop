@@ -33,7 +33,7 @@ of the window, and also in your chat.
 | **Models** | Your look now and your pick, the host's refusal when it said no, **Reset my look**; lists to wear with a search box (click a name): **Survivors** (per survivor: whole survivor, outfits, heads, torsos, legs), **NPC bodies** (Fort Hope NPCs, other survivors, cultists), **Add-on outfits** (by add-on); **Weapon looks** per weapon type (**Use**, which add-on it comes from, **Reset** for that weapon type); **Everyone's look** (every player and bot); host: **Change the look of** a player or bot (then click a look), their **Reset**, **Model swaps allowed** (greyed on a client, with the host's last announced state) | `/model`, `/model list ...`, `/model <name>`, `/model reset`, `/model <player> <name>\|reset`, `/models on\|off` |
 | **Add-ons** | Your add-ons in load order: on/off, **Up**/**Down** (load order), cosmetic or gameplay (and what kind), "not loaded" with the reason, conflicts (who wins); click one for its details (author, description, id with Copy, outfits it adds); a banner when `addonlist.txt` differs from what is loaded (restart to apply); the folder path (Copy); "Load add-ons" (`addons`); host: who may join with add-ons (`addons_policy`; nobody sees other players' add-ons) | `/addons`, `/addons on\|off`, `/addons info`, `/addons policy`; ini `addons`, `addons_policy` |
 | **Browse** | The add-on shop: **Get the add-on list** (free add-ons with a public license, with picture, author, license, size, what each adds or replaces), search and filter, **Add**, **Remove**, **Update**, **Undo**; click one for its details (license link, description). See [Browse (add-on shop)](#browse-add-on-shop) | ini `shop` (no chat command) |
-| **Settings** | The window's text size and key, the flashlight and third-person keys | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key` |
+| **Settings** | The window's text size and key, the flashlight and third-person keys; **Game start**: ask co-op or online every time, always b4bcoop co-op, always online (see [Co-op or online](#co-op-or-online-at-the-game-start)) | ini `overlay_scale`, `overlay_key`, `flashlight_key`, `thirdperson_key`, `launch` |
 | **Updates** | Your version; **Check for updates** (the latest release: version, protocol, short notes); **Download and install on next start**; the host's version after a "same version" refusal (**Check** it); **Go back to** the previous version. See [Updates](#updates) | ini `updates` (no chat command) |
 | **Help** | Your version, a box to run any chat command (without the `/`) | `/help` |
 
@@ -496,9 +496,9 @@ Rules:
   `flashlight_key`, `flashlight_sticky`,
   `flashlight_width`, `flashlight_range`, `flashlight_brightness`,
   `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
-  `overlay_scale`, `addons_policy`, `updates`. Only the lines you changed count: an edit doesn't undo what you set with a chat command this
+  `overlay_scale`, `addons_policy`, `updates`, `launch` (read at the next game start). Only the lines you changed count: an edit doesn't undo what you set with a chat command this
   session. Deleting or commenting out a line = back to its default.
-- **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
+- **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `auto_signin`, `host`, `join`,
   `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.
 - **Updating b4bcoop** (extracting a new zip) replaces `b4bcoop.ini` with a fresh one: note your changes first.
   Bans (`b4bcoop-bans.txt`) are kept.
@@ -531,6 +531,8 @@ Rules:
 | `netguard` | `block` | `block`, `log`, `off` | Blocks the game's online services while you play |
 | `join` | none | `steam:<id>` | Always join this host automatically |
 | `host_ip` | `0` | `0`, `1` | **Advanced**: host and join by IP address |
+| `auto_signin` | `1` | `0`, `1` | `0`: the game's own Sign in step and Online/Offline question (co-op starts skip them by default) |
+| `launch` | `ask` | `ask`, `coop`, `online` | At the game start: ask co-op or online, or always one of them (see [Co-op or online](#co-op-or-online-at-the-game-start)) |
 
 **`host`**: you host by default: whenever you're in your offline Fort Hope, your Steam friends can join. `host=0`
 keeps your game private; `/host` still turns hosting on for one game session. Setting `join=` also turns hosting
@@ -619,7 +621,7 @@ co-op; Steam and the co-op connection are not affected. `log` only writes what i
 it off. Try `netguard=off` only if something won't start or connect, and tell us.
 
 **`join`**: optional; **Join Game** in Steam is the normal way to join. With `join=steam:<host's Steam ID>` your game
-joins that host by itself whenever you're alone in your offline Fort Hope (you still sign in Offline yourself; it waits until you have), and
+joins that host by itself whenever you're alone in your offline Fort Hope (after the sign-in), and
 keeps trying until it gets in (a few seconds after a failed attempt, then every 15 seconds). Several hosts can be listed with commas; they're tried in turn. It
 turns hosting off (unless `host=1`). A Steam **Join Game** click overrides it.
 ```ini
@@ -651,21 +653,54 @@ join=steam:7656119XXXXXXXXXX
 
 ## Launch options & troubleshooting
 
-### Turn the mod off without removing it: `-b4bcoop=off`
+### Co-op or online at the game start
 
-Steam → right-click **Back 4 Blood** → **Properties** → **Launch Options**, add:
-```
--b4bcoop=off
-```
-The game then starts as if the mod weren't there (on Windows, with Easy Anti-Cheat again), e.g. to play online.
-Remove it again to play co-op. The log then only says `off (-b4bcoop=off on the command line), not starting`.
+Every Steam **Play** first asks how you want to play:
+- **b4bcoop co-op**: the mod as usual (offline mode, Steam friends join you).
+- **Online**: the official online game with Easy Anti-Cheat. Before Easy Anti-Cheat starts, b4bcoop moves its game
+  file `Gobi\Binaries\Win64\X3DAudio1_7.dll` (and an old `dwmapi.dll`, if there) into the folder `b4bcoop-online`
+  next to `Back4Blood.exe`, so the online game can't load any b4bcoop code. When you pick co-op the next time, it
+  moves back. `b4bcoop-online\README.txt` says the same while it is there. Before each online start the offline save
+  is copied to `PlayerProfileSettings-b4bcoop-before-online-<date>-<time>.sav` (and `.json`) in
+  `%LOCALAPPDATA%\Back4Blood\Steam\Saved\SaveGames`, the 5 newest kept: to restore one, quit the game and copy it
+  over `PlayerProfileSettings.sav`.
+- With no input at all (no key, mouse or controller) it picks **b4bcoop co-op** after 15 seconds (the countdown
+  shows in the question); any input stops the countdown.
+- Closing the question (X, Esc, controller **B**) starts nothing.
+- **Remember my choice** writes `launch=coop` or `launch=online` into `b4bcoop.ini` and skips the question from then
+  on. To be asked again: hold **Shift** while the game starts (from pressing Play until the question shows), or `~`
+  window → **Settings** → **Game start** → "Ask every time" (in co-op), or `launch=ask` / delete the line.
+- Controller: **A** co-op, **Y** online, **X** remember, **B** close.
+- A Steam **Join Game** or invite from a b4bcoop friend always starts co-op, whatever you remembered.
+- Linux/Steam Deck: the first start after installing has no question (co-op, as before). It sets a Wine setting for
+  `Back4Blood.exe` in the game's Proton prefix (`xinput1_3=native,builtin`) so that the launcher file loads; from the
+  next start on the question appears, and co-op starts skip the Easy Anti-Cheat launcher like on Windows.
+- A co-op start skips the game's own sign-in: b4bcoop presses Sign in and answers the Online/Offline question with
+  Offline before it appears, so you go straight from the title screen to Fort Hope. `auto_signin=0` shows the game's
+  sign-in again; picking **Online** there signs you in **Offline** anyway (b4bcoop never takes a game online) and
+  your chat says how to play online.
+
+Launch options (Steam → right-click **Back 4 Blood** → **Properties** → **Launch Options**) choose without asking:
+
+| Launch option | Start |
+|---|---|
+| `-b4bcoop=off` (or `-b4bcoop=online`) | Online, b4bcoop switched off (the same as picking **Online**) |
+| `-b4bcoop=coop` | b4bcoop co-op |
+| `-b4bcoop=ask` | Ask, even with a remembered choice |
+
+If a game ever starts with `-b4bcoop=off` but with b4bcoop loaded (Linux/Steam Deck before that first co-op start, or
+the `xinput1_3.dll` next to `Back4Blood.exe` missing), b4bcoop closes it before it starts, with a message, rather than
+let it go online; start it again.
+`Gobi\Binaries\Win64\b4bcoop-launcher.log` shows each start's choice (`choice: online (the prompt)`, `switched off:
+...`, `switched on: ...`).
 
 ### The log, and reporting a problem
 
 - The log is `Gobi\Binaries\Win64\b4bcoop-<date>-<time>-<number>.log` in the game folder. Every game start writes a new one (the last 20 are kept): take
   the **newest**. Its first lines show the version, e.g. `b4bcoop 0.3.0 (protocol 1)`.
 - No new log after starting the game = the mod didn't load (check that all files from the zip are in place).
-- Windows only: if the mod doesn't load, also `Gobi\Binaries\Win64\b4bcoop-launcher.log` (if it exists).
+- If the mod doesn't load or the start question doesn't appear, also `Gobi\Binaries\Win64\b4bcoop-launcher.log` (if it
+  exists).
 - A line `unsupported game build (signature mismatch)` means your Back 4 Blood version isn't the one this b4bcoop
   release supports; the mod then does nothing.
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build and install the b4bcoop agent into the game (no Steam launch options needed, docs/investigations/launch.md):
 #   Gobi/Binaries/Win64/X3DAudio1_7.dll   the agent (loads on Proton and Windows from the game's own folder)
-#   xinput1_3.dll (game root)             Windows launch redirect past the EAC bootstrapper (inert under Proton)
+#   xinput1_3.dll (game root)             the launcher: asks co-op or online at every Steam start, co-op skips the EAC
+#                                         bootstrapper (Proton: once the agent set its DllOverride, native/src/online.c)
 # Removes the other variant and UE4SS if present.
 #   launch/install.sh             dev build (command server, test commands): what launch/multi.sh and tools/b4b.py need
 #   launch/install.sh --release   player build (what launch/package.sh ships), to test it locally
@@ -26,6 +27,7 @@ done
 rm -rf "$bin/ue4ss"
 # rm first: a running game maps the old file, and overwriting it in place would corrupt that mapping
 rm -f "$bin/dwmapi.dll" "$bin/X3DAudio1_7.dll" "$game/xinput1_3.dll"
+rm -rf "$game/b4bcoop-online"   # an agent the launcher switched off for an online start (#47): this install replaces it
 if [[ $legacy == 1 ]]; then
   cp "$out/dwmapi.dll" "$bin/dwmapi.dll"
   echo "installed b4bcoop ($flavor, legacy dwmapi.dll) into $bin"

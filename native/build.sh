@@ -54,10 +54,10 @@ agent() {   # agent <proxy name> <output file>
   cc -I"$mh/include" -I"$here/src" -I"$mc" -I"$mc/optional" -I"$puff" -I"$stb" \
     "$here"/src/*.c "$here/proxy/$1.c" "$mh"/src/hook.c "$mh"/src/buffer.c "$mh"/src/trampoline.c "$mh"/src/hde/hde64.c \
     "$mc/monocypher.c" "$mc/optional/monocypher-ed25519.c" "$puff/puff.c" \
-    "${cxx_objs[@]}" "$here/proxy/$1.def" -lws2_32 -lc++ -o "$out/$2"
+    "${cxx_objs[@]}" "$here/proxy/$1.def" -lws2_32 -ladvapi32 -lc++ -o "$out/$2"
 }
 agent x3daudio1_7 X3DAudio1_7.dll
 agent dwmapi dwmapi.dll
-cc "$here/launcher/redirect.c" "$here/proxy/xinput1_3.c" "$here/proxy/xinput1_3.def" -o "$out/xinput1_3.dll"
+cc "$here/launcher/redirect.c" "$here/launcher/launcher.rc" "$here/proxy/xinput1_3.c" "$here/proxy/xinput1_3.def" -o "$out/xinput1_3.dll"
 rm -f "$out"/*.lib "$out"/*.pdb
 echo "built $out/{X3DAudio1_7,dwmapi,xinput1_3}.dll ($flavor, b4bcoop $version protocol $protocol)"

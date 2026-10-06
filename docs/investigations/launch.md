@@ -1,5 +1,9 @@
 # Loading the mod with the fewest steps (Windows + Linux/Steam Deck)
 
+> Since #47 the root `xinput1_3.dll` (§3 A) also asks **b4bcoop co-op or Online** at every Steam start, and loads under
+> Proton too through a Wine DllOverride the agent sets: docs/investigations/online-mode.md. The pass-through rules in
+> §3 A are replaced by that choice (Online moves the agent out of `Gobi\Binaries\Win64` before EAC starts).
+
 Goal: players copy files and press Play in Steam. No `.cmd`/shell scripts, no launch options, nothing alarming.
 Build analysed: Steam buildid 14216215. Tools: `tools/appinfo.py` (Steam appinfo.vdf), `tools/pe.py` (static analysis).
 
@@ -193,8 +197,9 @@ Both OSes, one zip (`launch/package.sh` → `dist/b4bcoop-<version>.zip`, layout
 
 Uninstall: the README's "Remove" list (`launch/uninstall.sh` does the same). Upgrading from the dwmapi version:
 delete `dwmapi.dll`, the `.cmd` and the `steam_appid.txt` it wrote; Linux: remove the launch option (harmless if
-left, but pointless). A normal game without uninstalling: launch option `-b4bcoop=off` (Windows: the redirect passes
-through to EAC; both OSes: the agent stays a plain proxy and starts nothing).
+left, but pointless). A normal (online) game without uninstalling: pick **Online** at the start, or launch option
+`-b4bcoop=off` (since #47 the launcher moves the agent out of the game's folders first; before, the agent stayed in
+`Gobi\Binaries\Win64` as a plain proxy, which an EAC-protected game would still have loaded: online-mode.md).
 
 | | Verified | Hypothesis |
 |---|---|---|

@@ -46,6 +46,13 @@ int presence_live(const char *key, const char *val);
 int teamsize_live(const char *key, const char *val);
 int overlay_live(const char *key, const char *val);
 int addons_live(const char *key, const char *val);
+// online.c (#47): the launch choice co-op / online (launcher: native/launcher/redirect.c). online_early from DllMain
+// (1 = the game is being closed: -b4bcoop=off/online but we were loaded), online_init from the init thread, ini
+// launch=ask|coop|online, its section in the ~ window's Settings tab.
+int online_early(void *module);
+int online_init(void);
+int online_live(const char *key, const char *val);
+void online_settings_panel(void);
 // overlay.cpp: the `~` power-user window (#26; Dear ImGui over the game's D3D12 swap chain). Panels: overlay.h
 int overlay_init(void);
 void overlay_tick(float dt);
@@ -129,6 +136,8 @@ void signin_arm(void);                         // arm it for a Steam join (next 
 int signin_pending(void);                      // auto sign-in armed and not finished
 int signin_on_title(void);                     // sign-in screen up (not signed in yet)
 int signin_step(Out *o);                       // one step (dev `signin` command); 1 if it acted
+int signin_step_as(Out *o, const wchar_t *answer);   // same, answering the popup with answer (dev `signin online`)
+int online_hook_active(void);                  // online.c: the sign-in popup guard is hooked (Online -> Offline)
 void signin_tick(float dt);
 void presence_init(void);                      // presence.c: Steam rich presence, Join Game, invites
 void presence_tick(float dt);

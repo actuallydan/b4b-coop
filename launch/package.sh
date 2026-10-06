@@ -30,6 +30,13 @@ cat > "$ini" <<'INI'
 ; To turn a setting on, remove the ';' at the start of its line. Saved changes apply within a couple of
 ; seconds, also while you play (host, join, host_ip, netguard: restart the game).
 
+; At the game start: ask "b4bcoop co-op or Online" (ask), or always start co-op (coop) or the online game (online).
+; "Remember my choice" in that question writes this line. Hold Shift while the game starts to be asked anyway.
+;launch=ask
+
+; Co-op starts sign in Offline by themselves (no Sign in button, no Online/Offline question). 0 = the game's own.
+;auto_signin=0
+
 ; Don't host: your offline game stays private.
 ;host=0
 
@@ -90,19 +97,32 @@ INSTALL (Windows, Linux and Steam Deck - the same steps)
 
 PLAY
 1. Press Play in Steam. Steam itself must be online: joins go through Steam.
-2. At the title screen, sign in and choose Offline.
-3. In Fort Hope you are hosting automatically: your Steam friends see "Join Game" on you in their
+2. b4bcoop asks how you want to play: pick "b4bcoop co-op" (picked for you after 15 seconds without input).
+   "Online" = the official online game, see PLAY ONLINE. On Linux/Steam Deck the question appears from the second
+   start on.
+3. The game signs in Offline by itself (no Sign in button, no Online/Offline question).
+4. In Fort Hope you are hosting automatically: your Steam friends see "Join Game" on you in their
    Steam friends list. Nothing to set up, no ports to open.
-4. Start missions from the war table as usual. Everyone in your game follows you in.
+5. Start missions from the war table as usual. Everyone in your game follows you in.
 JOIN A FRIEND: in the Steam friends list, right-click your friend while they are in Back 4 Blood >
 Join Game, or accept their Steam invite. Works with your game closed or running.
 Only the host's Steam friends can join. Press ~ in game for the b4bcoop window (players, join/leave,
 camera, flashlight, keys, cheats, updates); the same things work as chat commands (/help in the game's chat).
 The window, all chat commands and options, with examples: b4bcoop-COMMANDS.txt (next to this file).
 
+PLAY ONLINE (the mod stays installed): press Play, pick "Online". b4bcoop moves its game file (X3DAudio1_7.dll) into
+a b4bcoop-online folder next to Back4Blood.exe before Easy Anti-Cheat starts the game, so the online game runs
+without any b4bcoop code; it moves back the next time you pick "b4bcoop co-op". Before each online start your
+offline save is copied to PlayerProfileSettings-b4bcoop-before-online-<date>-<time>.sav next to it (5 kept).
+"Remember my choice" skips the question from then on (launch= in b4bcoop.ini). To be asked again: hold Shift while
+the game starts, or ~ window > Settings > Game start (in co-op), or launch=ask. Controller: A co-op, Y online,
+X remember. A Steam Join Game always starts co-op. In co-op the game's own sign-in step is skipped (auto_signin=0
+in b4bcoop.ini shows it; Online there still signs you in Offline).
+
 OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, remove the ';' in front of a line.
 Saved changes apply within a couple of seconds, also while you play (host, join, host_ip: restart the game).
   host=0             don't host; your offline game stays private
+  launch=coop        no question at the game start, always co-op (launch=online: always online; launch=ask: ask)
   teamsize=5         (host) 5 survivors instead of 4
   flashlight_key=L   the flashlight toggle key (off turns it off)
   thirdperson=1      start in third person (thirdperson_key=N, the toggle key; off turns it off)
@@ -125,7 +145,7 @@ your game checks yours before joining). Details: b4bcoop-COMMANDS.txt, "Add-ons"
 REMOVE: delete these files from the game folder.
 1. Next to Back4Blood.exe: xinput1_3.dll, b4bcoop-README.txt, b4bcoop-COMMANDS.txt, b4bcoop-LICENSE.txt, and
    the b4bcoop-addons folder (only there if you installed add-ons), the b4bcoop-update folder (only there if you
-   updated from the game).
+   updated from the game), the b4bcoop-online folder (only there while b4bcoop is switched off for online play).
 2. In Gobi\Binaries\Win64: X3DAudio1_7.dll, b4bcoop.ini, all b4bcoop-*.log files, and b4bcoop-bans.txt
    (only there if you banned someone).
 3. Left over from older versions, if present, in Gobi\Binaries\Win64: dwmapi.dll, "Play B4B co-op.cmd",
@@ -138,8 +158,10 @@ Making your own add-ons: see the modkit (b4bcoop-modkit-<version>.zip on the b4b
 TROUBLESHOOTING
 - "Everyone needs the same version": someone has another b4bcoop version. Press ~, tab Updates: it
   offers the host's version (or the latest). Or everyone downloads the latest release and extracts it again.
-- Play online / with Easy Anti-Cheat without removing the mod: add  -b4bcoop=off  to the launch options
-  (Steam > right-click Back 4 Blood > Properties > Launch Options). Remove it again to play co-op.
+- Play online / with Easy Anti-Cheat without removing the mod: pick "Online" when the game starts (PLAY ONLINE).
+  The launch option  -b4bcoop=off  does the same without asking.
+- b4bcoop gone after playing online: pick "b4bcoop co-op" at the next start (hold Shift if Online is your remembered
+  choice). By hand: move the Gobi folder from b4bcoop-online back into the game folder, or extract the zip again.
 - The log: Gobi\Binaries\Win64\b4bcoop-<date>-<time>-<number>.log (the newest one). Its first lines show the version.
   No new log after starting the game = the mod didn't load.
 - Windows: this install layout hasn't been tested on a Windows PC yet (it has on Linux / Proton). If the
@@ -151,7 +173,7 @@ TROUBLESHOOTING
 
 SAFETY
 Unofficial, not affiliated with Turtle Rock Studios or Warner Bros. Games. Offline mode only: it blocks the game's
-online services while it runs. Don't use it for online play. By default nothing is opened to the network: players
+online services while it runs, and is moved out of the game's folders before an online start (PLAY ONLINE). By default nothing is opened to the network: players
 connect through Steam. No warranty (see b4bcoop-LICENSE.txt).
 Source code and how to check this download: https://github.com/actuallydan/b4b-coop
 TXT
