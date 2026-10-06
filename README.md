@@ -44,9 +44,10 @@ version.**
 
 ## Play
 1. Press **Play** in Steam. Steam itself must be online: joins go through Steam.
-2. b4bcoop asks how you want to play: pick **b4bcoop co-op**. (**Online** is the official online game, see
-   [Play online](#play-online). On Linux/Steam Deck the question appears from the second start on.)
-3. At the Back 4 Blood title screen, sign in and choose **Offline**.
+2. b4bcoop asks how you want to play: pick **b4bcoop co-op** (it is picked for you after 15 seconds without input).
+   **Online** is the official online game, see [Play online](#play-online). On Linux/Steam Deck the question appears
+   from the second start on.
+3. The game signs in Offline by itself: no Sign in button, no Online/Offline question.
 4. In Fort Hope you are **hosting automatically**: your Steam friends see **Join Game** on you in their Steam friends
    list.
 5. Start missions from the war table as usual. Everyone in your game follows you in.
@@ -69,8 +70,8 @@ online sign-in touches it.
   `~` window → **Settings** → "Game start" (in co-op), or set `launch=ask` in `b4bcoop.ini`.
 - Controller (Steam Deck): **A** co-op, **Y** online, **X** remember.
 - Steam **Join Game** on a b4bcoop friend always starts co-op.
-- If you pick Online at the game's own Online/Offline sign-in question while b4bcoop runs, you are signed in Offline
-  instead (b4bcoop never goes online); quit and pick Online when the game starts.
+- In co-op the game's own Sign in step is skipped (b4bcoop signs in Offline by itself). With `auto_signin=0` in
+  `b4bcoop.ini` you see it again; picking Online there still signs you in Offline (b4bcoop never goes online).
 
 ## Options
 All optional. Open `Gobi\Binaries\Win64\b4bcoop.ini` in a text editor and remove the `;` in front of a line to turn
@@ -79,6 +80,7 @@ options need a game restart). Every option, with defaults and examples:
 [docs/COMMANDS.md](docs/COMMANDS.md#b4bcoopini-options).
 - `host=0`: don't host; your offline game stays private.
 - `teamsize=5`: (host) 5 survivors instead of 4.
+- `auto_signin=0`: show the game's own Sign in step (Offline is still the only choice that works with the mod).
 - `launch=coop` or `launch=online`: no question at the game start (what "Remember my choice" writes); `launch=ask`
   asks again.
 - `flashlight_key=L`: the key for the manual flashlight toggle (`off` turns it off).

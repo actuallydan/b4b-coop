@@ -34,6 +34,9 @@ cat > "$ini" <<'INI'
 ; "Remember my choice" in that question writes this line. Hold Shift while the game starts to be asked anyway.
 ;launch=ask
 
+; Co-op starts sign in Offline by themselves (no Sign in button, no Online/Offline question). 0 = the game's own.
+;auto_signin=0
+
 ; Don't host: your offline game stays private.
 ;host=0
 
@@ -94,9 +97,10 @@ INSTALL (Windows, Linux and Steam Deck - the same steps)
 
 PLAY
 1. Press Play in Steam. Steam itself must be online: joins go through Steam.
-2. b4bcoop asks how you want to play: pick "b4bcoop co-op" ("Online" = the official online game, see PLAY ONLINE).
-   On Linux/Steam Deck the question appears from the second start on.
-3. At the title screen, sign in and choose Offline.
+2. b4bcoop asks how you want to play: pick "b4bcoop co-op" (picked for you after 15 seconds without input).
+   "Online" = the official online game, see PLAY ONLINE. On Linux/Steam Deck the question appears from the second
+   start on.
+3. The game signs in Offline by itself (no Sign in button, no Online/Offline question).
 4. In Fort Hope you are hosting automatically: your Steam friends see "Join Game" on you in their
    Steam friends list. Nothing to set up, no ports to open.
 5. Start missions from the war table as usual. Everyone in your game follows you in.
@@ -112,8 +116,8 @@ without any b4bcoop code; it moves back the next time you pick "b4bcoop co-op". 
 offline save is copied to PlayerProfileSettings-b4bcoop-before-online-<date>-<time>.sav next to it (5 kept).
 "Remember my choice" skips the question from then on (launch= in b4bcoop.ini). To be asked again: hold Shift while
 the game starts, or ~ window > Settings > Game start (in co-op), or launch=ask. Controller: A co-op, Y online,
-X remember. A Steam Join Game always starts co-op. Picking Online at the game's own sign-in question while
-b4bcoop runs signs you in Offline: quit and pick Online when the game starts.
+X remember. A Steam Join Game always starts co-op. In co-op the game's own sign-in step is skipped (auto_signin=0
+in b4bcoop.ini shows it; Online there still signs you in Offline).
 
 OPTIONS (all optional): open Gobi\Binaries\Win64\b4bcoop.ini in a text editor, remove the ';' in front of a line.
 Saved changes apply within a couple of seconds, also while you play (host, join, host_ip: restart the game).

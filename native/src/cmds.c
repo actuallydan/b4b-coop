@@ -261,7 +261,8 @@ int cmds_auto_host(void) {
 }
 static char auto_join[256];
 static double auto_clock, auto_next;
-int g_auto_offline;      // auto sign-in Offline (signin.c): armed by a Steam join; dev builds also by offline=1
+int g_auto_offline = 1;  // auto sign-in Offline (signin.c): default; ini auto_signin=0 (dev also offline=0) turns it off,
+                         // a Steam join arms it again
 
 // b4bcoop.ini next to the DLL, or B4B_COOP_CONFIG=<windows path> (per-instance config for several local copies
 // sharing one game dir, see launch/multi.sh). Every config reader goes through this.
@@ -540,8 +541,9 @@ static void load_config(void) {
         if (!strcmp(line, "host")) auto_host = atoi(v) != 0;
         else if (!strcmp(line, "join") && *v) snprintf(auto_join, sizeof auto_join, "%s", v);
         else if (!strcmp(line, "host_ip")) host_ip = atoi(v) != 0;
+        else if (!strcmp(line, "auto_signin")) g_auto_offline = atoi(v) != 0;   // 0: the game's own sign-in
 #ifndef B4B_RELEASE
-        else if (!strcmp(line, "offline")) g_auto_offline = atoi(v);   // unattended tests (launch/multi.sh)
+        else if (!strcmp(line, "offline")) g_auto_offline = atoi(v) != 0;   // dev name of auto_signin (launch/multi.sh)
         else if (!strcmp(line, "b4bcoop_protocol_override")) protocol_override = atoi(v);   // fake a version mismatch
 #endif
         else if (!joinpolicy_config(line, v)) steamnet_config(line, v);
@@ -550,7 +552,7 @@ static void load_config(void) {
     filter_ini_join();
     int dflt = auto_host < 0;
     if (dflt) auto_host = auto_join[0] ? 0 : 1;   // hosting is on by default; join= means this copy joins instead
-    LOG("config: %s%s host=%d%s join=%s host_ip=%d offline=%d", path, f ? "" : " (not found: defaults)", auto_host,
+    LOG("config: %s%s host=%d%s join=%s host_ip=%d auto_signin=%d", path, f ? "" : " (not found: defaults)", auto_host,
         dflt ? " (default)" : "", auto_join[0] ? auto_join : "-", host_ip, g_auto_offline);
 #ifndef B4B_RELEASE
     if (protocol_override) LOG("config: b4bcoop_protocol_override=%d (dev): claiming protocol %d", protocol_override, coop_protocol());

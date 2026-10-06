@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Live test of the launch choice b4bcoop co-op / Online (#47, docs/investigations/online-mode.md "Tests") on test
 instance 1 (its own prefix and b4bcoop.ini), without ever going online:
-  1. first start (game exe directly, as Proton's first start through Steam would): the agent sets the Wine
-     DllOverride for the launcher; the game's sign-in popup answered "Online" (dev `signin online`) signs in Offline
-  2. the root stub (B4B_STUB=1): the launcher loads through that override, prompts (dev auto-answer), co-op =
-     the game without EAC, the agent loaded, no start_protected_game.exe
+  1. first start (game exe directly, as Proton's first start through Steam would), auto_signin=0: the agent sets
+     the Wine DllOverride for the launcher; the game's sign-in popup answered "Online" (dev `signin online`) signs in
+     Offline
+  2. the root stub (B4B_STUB=1): the launcher loads through that override, prompts, nobody answers: co-op after the
+     15 s countdown = the game without EAC, the agent loaded, no start_protected_game.exe; the default auto sign-in
+     answers the game's Online/Offline question before it is shown (the game never logs "prompting online/offline")
   3. Online + "Remember my choice": the agent DLLs move to <game>\\b4bcoop-online\\, launch=online lands in the ini,
      and Easy Anti-Cheat's launcher is created SUSPENDED (dev -b4bcoop_test_suspend): it never runs a single
      instruction; its mapped files and command line are checked, no game process exists, then it is killed
@@ -180,13 +182,13 @@ def run():
     check("test prefix: no launcher DllOverride before the first start", REGKEY not in read(USERREG))
 
     # 1. first start (no stub): override set; the sign-in popup's Online becomes Offline
-    ini_set(base + ["host=0"])
+    ini_set(base + ["host=0", "auto_signin=0"])
     t = time.time()
     launch(tag="1-first")
     if not check("1: agent up", wait(lambda: "pong" in agent("ping"), 180, 2)): return
     lg = newest_agent_log(t)
     check("1: agent sets the Wine DllOverride for the launcher", "xinput1_3=native,builtin for Back4Blood.exe" in lg)
-    check("1: sign-in guard hooked", "Online at the sign-in popup is answered Offline" in lg)
+    check("1: sign-in guard hooked (auto_signin=0: the game's own question)", "Online at the sign-in popup is answered Offline" in lg)
     answered = None
     for _ in range(90):
         r = agent("signin", "online")
@@ -210,14 +212,21 @@ def run():
     stop()
     check("1: the override is in the prefix's registry", REGKEY in read(USERREG) and '"xinput1_3"="native,builtin"' in read(USERREG).split(REGKEY, 1)[-1][:200])
 
-    # 2. stub, prompt -> co-op
+    # 2. stub, prompt, no input -> co-op after the countdown; automatic Offline sign-in, question never shown
+    ini_set(base + ["host=0"])
     t = time.time()
     seen = set()
-    launch(stub=True, answer="coop", tag="2-coop")
+    launch(stub=True, answer="wait", tag="2-coop")
     up = wait(lambda: (seen.update(p[1] for p in procs()), "pong" in agent("ping"))[1], 180, 1)
     ll = save_launcher_log("2-coop")
     check("2: launcher loaded in the stub under Proton (DllOverride)", "hooked CreateProcessW" in ll)
-    check("2: prompt answered co-op", "choice: b4bcoop co-op (the prompt)" in ll, "dev auto-answer coop" if "dev auto-answer coop" in ll else ll[-200:])
+    check("2: no input: co-op after the 15 s countdown", "prompt: no input for 15 s: b4bcoop co-op" in ll and "choice: b4bcoop co-op (the prompt)" in ll)
+    signed = wait(lambda: "signed in: yes" in agent("signin"), 120, 2)
+    lg = newest_agent_log(t)
+    open(os.path.join(OUT, "2-agent.log"), "w").write(lg)
+    check("2: signed in Offline by itself", signed and "signin: StartSignIn" in lg and "prompt closed with response Offline" in lg)
+    check("2: the Online/Offline question was never shown", "answered Offline before it is shown" in lg
+          and "prompting online/offline" not in lg, (re.search(r".*(answered Offline before|prompting online).*", lg) or re.search("(.*)", "")).group(0)[:140])
     check("2: game started without EAC", "redirect (no EAC)" in ll and up)
     check("2: no start_protected_game.exe seen", not any(s.startswith("start_protected") for s in seen), ", ".join(sorted(seen)))
     check("2: agent loaded in that game", "b4bcoop loaded" in newest_agent_log(t))

@@ -498,7 +498,7 @@ Rules:
   `allow_joins`, `allow_steamids`, `presence`, `teamsize` (from the next map), `overlay`, `overlay_key`,
   `overlay_scale`, `addons_policy`, `updates`, `launch` (read at the next game start). Only the lines you changed count: an edit doesn't undo what you set with a chat command this
   session. Deleting or commenting out a line = back to its default.
-- **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `host`, `join`,
+- **Need a game restart** (chat: `b4bcoop.ini: host_ip changed; restart the game for that`): `auto_signin`, `host`, `join`,
   `host_ip`, `steam_p2p`, `presence_addr`, `netguard`, `netguard_eos`, `netguard_allow`.
 - **Updating b4bcoop** (extracting a new zip) replaces `b4bcoop.ini` with a fresh one: note your changes first.
   Bans (`b4bcoop-bans.txt`) are kept.
@@ -531,6 +531,7 @@ Rules:
 | `netguard` | `block` | `block`, `log`, `off` | Blocks the game's online services while you play |
 | `join` | none | `steam:<id>` | Always join this host automatically |
 | `host_ip` | `0` | `0`, `1` | **Advanced**: host and join by IP address |
+| `auto_signin` | `1` | `0`, `1` | `0`: the game's own Sign in step and Online/Offline question (co-op starts skip them by default) |
 | `launch` | `ask` | `ask`, `coop`, `online` | At the game start: ask co-op or online, or always one of them (see [Co-op or online](#co-op-or-online-at-the-game-start)) |
 
 **`host`**: you host by default: whenever you're in your offline Fort Hope, your Steam friends can join. `host=0`
@@ -620,7 +621,7 @@ co-op; Steam and the co-op connection are not affected. `log` only writes what i
 it off. Try `netguard=off` only if something won't start or connect, and tell us.
 
 **`join`**: optional; **Join Game** in Steam is the normal way to join. With `join=steam:<host's Steam ID>` your game
-joins that host by itself whenever you're alone in your offline Fort Hope (you still sign in Offline yourself; it waits until you have), and
+joins that host by itself whenever you're alone in your offline Fort Hope (after the sign-in), and
 keeps trying until it gets in (a few seconds after a failed attempt, then every 15 seconds). Several hosts can be listed with commas; they're tried in turn. It
 turns hosting off (unless `host=1`). A Steam **Join Game** click overrides it.
 ```ini
@@ -663,6 +664,8 @@ Every Steam **Play** first asks how you want to play:
   is copied to `PlayerProfileSettings-b4bcoop-before-online-<date>-<time>.sav` (and `.json`) in
   `%LOCALAPPDATA%\Back4Blood\Steam\Saved\SaveGames`, the 5 newest kept: to restore one, quit the game and copy it
   over `PlayerProfileSettings.sav`.
+- With no input at all (no key, mouse or controller) it picks **b4bcoop co-op** after 15 seconds (the countdown
+  shows in the question); any input stops the countdown.
 - Closing the question (X, Esc, controller **B**) starts nothing.
 - **Remember my choice** writes `launch=coop` or `launch=online` into `b4bcoop.ini` and skips the question from then
   on. To be asked again: hold **Shift** while the game starts (from pressing Play until the question shows), or `~`
@@ -672,8 +675,10 @@ Every Steam **Play** first asks how you want to play:
 - Linux/Steam Deck: the first start after installing has no question (co-op, as before). It sets a Wine setting for
   `Back4Blood.exe` in the game's Proton prefix (`xinput1_3=native,builtin`) so that the launcher file loads; from the
   next start on the question appears, and co-op starts skip the Easy Anti-Cheat launcher like on Windows.
-- In a co-op game, picking **Online** at the game's own Online/Offline sign-in question signs you in **Offline**
-  (b4bcoop never takes a game online) and your chat says how to play online.
+- A co-op start skips the game's own sign-in: b4bcoop presses Sign in and answers the Online/Offline question with
+  Offline before it appears, so you go straight from the title screen to Fort Hope. `auto_signin=0` shows the game's
+  sign-in again; picking **Online** there signs you in **Offline** anyway (b4bcoop never takes a game online) and
+  your chat says how to play online.
 
 Launch options (Steam → right-click **Back 4 Blood** → **Properties** → **Launch Options**) choose without asking:
 

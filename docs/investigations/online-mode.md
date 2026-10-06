@@ -67,7 +67,10 @@ Launcher `native/launcher/redirect.c` (root `xinput1_3.dll`, loaded by the stub 
    (writes `launch=` like the agent's ini writer), footer how to get the question back, controller support (XInput
    1.4 polled on the dialog's timer: A co-op, Y online, X remember, B close). Closing it = nothing starts
    (`ExitProcess(0)` in the stub: no second error box from the stub). Fallback without task dialogs: a Yes/No/Cancel
-   message box.
+   message box. With no input at all for 15 s it picks **co-op** (the safe default; the content line counts down
+   "Starting b4bcoop co-op in N s..."); any key, mouse move (> 4 px) or controller button stops the countdown. Not
+   `GetLastInputInfo`: under Wine a focus change or a screen grab counts as input there (seen: the countdown stopped
+   at the moment of a screenshot).
 4. **Online**: move `Gobi\Binaries\Win64\X3DAudio1_7.dll` and `dwmapi.dll` (renames, same volume; works while a file is
    mapped) to `<root>\b4bcoop-online\Gobi\Binaries\Win64\` + a `README.txt` there; **verify neither is left in Win64**,
    else put back, show why and start nothing; copy the offline save (`PlayerProfileSettings.sav/.json` in
@@ -93,6 +96,17 @@ share the name `Back4Blood.exe`; the game doesn't use xinput1_3 at all, `start_p
 The first start after installing (through EAC's launcher, as before) sets it; from the second start Proton gets the
 same prompt, and co-op starts skip EAC's launcher like Windows. Removing b4bcoop leaves the value behind; harmless (no
 native file in the root = Wine falls back to its builtin).
+
+**Co-op starts skip the game's sign-in** (Dan, follow-up): every agent start is a co-op start (an Online start never
+loads the agent), so auto sign-in Offline (signin.c, before only for Steam joins and dev `offline=1`) is now the
+default in every build: the agent presses Sign in on the title screen (StartSignIn, ~0.1 s after the screen opens),
+and the Online/Offline question is answered **before its popup exists**: hook on the task's start
+`SignInTask_OnlineOfflinePopup` 0x141B43960 (it creates the popup widget and logs `[%d] prompting online/offline`;
+an earlier startup-options choice answers at once instead). When the task is Running the hook calls the game's own
+handler `OnPopupClosed(task, NULL, "Offline")` (the popup argument is unused there) and returns without creating the
+popup: `SetOnlineModeForSignIn(Offline)`, task Completed. ini `auto_signin=0` (dev alias `offline=0`) restores the
+game's own sign-in (then the OnPopupClosed guard turns Online into Offline). Online starts can't be changed (no
+b4bcoop code there): retail's sign-in as is.
 
 Agent safety nets (`online.c`):
 - `-b4bcoop=off|online` on the game's command line with the agent loaded (Proton's first start with that launch
@@ -126,15 +140,27 @@ kills it. Results: see §6.
 
 ## 6. Results (2026-10-05, lane 2, Proton Experimental in the Flatpak Steam sandbox, dev build)
 
-`tools/online-test.py`: **41/41 PASS** (`/tmp/b4b-online-20261005-225641`):
-1. Test prefix without the override; first start (game exe directly, like Proton's first Steam start): `online:
+`tools/online-test.py`: **43/43 PASS** (`/tmp/b4b-online-20261005-235726`; the 41/41 run before the auto sign-in /
+countdown follow-up: `/tmp/b4b-online-20261005-225641`):
+1. Test prefix without the override, `auto_signin=0`; first start (game exe directly, like Proton's first Steam start): `online:
    Wine: xinput1_3=native,builtin for Back4Blood.exe`; dev `signin online` pressed **Online** at the game's popup:
    `the sign-in popup answered "Online"; b4bcoop is running, so this game signs in Offline`, engine log `[0]
    online/offline prompt closed with response Offline`, signed in, netguard: EOS network disabled, nothing allowed
    but loopback. The value is in the prefix's `user.reg` afterwards.
 2. Root stub (`B4B_STUB=1`, no `WINEDLLOVERRIDES` for xinput): the launcher loads through the registry override alone
-   (`hooked CreateProcessW`), prompt → co-op → `redirect (no EAC)`, agent loaded, no `start_protected_game.exe` at any
-   time. `~` window Settings "Always b4bcoop co-op" writes `launch=coop`, "Ask every time" comments it out.
+   (`hooked CreateProcessW`); nobody answers the prompt: `prompt: no input for 15 s: b4bcoop co-op` → `redirect (no
+   EAC)`, agent loaded, no `start_protected_game.exe` at any time. Default auto sign-in, the question never shown:
+   ```
+   23:59:29.442 Created screen 'SignInScreen'.
+   23:59:29.548 signin: StartSignIn on 000000008C51A8B0
+   23:59:29.563 SignInTask SignInTask_OnlineOfflinePopup_2147480755 Running
+   23:59:29.563 signin: Online/Offline question answered Offline before it is shown (co-op start)
+   23:59:29.563 [0] online/offline prompt closed with response Offline
+   23:59:29.564 SetOnlineModeForSignIn(Offline) set online mode to Offline
+   23:59:29.564 SignInTask SignInTask_OnlineOfflinePopup_2147480755 Completed
+   ```
+   and no `[0] prompting online/offline` (the line the game logs when it creates the popup; present in every earlier
+   log).  `~` window Settings "Always b4bcoop co-op" writes `launch=coop`, "Ask every time" comments it out.
 3. Prompt → Online + remember:
    ```
    agent: 1 file(s) in place, 0 switched off (b4bcoop-online)
@@ -161,9 +187,13 @@ kills it. Results: see §6.
 
 The prompt alone under system Wine 11.12 + Xvfb (`rundll32 xinput1_3.dll,b4bcoop_prompt_test`): the task dialog with
 both command links, "Remember my choice" and the footer; auto-answers online+remember → (2, 1), coop → (1, 0),
-cancel → (4, 0).
+cancel → (4, 0); `wait` (no answer): the content counts down ("Starting b4bcoop co-op in 13 s...", screenshot
+`/tmp/b4b-online-prompt/prompt-countdown.png`) and returns co-op (1, 0) at 15 s. Not tested: input stopping the
+countdown (no input device in the headless runs).
 
-`tools/e2e.py --quick` on lane 2 with this build: 14/14, twice (`/tmp/b4b-e2e-l2-20261005-223918`, `-225354`).
+`tools/e2e.py --quick` on lane 2: 14/14, twice before the follow-up (`/tmp/b4b-e2e-l2-20261005-223918`, `-225354`)
+and with it (`/tmp/b4b-e2e-l2-20261006-000100`: both instances `answered Offline before it is shown`, no `prompting
+online/offline`).
 Release build: no test hooks in `xinput1_3.dll` (no `-b4bcoop_test_suspend`, `B4B_LAUNCHER_ANSWER`, prompt export),
 reproducible (two builds, same sha256).
 `native/test/run.sh`: 88 + 32 checks pass.
@@ -174,6 +204,7 @@ online sign-in attempt (step 1) was turned into Offline by the hook before the g
 refuses to press Online without that hook).
 
 ## 7. Not tested / open
+- Input stopping the 15 s countdown (keys, mouse, controller); Windows' task dialog redrawing the countdown line.
 - **Native Windows**: the prompt, the renames, a real EAC start with the agent moved out, Defender/Smart App Control
   on the launcher, Shift detection while Steam starts the game. Test: install the zip, Play → Online → Task Manager:
   `Back4Blood.exe` (Win64) has no `X3DAudio1_7.dll` from the game folder in its modules (Process Explorer / `tasklist
@@ -193,5 +224,3 @@ refuses to press Online without that hook).
   (`WINEDLLOVERRIDES="xinput1_3=n,b" %command%`) for Linux players who want the question.
 - Online sessions keep the root `xinput1_3.dll` in place (the question needs it). Fine with §2's analysis, or should
   Online also move it (then nothing brings the question back automatically; co-op only by moving files back by hand)?
-- Should "b4bcoop co-op" also be the default after a timeout (e.g. Steam Deck Game Mode with no input)? Now the prompt
-  waits.

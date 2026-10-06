@@ -16,10 +16,10 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
   and Windows with no launch options) and of `dwmapi.dll` (legacy, dev only: `launch/install.sh --legacy`, not shipped). Proxies are generated into `native/proxy/` by
   `tools/gen-proxy.py`. `native/launcher/redirect.c` → `xinput1_3.dll` for the game root: the Steam launcher stub
   loads it (Windows by itself; Proton through the `AppDefaults\Back4Blood.exe` DllOverride online.c sets) and it asks
-  **b4bcoop co-op / Online** (#47; task dialog, `launcher.rc` manifest; remembered as ini `launch=`; Shift or
+  **b4bcoop co-op / Online** (#47; task dialog, `launcher.rc` manifest; co-op after 15 s with no input; remembered as ini `launch=`; Shift or
   `-b4bcoop=ask` asks anyway; `+b4bcoop_join` = co-op): co-op starts the game instead of the EAC bootstrapper,
   Online moves the agent DLLs to `<game>\b4bcoop-online\` first and lets the stub start EAC unchanged; the next co-op
-  pick moves them back. Dev: env `B4B_LAUNCHER_ANSWER=coop|online[+remember]|cancel`, `-b4bcoop_test_suspend` (EAC's
+  pick moves them back. Dev: env `B4B_LAUNCHER_ANSWER=coop|online[+remember]|cancel|wait`, `-b4bcoop_test_suspend` (EAC's
   launcher created suspended), `rundll32 xinput1_3.dll,b4bcoop_prompt_test`; `B4B_STUB=1 launch/run.sh` runs the
   stub. docs/investigations/launch.md, online-mode.md.
   `native/build.sh` → `native/out/` (dev build); `native/build.sh --release` → `native/out/release/` (player build,
@@ -52,8 +52,9 @@ Detailed engine findings (addresses, obfuscated layouts, class names): `docs/NOT
     client-rewards.md §8.
   - `burncards.c` host: remote players can play burn cards (quantity trusted), and each charge is keyed to the player
     who played it. Details: `docs/investigations/burn-cards.md`.
-  - `signin.c` auto sign-in Offline (press Sign in, answer the Online/Offline popup): armed by a Steam join
-    (presence.c); dev builds also by ini `offline=1`.
+  - `signin.c` auto sign-in Offline (press Sign in; online.c answers the Online/Offline question before its popup
+    exists, hook on the task's start 0x141B43960): on by default (every agent start is a co-op start, #47), ini
+    `auto_signin=0` (dev alias `offline=0`) shows the game's own; a Steam join arms it then (presence.c).
   - `testing.c` (dev builds only) unattended testing: `signin`, `mission [raw] [map] [difficulty]`,
     `ready [vote]`, `endmission [1|0]`, `burncard list|status|charge|map|[row]`, `callp <Class> <Func> [args]`,
     `takeover <slot>` (finish a hot-join bot take-over), `tp volumes|<slot> <x y z>|<slot> volume <n>`, rewards Easy
@@ -367,7 +368,8 @@ mission mounted at once and worn, replacement after restart, Remove and Update a
 `~/.local/share/b4b-coop/shop-test/src/`, never committed).
 **Launch choice co-op / Online (#47): `tools/online-test.py`** (live, test instance 1 on its own prefix and ini, never
 online: EAC's launcher is only ever created suspended, then killed): the agent's Wine DllOverride for the launcher,
-the sign-in popup's Online answered Offline, the stub's prompt (co-op: no EAC, agent loaded; Online + remember: agent
+the sign-in popup's Online answered Offline (`auto_signin=0`), the stub's prompt (no input: co-op after the 15 s
+countdown, no EAC, agent loaded, signed in Offline without the game ever logging "prompting online/offline"; Online + remember: agent
 moved to `b4bcoop-online`, ini `launch=online`, nothing of ours mapped in EAC's launcher, no game process), remembered
 choice, Steam join = co-op (agent moved back), `-b4bcoop=ask` + cancel, `-b4bcoop=off` with the agent loaded closed;
 `B4B_LANE=2 B4B_STEAM=flatpak B4B_GPU=4090 tools/online-test.py [--no-lock]`.

@@ -14,7 +14,7 @@
 //                  stub loads it (the game imports XINPUT1_4, EAC's bootstrapper loads XInput1_4 first).
 // The choice: a Steam join (+b4bcoop_join) = co-op; launch option -b4bcoop=coop|off|online|ask; else b4bcoop.ini
 // launch=coop|online (a remembered choice; Shift held at the start or -b4bcoop=ask shows the prompt anyway); else a
-// prompt (task dialog, mouse/keyboard/controller). Closing the prompt starts nothing.
+// prompt (task dialog, mouse/keyboard/controller; with no input for 15 s it picks co-op). Closing it starts nothing.
 // Windows loads this file by itself. Wine/Proton prefers its builtin xinput1_3 unless the prefix has a DllOverride:
 // the agent sets one for Back4Blood.exe on its first start (online.c), so Proton gets the same prompt from then on.
 // Pass-through (EAC, no prompt) when the agent isn't installed (neither in place nor switched off).
@@ -288,16 +288,58 @@ typedef DWORD (WINAPI *XInputGetStateFn)(DWORD, void *);
 static XInputGetStateFn xget;
 static WORD pad_last = 0xFFFF;     // buttons held when the prompt opened count only after they were released
 #ifndef B4B_RELEASE
-static char auto_answer[32];       // dev: B4B_LAUNCHER_ANSWER=coop|online|coop+remember|online+remember|cancel
-#endif
+static char auto_answer[32];       // dev: B4B_LAUNCHER_ANSWER=coop|online|coop+remember|online+remember|cancel|wait
+#endif                             // (wait: no answer, the countdown decides)
+
+// With no input at all (no key, mouse, controller) for COUNTDOWN_S seconds the prompt picks co-op, the safe default
+// (b4bcoop never goes online). Any input stops the countdown; then it waits for the player.
+#define COUNTDOWN_S 15
+static int countdown = 1, shown_s = -1;
+static POINT cursor_at_open;
+// Real input only: the mouse moved or a key/mouse button is (or was since the last look) down. Not
+// GetLastInputInfo: Wine counts window focus changes and screen grabs as input too.
+static int input_seen(void) {
+    POINT p;
+    if (GetCursorPos(&p) && (p.x - cursor_at_open.x > 4 || cursor_at_open.x - p.x > 4 ||
+                             p.y - cursor_at_open.y > 4 || cursor_at_open.y - p.y > 4)) return 1;
+    for (int vk = 1; vk < 255; vk++) if (GetAsyncKeyState(vk)) return 1;
+    return 0;
+}
+static void countdown_text(HWND h, int s) {
+    static wchar_t t[160];
+    if (s >= 0) wsprintfW(t, L"b4bcoop is installed. Starting b4bcoop co-op in %d s...", s);
+    else lstrcpyW(t, L"b4bcoop is installed.");
+    SendMessageW(h, TDM_SET_ELEMENT_TEXT, TDE_CONTENT, (LPARAM)t);
+}
+static void countdown_stop(HWND h, const wchar_t *why) {
+    if (!countdown) return;
+    countdown = 0;
+    logw(L"prompt: countdown stopped (%s)", why);
+    countdown_text(h, -1);
+}
 
 static HRESULT CALLBACK td_cb(HWND h, UINT msg, WPARAM wp, LPARAM lp, LONG_PTR ref) {
     (void)lp; (void)ref;
-    if (msg == TDN_CREATED) { SetForegroundWindow(h); return S_OK; }
-    if (msg == TDN_VERIFICATION_CLICKED) { logw(L"prompt: remember %s", wp ? L"on" : L"off"); return S_OK; }
+    if (msg == TDN_CREATED) { SetForegroundWindow(h); GetCursorPos(&cursor_at_open); countdown_text(h, COUNTDOWN_S); return S_OK; }
+    if (msg == TDN_VERIFICATION_CLICKED) { logw(L"prompt: remember %s", wp ? L"on" : L"off"); countdown_stop(h, L"input"); return S_OK; }
     if (msg != TDN_TIMER) return S_OK;
+    if (countdown) {
+        if (wp < 1000) {   // keys still held from the start (Shift, the Play click) don't count
+            GetCursorPos(&cursor_at_open);
+            for (int vk = 1; vk < 255; vk++) GetAsyncKeyState(vk);
+        } else if (input_seen()) countdown_stop(h, L"keyboard or mouse");
+        else if (wp >= COUNTDOWN_S * 1000) {
+            countdown = 0;
+            logw(L"prompt: no input for %d s: b4bcoop co-op", COUNTDOWN_S);
+            SendMessageW(h, TDM_CLICK_BUTTON, ID_COOP, 0);
+            return S_OK;
+        } else {
+            int s = COUNTDOWN_S - (int)(wp / 1000);
+            if (s != shown_s) { shown_s = s; countdown_text(h, s); }
+        }
+    }
 #ifndef B4B_RELEASE
-    if (auto_answer[0] && wp >= 1500) {   // ms since the dialog opened: long enough to see it (screenshots)
+    if (auto_answer[0] && strcmp(auto_answer, "wait") && wp >= 1500) {   // ms since the dialog opened: long enough to see it (screenshots)
         const char *a = auto_answer;
         logw(L"prompt: dev auto-answer %S", a);
         if (strstr(a, "remember")) SendMessageW(h, TDM_CLICK_VERIFICATION, TRUE, FALSE);
@@ -313,6 +355,7 @@ static HRESULT CALLBACK td_cb(HWND h, UINT msg, WPARAM wp, LPARAM lp, LONG_PTR r
     for (DWORD i = 0; i < 4; i++) if (xget(i, &st) == ERROR_SUCCESS) now |= st.buttons;
     WORD down = now & ~pad_last;
     pad_last = now;
+    if (down) countdown_stop(h, L"controller");
     if (down & 0x1000) SendMessageW(h, TDM_CLICK_BUTTON, ID_COOP, 0);
     else if (down & 0x8000) SendMessageW(h, TDM_CLICK_BUTTON, ID_ONLINE, 0);
     else if (down & 0x2000) SendMessageW(h, TDM_CLICK_BUTTON, IDCANCEL, 0);
@@ -504,7 +547,11 @@ static int patch_iat(HMODULE exe) {
 __declspec(dllexport) void CALLBACK b4bcoop_prompt_test(HWND h, HINSTANCE i, LPSTR arg, int show) {
     (void)h; (void)i; (void)show;
     GetEnvironmentVariableA("B4B_LAUNCHER_ANSWER", auto_answer, sizeof auto_answer);
+    char lp[300]; wsprintfA(lp, "%s.log", arg && *arg ? arg : "prompt-test");
+    logf = CreateFileA(lp, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     int rem, c = prompt(&rem);
+    logw(L"prompt test: choice %d remember %d", c, rem);
+    CloseHandle(logf); logf = INVALID_HANDLE_VALUE;
     char line[80]; wsprintfA(line, "choice=%d remember=%d\r\n", c, rem);
     HANDLE f = CreateFileA(arg && *arg ? arg : "prompt-test.txt", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     if (f != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(f, line, lstrlenA(line), &w, NULL); CloseHandle(f); }

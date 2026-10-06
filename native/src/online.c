@@ -7,7 +7,8 @@
 //     only when our launcher is next to the root Back4Blood.exe): from the next start Proton shows the same prompt.
 //   - -b4bcoop=off/online on our command line means the launcher didn't keep us out (Proton's first start, or no
 //     launcher): the game is closed before any game code runs, with a message, instead of going online with us in it.
-//   - The game's own Online/Offline sign-in popup: with b4bcoop loaded every answer becomes Offline (hook on
+//   - The game's own Online/Offline sign-in question: by default (auto sign-in, signin.c) answered Offline before it is
+//     shown (hook on the task's start); with auto_signin=0 it shows, and every answer becomes Offline (hook on
 //     SignInTask_OnlineOfflinePopup::OnPopupClosed); a chat line says how to play online.
 //   - ini launch=ask|coop|online (read by the launcher; "Remember my choice" writes it), ~ window Settings.
 #include <windows.h>
@@ -114,6 +115,14 @@ typedef FName *(*FNameCtorFn)(FName *self, const wchar_t *name, int find_type);
 typedef void (*PopupClosedFn)(UObject *task, UObject *popup, FName cmd);
 static PopupClosedFn orig_closed;
 int online_hook_active(void) { return orig_closed != NULL; }
+// void SignInTask_OnlineOfflinePopup start (this): an earlier choice (startup options) answers at once, else it
+// creates the popup widget, logs "[%d] prompting online/offline" and binds OnPopupClosed.
+#define ADDR_POPUP_START VA(0x141B43960ull)
+static const uint8_t SIG_POPUP_START[] = {0x48,0x89,0x5c,0x24,0x18,0x55,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x8b,0xec,0x48,
+                                          0x83,0xec,0x40,0x4c,0x8b,0x41,0x38,0x48};
+typedef void (*PopupStartFn)(UObject *task);
+static PopupStartFn orig_start;
+extern int g_auto_offline;
 static int notice_pending;
 
 static void closed_detour(UObject *task, UObject *popup, FName cmd) {
@@ -138,6 +147,21 @@ static void closed_detour(UObject *task, UObject *popup, FName cmd) {
         chat_local_later(m);
         overlay_note(m);
     }
+}
+
+// Auto sign-in (signin.c, the default for every co-op start): the question is answered Offline, through the game's
+// own handler, before its popup exists, so it never appears on screen.
+static void start_detour(UObject *task) {
+    int st = *(int32_t *)((char *)task + 0x30);   // ESignInTaskState, 1 = Running
+    if (g_auto_offline && st == 1) {
+        FName off = {0};
+        ((FNameCtorFn)ADDR_FNAME_CTOR)(&off, L"Offline", 1 /*FNAME_Add*/);
+        LOG("signin: Online/Offline question answered Offline before it is shown (co-op start)");
+        orig_closed(task, NULL, off);   // Popup is not used by the handler
+        return;
+    }
+    if (g_auto_offline) LOG("signin: Online/Offline task state %d at its start: the game shows its question", st);
+    orig_start(task);
 }
 
 // ---- ini launch= and the ~ window (Settings) ----
@@ -171,8 +195,14 @@ int online_init(void) {
     }
     if (MH_CreateHook((void *)ADDR_POPUP_CLOSED, (void *)closed_detour, (void **)&orig_closed) != MH_OK ||
         MH_EnableHook((void *)ADDR_POPUP_CLOSED) != MH_OK) { LOG("online: hook failed"); return -1; }
-    LOG("online: launcher %s, launch=%s%s; Online at the sign-in popup is answered Offline",
+    if (memcmp((void *)ADDR_POPUP_START, SIG_POPUP_START, sizeof SIG_POPUP_START))
+        LOG("online: sign-in question start signature mismatch: the question shows and is answered like a click");
+    else if (MH_CreateHook((void *)ADDR_POPUP_START, (void *)start_detour, (void **)&orig_start) != MH_OK ||
+             MH_EnableHook((void *)ADDR_POPUP_START) != MH_OK) LOG("online: start hook failed");
+    LOG("online: launcher %s, launch=%s%s; sign-in: %s",
         launcher_ok ? "with the launch choice" : root_dir[0] ? "missing or old" : "n/a (not a player install)",
-        launch_val[0] ? launch_val : "ask", is_wine ? (override_set_now ? ", Wine override set now" : ", Wine") : "");
+        launch_val[0] ? launch_val : "ask", is_wine ? (override_set_now ? ", Wine override set now" : ", Wine") : "",
+        g_auto_offline ? "automatic Offline, the Online/Offline question is never shown" :
+        "the game's own (auto_signin=0); Online at the sign-in popup is answered Offline");
     return 0;
 }
